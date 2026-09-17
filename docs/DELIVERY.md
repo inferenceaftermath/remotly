@@ -33,7 +33,12 @@ runner installers (`ci/setup-*`) deliver nothing; `shared/`, `.github/` or any o
 Secrets never enter GitHub. Each runner reads them from `~/.config/remotly` on its own machine; the only values in
 GitHub are two repository variables (Settings → Secrets and variables → Actions → Variables): `ASC_KEY_ID` and
 `ASC_ISSUER_ID`, the App Store Connect API key id and issuer id (the `.p8` stays on the Mac). Log output masks the
-runners' home directories (`::add-mask::`).
+runners' home directories (`::add-mask::`). On the bridge lane everything the bridge's own tooling prints (`setup`,
+`status`, on failure the unit's journal) goes to `$XDG_STATE_HOME/remotly/deploy.log` on the host (default
+`~/.local/state/remotly/deploy.log`, one deploy at a time), never into the public log: masks cover today's identity, a
+journal can hold yesterday's. As a second layer `ci/mask-host.sh` masks the host's current Tailscale name and addresses
+and fails the deploy when Tailscale is present but its identity cannot be read completely. The machine name in each
+job's banner is printed before any step can mask it, so give runner machines a neutral hostname.
 
 ## Running your own lane
 
@@ -66,7 +71,8 @@ runners' home directories (`::add-mask::`).
   `gh workflow run deliver.yml -f android=true -f ios=false -f bridge=false` re-delivers one lane.
 - Triage: Android upload 403 → the service account lacks Play access or the Google Play Android Developer API is off in
   its project; iOS `errSecInternalComponent` → keychain locked (password file missing); bridge deploy unhealthy → the job
-  prints the unit's journal and rolls back to the previous deploy.
+  rolls back to the previous deploy; setup's output and the unit's journal are in `~/.local/state/remotly/deploy.log`
+  on the host (never in the public log).
 - Re-registering a runner: delete it in GitHub → Settings → Actions → Runners, remove the `.runner` file, rerun the setup script.
 - Apple Developer membership renews yearly; if it lapses, TestFlight installs and APNs pushes stop. TestFlight builds
   expire after 90 days: a push to `main` that touches `ios/`, `shared/`, `.github/` or `ci/` uploads a fresh one, or

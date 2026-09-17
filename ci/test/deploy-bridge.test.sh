@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Exercises ci/deploy-bridge.sh with stand-ins for node, npm, systemctl and journalctl: a good deploy installs the new
 # copy; a deploy whose `setup`, `npm ci` or health check fails puts the previous copy back, restarts the unit on it and
-# exits 1; a rollback whose file moves or restart fail says so and never claims health. Run: bash ci/test/deploy-bridge.test.sh
+# exits 1; setup's and status's output and the journal excerpt land in the deploy log on the host, never in the output;
+# a rollback whose file moves or restart fail says so and never claims health. Run: bash ci/test/deploy-bridge.test.sh
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 tmp="$(mktemp -d)"; trap 'chmod -R u+w "$tmp" 2>/dev/null; rm -rf "$tmp"' EXIT
-export HOME="$tmp/home" REMOTLY_DEPLOY_DIR="$tmp/app" REMOTLY_BRIDGE_UNIT=test-unit REMOTLY_NODE_BIN="$tmp/bin" GITHUB_WORKSPACE="$tmp/src"
+export HOME="$tmp/home" XDG_STATE_HOME="$tmp/state" REMOTLY_DEPLOY_DIR="$tmp/app" REMOTLY_BRIDGE_UNIT=test-unit REMOTLY_NODE_BIN="$tmp/bin" GITHUB_WORKSPACE="$tmp/src"
 mkdir -p "$tmp/bin" "$tmp/src/bridge/bin" "$tmp/src/bridge/src" "$HOME"
 # The fake node: `setup` fails when the copy it runs from (its DEPLOYED_SHA) is listed in $tmp/setup-fail-shas, and
 # records "<sha> <main path>" plus its arguments for every call; the copy `old-sha` stands for a release from before
@@ -16,6 +17,7 @@ cat > "$tmp/bin/node" <<'NODE'
 main="$1"; shift
 case "${1:-}" in
   setup)
+    echo "(setup output: listening 100.64.0.9:7460)"; echo "(setup output on stderr: tls.ready box.tailabcd.ts.net)" >&2
     sha="$(cat "$(dirname "$main")/../../DEPLOYED_SHA")"
     echo "$sha $main" >> "${TMPDIR_TEST}/setup-calls"
     echo "$*" >> "${TMPDIR_TEST}/setup-args"
@@ -24,7 +26,7 @@ case "${1:-}" in
     exit 0;;
   status)
     sha="$(cat "$(dirname "$main")/../../DEPLOYED_SHA")"
-    grep -qx "$sha" "${TMPDIR_TEST}/health-fail-shas" && exit 1
+    if grep -qx "$sha" "${TMPDIR_TEST}/health-fail-shas"; then echo "status: not healthy at 100.64.0.9" >&2; exit 1; fi
     echo "herdr: up"; exit 0;;
   *) exit 2;;
 esac
@@ -58,6 +60,10 @@ reset; echo bad-sha > "$tmp/setup-fail-shas"
 if TARGET_SHA=bad-sha bash "$here/ci/deploy-bridge.sh" >"$tmp/out0" 2>&1; then fail "a failing setup must fail the deploy"; fi
 [ "$(cat "$tmp/app/DEPLOYED_SHA")" = old-sha ] || fail "pre-feature copy not restored (DEPLOYED_SHA = $(cat "$tmp/app/DEPLOYED_SHA"))"
 [ "$(cat "$tmp/app.bad/DEPLOYED_SHA")" = bad-sha ] || fail "bad copy not kept aside"
+deploy_log="$XDG_STATE_HOME/remotly/deploy.log"
+if grep -qE "setup output|\(journal\)|herdr: up|100\.64\.0\.9" "$tmp/out0"; then fail "setup, status and journal output must never reach the (public) output: $(cat "$tmp/out0")"; fi
+if ! grep -q "setup output: listening" "$deploy_log" || ! grep -q "setup output on stderr" "$deploy_log" || ! grep -q "(journal)" "$deploy_log"; then fail "setup output (both streams) and the journal excerpt must be in the deploy log on the host"; fi
+grep -q "deploy.log" "$tmp/out0" || fail "the output must say where the details went"
 grep -q "rolling back to old-sha" "$tmp/out0" && grep -q "rollback healthy" "$tmp/out0" || fail "rollback not reported: $(cat "$tmp/out0")"
 [ "$(cat "$tmp/setup-calls")" = "bad-sha $main" ] || fail "setup must run on the new copy only, never on the restored one: $(cat "$tmp/setup-calls")"
 grep -q "^--user restart test-unit$" "$tmp/systemctl-calls" || fail "the unit was not restarted on the restored copy: $(cat "$tmp/systemctl-calls")"
@@ -65,6 +71,8 @@ grep -q "^--user restart test-unit$" "$tmp/systemctl-calls" || fail "the unit wa
 # 2. A good deploy.
 reset
 TARGET_SHA=new-sha bash "$here/ci/deploy-bridge.sh" >"$tmp/out1" 2>&1 || fail "good deploy exited $? — $(cat "$tmp/out1")"
+if grep -qE "setup output|herdr: up|100\.64\.0\.9" "$tmp/out1"; then fail "setup and status output must never reach the (public) output: $(cat "$tmp/out1")"; fi
+if ! grep -q "setup output" "$deploy_log" || grep -q "(journal)" "$deploy_log"; then fail "a good deploy logs setup output and no journal excerpt on the host"; fi
 [ "$(cat "$tmp/app/DEPLOYED_SHA")" = new-sha ] || fail "new copy not in place"
 [ "$(cat "$tmp/setup-calls")" = "new-sha $main" ] || fail "setup was not run once from the deployed copy: $(cat "$tmp/setup-calls")"
 grep -q "healthy at new-sha" "$tmp/out1" || fail "no healthy line: $(cat "$tmp/out1")"
@@ -83,6 +91,8 @@ grep -q "deploy: setup failed" "$tmp/out2" && grep -q "rolling back to new-sha" 
 # 3b. Setup succeeds but the new copy never reports healthy: after the health loop the previous copy comes back.
 reset; echo unhealthy-sha > "$tmp/health-fail-shas"
 if TARGET_SHA=unhealthy-sha bash "$here/ci/deploy-bridge.sh" >"$tmp/out6" 2>&1; then fail "a deploy that never gets healthy must fail"; fi
+if grep -qE "setup output|not healthy at|100\.64\.0\.9" "$tmp/out6"; then fail "setup and status output must never reach the (public) output: $(cat "$tmp/out6")"; fi
+grep -q "not healthy at" "$deploy_log" || fail "a failing status must leave its output in the deploy log"
 [ "$(cat "$tmp/app/DEPLOYED_SHA")" = new-sha ] || fail "previous copy not restored after the health failure (DEPLOYED_SHA = $(cat "$tmp/app/DEPLOYED_SHA"))"
 [ "$(cat "$tmp/app.bad/DEPLOYED_SHA")" = unhealthy-sha ] || fail "unhealthy copy not kept aside"
 grep -q "did not report healthy" "$tmp/out6" && grep -q "rolling back to new-sha" "$tmp/out6" && grep -q "rollback healthy" "$tmp/out6" || fail "health failure not reported: $(cat "$tmp/out6")"

@@ -6,7 +6,9 @@
 # this copy), restarts it and waits for health — `--no-wait` fails instead of polling when herdr or
 # Tailscale is not ready, `--no-pair` skips the pairing QR, `--keep-mode` leaves a host's network mode (LAN or Tailscale)
 # as config.json has it — an ordinary `setup` would switch a LAN host back to Tailscale. A failed deploy puts the
-# previous copy back and restarts the unit on it.
+# previous copy back and restarts the unit on it. Everything the bridge's own tooling prints (setup, status, the unit's
+# journal) goes to a log file on the host, never into the public Actions log: daemon output can name an identity the
+# host no longer has, which the masks of ci/mask-host.sh cannot know.
 set -euo pipefail
 src="${GITHUB_WORKSPACE:-$(pwd)}"
 deploy="${REMOTLY_DEPLOY_DIR:-$HOME/.local/share/remotly/app}"
@@ -15,10 +17,21 @@ export PATH="${REMOTLY_NODE_BIN:-$HOME/.local/share/fnm/aliases/default/bin}:$PA
 
 prev="$deploy.prev"
 mkdir -p "$deploy"
+# One deploy's worth of the bridge tooling's own output (setup, status, journal excerpt), for the owner on the host.
+deploy_log="${XDG_STATE_HOME:-$HOME/.local/state}/remotly/deploy.log"
+mkdir -p "$(dirname "$deploy_log")"; : > "$deploy_log"
 
+# Prints `status` output when the unit is active and answers; a failing `status` leaves its output in the deploy log.
 healthy() {
-  systemctl --user is-active --quiet "$unit" \
-    && out=$(node "$deploy/bridge/src/main.ts" status 2>/dev/null) && grep -q '^herdr:' <<< "$out" && echo "$out"
+  systemctl --user is-active --quiet "$unit" || return 1
+  out=$(node "$deploy/bridge/src/main.ts" status 2>&1) || { printf '%s\n' "$out" >> "$deploy_log"; return 1; }
+  grep -q '^herdr:' <<< "$out" && echo "$out"
+}
+
+# On failure, add the unit's last journal lines to the deploy log and tell the public log where to look.
+save_journal() {
+  { echo "== journal of $unit after: $1"; journalctl --user -u "$unit" -n 30 --no-pager || echo "(journalctl failed)"; } >> "$deploy_log" 2>&1 || true
+  echo "deploy: setup's output and the unit's journal excerpt (or why it could not be read) are in $deploy_log on the host (not printed: the public log must not carry the daemon's log lines)" >&2
 }
 
 # Put the previous copy back and point the unit at it again. Every failure after the snapshot below goes through here.
@@ -63,18 +76,18 @@ if [ "${REMOTLY_DEPLOY_DRY_RUN:-0}" = 1 ]; then echo "dry run: synced to $deploy
 
 # Renders ExecStart=<node> <deploy>/bridge/src/main.ts serve, daemon-reload, enable, restart, then setup's own PID-checked
 # health wait. `--no-wait` turns a failing herdr / Tailscale / certificate check into a failure here instead of polling.
-if ! node "$deploy/bridge/src/main.ts" setup --no-pair --no-wait --keep-mode --unit "$unit"; then
+if ! node "$deploy/bridge/src/main.ts" setup --no-pair --no-wait --keep-mode --unit "$unit" >> "$deploy_log" 2>&1; then
   echo "deploy: setup failed" >&2
-  journalctl --user -u "$unit" -n 30 --no-pager >&2 || true
+  save_journal "setup failed"
   rollback || true
   exit 1
 fi
 
 for _ in $(seq 1 20); do
   sleep 1
-  if healthy; then echo "deploy: $unit healthy at $(cat "$deploy/DEPLOYED_SHA")"; exit 0; fi
+  if healthy >> "$deploy_log"; then echo "deploy: $unit healthy at $(cat "$deploy/DEPLOYED_SHA")"; exit 0; fi
 done
 echo "deploy: $unit did not report healthy" >&2
-journalctl --user -u "$unit" -n 30 --no-pager >&2 || true
+save_journal "did not report healthy"
 rollback || true
 exit 1

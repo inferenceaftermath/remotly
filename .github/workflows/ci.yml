@@ -31,11 +31,12 @@ jobs:
           npm ci
           npx tsc --noEmit
           npm test
-      - name: Shell syntax and the deploy script's rollback test
+      - name: Shell syntax, the deploy script's rollback test, the log-mask test
         run: |
           sh -n install.sh
           bash -n bridge/scripts/package.sh ci/*.sh ci/test/*.sh scripts/*.sh
           bash ci/test/deploy-bridge.test.sh
+          bash ci/test/mask-host.test.sh
 
   relay:
     name: Relay (tsc, tests)
