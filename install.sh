@@ -226,7 +226,7 @@ install_app() {
     verify "$TMP/$file" "$sum"
     rm -rf "$APP.new"; mkdir -p "$APP.new"
     tar -xzf "$TMP/$file" -C "$APP.new" --strip-components=1 || err "could not extract $file"
-    [ -f "$APP.new/src/main.ts" ] && [ -d "$APP.new/node_modules" ] || err "unexpected tarball layout"
+    { [ -f "$APP.new/src/main.ts" ] && [ -d "$APP.new/node_modules" ]; } || err "unexpected tarball layout"
     # Keep the previous copy for a manual rollback (mv it back and restart the unit); the one before that goes.
     # Two renames; `recover_interrupted` puts app.prev back if the second one never happens — from the trap when this
     # run is interrupted, or at the start of the next run after a power loss (the unit and launcher point at app/).
