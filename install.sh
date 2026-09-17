@@ -116,8 +116,8 @@ find_node() {
     private="$REMOTLY_HOME/node/bin/node"
     if sys="$(find_system_node)" && [ -n "$sys" ]; then
         NODE="$sys"; log "using system node $("$NODE" --version) at $NODE"
-        [ -x "$private" ] && log "the private runtime under $REMOTLY_HOME/node is no longer needed (remove it after the next setup: rm -r $(sq "$REMOTLY_HOME/node"))"
-        return
+        if [ -x "$private" ]; then log "the private runtime under $REMOTLY_HOME/node is no longer needed (remove it after the next setup: rm -r $(sq "$REMOTLY_HOME/node"))"; fi
+        return 0
     fi
     if node_ok "$private"; then
         refresh_private_node
