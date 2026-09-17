@@ -1,0 +1,35 @@
+{
+  "note": "codex ready for input (herdr status idle)",
+  "captured": "2026-09-03T01:06:01.807Z",
+  "herdr": "0.8.0",
+  "rect": {
+    "x": 26,
+    "y": 1,
+    "width": 114,
+    "height": 41
+  },
+  "pty": {
+    "rows": 41,
+    "cols": 113,
+    "tty": "/dev/pts/27"
+  },
+  "rows_in_read": 14,
+  "pane": {
+    "agent": "codex",
+    "display_agent": null,
+    "agent_status": "idle",
+    "title": "flow-capture-euddXh",
+    "revision": 2,
+    "scroll": {
+      "offset_from_bottom": 0,
+      "max_offset_from_bottom": 2,
+      "viewport_rows": 41
+    },
+    "state_labels": {}
+  },
+  "agent": {
+    "name": "flowcapcodex",
+    "state_change_seq": 66,
+    "interactive_ready": true
+  }
+}

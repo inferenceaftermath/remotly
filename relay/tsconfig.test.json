@@ -1,0 +1,8 @@
+{
+  // Tests run under Node 24 (`node --test`): the handler only uses Web APIs Node also has (fetch, Request,
+  // Response, crypto.subtle, atob/btoa), so the same sources type-check against @types/node.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "module": "nodenext", "moduleResolution": "nodenext", "types": ["node"] },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["src/index.ts"]
+}

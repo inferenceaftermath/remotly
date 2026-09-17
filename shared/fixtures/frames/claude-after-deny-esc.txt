@@ -1,0 +1,41 @@
+
+ ▐▛███▛█   Claude Code v2.1.259
+▝▜██████▀  Sonnet 5 with medium effort · Claude Max
+  ▝▝ ▝▝    /tmp/flow-capture
+
+▎ Using Sonnet 5 (default) · /model
+
+❯ Run the shell command touch /tmp/flow-capture-marker-claude.txt and then stop. Do nothing else and do not
+  explain.
+
+  Ran 1 shell command
+  ⎿  Interrupted · What should Claude do instead?
+
+✻ Baked for 2s · done 6:12 AM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+              tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf for wheel scroll
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [Sonnet 5 · medium] 4% | $0.15 | 14s | +0 -0
+  /tmp/flow-capture |
+  ⏸ manual mode on · ← for agents

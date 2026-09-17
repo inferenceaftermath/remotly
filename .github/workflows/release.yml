@@ -1,0 +1,82 @@
+# Tag bridge-vX.Y.Z (matching bridge/package.json) → tests on a GitHub-hosted runner → tarball, SHA256SUMS and
+# install.sh attached to a GitHub Release. install.sh resolves /releases/latest, so only bridge releases may be GitHub
+# Releases. Nothing here touches the owner's host: deliver.yml (push to main) does that.
+name: release
+
+on:
+  push:
+    tags: ['bridge-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Bridge release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+      - name: Tag matches bridge/package.json
+        run: |
+          ver="$(node -p "require('./bridge/package.json').version")"
+          test "$GITHUB_REF_NAME" = "bridge-v$ver" || { echo "tag $GITHUB_REF_NAME does not match bridge/package.json version $ver" >&2; exit 1; }
+      - name: Typecheck and tests
+        working-directory: bridge
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm test
+      - name: Installer lint
+        run: |
+          sh -n install.sh
+          shellcheck -s sh install.sh
+          bash -n bridge/scripts/package.sh
+          shellcheck bridge/scripts/package.sh
+      - name: Package
+        run: bridge/scripts/package.sh
+      - name: Install from the package like a user would
+        env:
+          REMOTLY_NO_SETUP: '1'
+          REMOTLY_HOME: ${{ runner.temp }}/remotly-home
+          REMOTLY_BIN_DIR: ${{ runner.temp }}/remotly-bin
+        run: |
+          ver="$(node -p "require('./bridge/package.json').version")"
+          mkdir -p "$RUNNER_TEMP/releases/download/bridge-v$ver"
+          cp bridge/dist/* "$RUNNER_TEMP/releases/download/bridge-v$ver/"
+          REMOTLY_VERSION="$ver" REMOTLY_RELEASE_URL="file://$RUNNER_TEMP/releases" sh install.sh
+          test "$("$REMOTLY_BIN_DIR/remotly-bridge" --version)" = "$ver"
+          "$REMOTLY_BIN_DIR/remotly-bridge" --help | grep -q '^  setup'
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver="$(node -p "require('./bridge/package.json').version")"
+          pre=""; case "$ver" in *-*) pre="--prerelease" ;; esac
+          notes="$(printf 'Install or upgrade the bridge on a Linux host:\n\n    curl -fsSL https://remotly.dev/install.sh | sh\n\nAssets: `remotly-bridge-%s.tar.gz` (bridge with its production dependencies, any Linux architecture), `SHA256SUMS`, `install.sh`.' "$ver")"
+          gh release create "$GITHUB_REF_NAME" --title "remotly-bridge $ver" --notes "$notes" $pre bridge/dist/*
+      - name: Install the published release the way users do (latest, unpinned)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REMOTLY_NO_SETUP: '1'
+          REMOTLY_HOME: ${{ runner.temp }}/remotly-home-2
+          REMOTLY_BIN_DIR: ${{ runner.temp }}/remotly-bin-2
+        run: |
+          ver="$(node -p "require('./bridge/package.json').version")"
+          # A prerelease (0.2.0-rc.1) is not what /releases/latest resolves to, so only the version decides — never the
+          # tag name, whose fixed `bridge-v` prefix contains a hyphen.
+          case "$ver" in *-*) echo "prerelease $ver: /releases/latest does not point at it; skipping the unpinned install"; exit 0 ;; esac
+          # /releases/latest points at the newest non-prerelease; give GitHub a moment to index it.
+          for i in 1 2 3 4 5 6; do
+            if curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/bridge-v$ver/install.sh" \
+                | REMOTLY_RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases" sh \
+                && test "$("$REMOTLY_BIN_DIR/remotly-bridge" --version)" = "$ver"; then exit 0; fi
+            sleep 10
+          done
+          echo "unpinned install of bridge-v$ver failed; removing the release" >&2
+          gh release delete "$GITHUB_REF_NAME" --yes --cleanup-tag || true
+          exit 1

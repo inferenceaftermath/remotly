@@ -1,0 +1,16 @@
+name: Feature request
+description: Something Remotly should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to do
+      description: The situation on the phone or the host, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: How it could work. Phone-facing changes ship on iOS and Android together (CONTRIBUTING.md).

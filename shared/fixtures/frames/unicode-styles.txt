@@ -1,0 +1,9 @@
+bold-red dim italic under inverse strike 256-orange bg27 truecolor
+日本語テキスト 中文 한국어 → wide
+🚀 🎉 👨‍👩‍👧 🇯🇵 ❤️ → emoji zwj/flag/vs16
+┌──┬──┐ │ ├──┼──┤ └──┴──┘ ▶ ● ✔ → box
+⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ → braille spinner
+   → powerline       tab     here
+   blue bg trailing blanks
+combining: é ä → accents
+user@host:/tmp/flow-capture$

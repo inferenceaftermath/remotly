@@ -1,0 +1,56 @@
+# Secrets and device state — never commit
+*.p8
+*service-account*.json
+*adminsdk*.json
+devices.json
+keystore.properties
+key.properties
+*.jks
+*.keystore
+.superpowers/
+.env
+.env.*
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Xcode / Swift
+ios/*.xcodeproj
+ios/*.xcworkspace
+ios/**/xcuserdata/
+ios/**/DerivedData/
+ios/FlowKit/.build/
+ios/FlowKit/.swiftpm/
+*.xcuserstate
+*.ipa
+*.dSYM.zip
+
+# Android / Gradle
+android/.gradle/
+android/**/build/
+android/local.properties
+android/.idea/
+android/*.iml
+android/captures/
+*.apk
+*.aab
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Scratch
+/tmp/
+.capture/
+google-services.json
+dist/
+
+# Cloudflare Worker (relay/)
+relay/.dev.vars
+relay/.wrangler/
+
+# Agent settings (per developer)
+.claude/

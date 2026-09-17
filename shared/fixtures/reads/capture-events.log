@@ -1,0 +1,51 @@
+# herdr events observed by bridge/scripts/capture.ts (structural subscription + per-pane pane.agent_status_changed); times are wall clock, host example-host, herdr 0.8.0
+# claude + pi: run 2026-09-03 00:42–00:44; codex: run 2026-09-03 01:05–01:06 (marker outside the codex sandbox)
+--- claude ---
+00:42:27.208 pane.agent_status_changed agent=claude status=idle rev=undefined title=undefined
+00:42:27.610 pane_agent_detected agent=claude status=undefined rev=undefined title=undefined
+00:42:30.733 pane_updated agent=undefined status=unknown rev=1 title="user@example-host: /tmp/flow-capture-EXa6w9"
+00:42:30.833 pane_updated agent=claude status=idle rev=2 title="Claude Code"
+00:42:33.549 pane_updated agent=claude status=idle rev=2 title="Claude Code"
+submit via agent.prompt(name): {"type":"agent_prompted","agent":{"terminal_id":"term_65a896cf2280ce","name":"flowcapclaude","agent"
+00:42:37.171 pane.agent_status_changed agent=claude status=working rev=undefined title=undefined
+00:42:38.075 pane_updated agent=claude status=working rev=3 title="Remotly capture marker"
+00:42:39.282 pane.agent_status_changed agent=claude status=blocked rev=undefined title=undefined
+00:42:41.391 pane.agent_status_changed agent=claude status=idle rev=undefined title=undefined
+00:42:44.307 pane_updated agent=claude status=idle rev=4 title=undefined
+00:42:45.014 pane_updated agent=claude status=idle rev=5 title="user@example-host: /tmp/flow-capture-EXa6w9"
+00:42:45.316 pane_updated agent=undefined status=idle rev=5 title="user@example-host: /tmp/flow-capture-EXa6w9"
+00:42:45.316 pane_agent_detected agent=claude status=undefined rev=undefined title=undefined
+00:42:45.617 pane.agent_status_changed agent=undefined status=unknown rev=undefined title=undefined
+--- codex ---
+01:05:55.953 pane.agent_status_changed agent=codex status=idle rev=undefined title=undefined
+01:05:57.163 pane_agent_detected agent=codex status=undefined rev=undefined title=undefined
+01:05:59.290 pane.agent_status_changed agent=codex status=working rev=undefined title=undefined
+01:06:00.197 pane.agent_status_changed agent=codex status=idle rev=undefined title=undefined
+01:06:01.105 pane_updated agent=undefined status=unknown rev=1 title="user@example-host: /tmp/flow-capture-euddXh"
+01:06:01.205 pane_updated agent=codex status=idle rev=2 title="flow-capture-euddXh"
+submit via agent.prompt(name): {"type":"agent_prompted","agent":{"terminal_id":"term_65a89c0e9a93810","name":"flowcapcodex","agent"
+01:06:02.517 pane.agent_status_changed agent=codex status=working rev=undefined title=undefined
+01:06:08.145 pane_updated agent=codex status=working rev=3 title="[ . ] Action Required | flow-capture-euddXh"
+01:06:08.246 pane.agent_status_changed agent=codex status=blocked rev=undefined title=undefined
+01:06:09.155 pane_updated agent=codex status=blocked rev=4 title="[ ! ] Action Required | flow-capture-euddXh"
+01:06:10.066 pane_updated agent=codex status=blocked rev=5 title="[ . ] Action Required | flow-capture-euddXh"
+01:06:10.369 pane_updated agent=codex status=blocked rev=6 title="flow-capture-euddXh"
+01:06:10.369 pane.agent_status_changed agent=codex status=idle rev=undefined title=undefined
+01:06:16.113 pane_updated agent=codex status=idle rev=7 title=undefined
+01:06:16.415 pane_updated agent=codex status=idle rev=8 title="user@example-host: /tmp/flow-capture-euddXh"
+01:06:16.415 pane_agent_detected agent=codex status=undefined rev=undefined title=undefined
+01:06:16.515 pane_updated agent=undefined status=idle rev=8 title="user@example-host: /tmp/flow-capture-euddXh"
+01:06:16.715 pane.agent_status_changed agent=undefined status=unknown rev=undefined title=undefined
+--- pi ---
+00:43:29.748 pane_agent_detected agent=pi status=undefined rev=undefined title=undefined
+00:43:29.748 pane.agent_status_changed agent=pi status=idle rev=undefined title=undefined
+00:43:29.848 pane_updated agent=pi status=idle rev=6 title="π - flow-capture-EXa6w9"
+submit via pane.send_text + verify + enter: {"type":"ok"}
+00:43:32.466 pane.agent_status_changed agent=pi status=working rev=undefined title=undefined
+00:43:38.106 pane.agent_status_changed agent=pi status=idle rev=undefined title=undefined
+00:43:43.538 pane.agent_status_changed agent=pi status=working rev=undefined title=undefined
+00:43:44.642 pane_updated agent=pi status=working rev=7 title="user@example-host: /tmp/flow-capture-EXa6w9"
+00:43:44.742 pane_updated agent=undefined status=idle rev=7 title="user@example-host: /tmp/flow-capture-EXa6w9"
+00:43:44.742 pane_agent_detected agent=pi status=undefined rev=undefined title=undefined
+00:43:44.742 pane.agent_status_changed agent=pi status=idle rev=undefined title=undefined
+00:43:45.043 pane.agent_status_changed agent=undefined status=unknown rev=undefined title=undefined

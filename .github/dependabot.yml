@@ -1,0 +1,15 @@
+# Monthly dependency updates, one pull request per ecosystem. ci.yml checks them on GitHub-hosted runners.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /bridge
+    schedule: { interval: monthly }
+  - package-ecosystem: npm
+    directory: /relay
+    schedule: { interval: monthly }
+  - package-ecosystem: gradle
+    directory: /android
+    schedule: { interval: monthly }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: monthly }

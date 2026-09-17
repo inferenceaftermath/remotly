@@ -1,0 +1,31 @@
+{
+  "note": "less (alternate screen, status line)",
+  "captured": "2026-09-02T18:45:51.724Z",
+  "herdr": "0.8.0",
+  "rect": {
+    "x": 26,
+    "y": 1,
+    "width": 114,
+    "height": 41
+  },
+  "pty": {
+    "rows": 41,
+    "cols": 113,
+    "tty": "/dev/pts/27"
+  },
+  "rows_in_read": 41,
+  "pane": {
+    "agent": null,
+    "display_agent": null,
+    "agent_status": "unknown",
+    "title": "user@host: /tmp/flow-capture",
+    "revision": 1,
+    "scroll": {
+      "offset_from_bottom": 0,
+      "max_offset_from_bottom": 0,
+      "viewport_rows": 41
+    },
+    "state_labels": {}
+  },
+  "agent": null
+}

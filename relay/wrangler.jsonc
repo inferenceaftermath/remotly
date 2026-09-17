@@ -1,0 +1,28 @@
+{
+  // Remotly push relay (README.md). Deployed by the app owner with `npm run deploy`; every other bridge
+  // posts its notifications here instead of holding the APNs key and the Firebase service account.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "remotly-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "routes": [{ "pattern": "relay.remotly.dev", "custom_domain": true }],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  // Public identifiers (they ship inside the apps). Everything sensitive is a secret: APNS_TEAM_ID, APNS_KEY_ID,
+  // APNS_P8 (the .p8 file), FCM_SERVICE_ACCOUNT (the service-account JSON) — see README.md "Deploy".
+  "vars": {
+    "APNS_BUNDLE_ID": "com.inferenceaftermath.remotly",
+    "FCM_PROJECT_ID": "flow-a014e",
+    // The Firebase project also hosts the retired app; every FCM message is restricted to this package.
+    "FCM_PACKAGE_NAME": "com.inferenceaftermath.remotly"
+  },
+  // Abuse containment for an endpoint without accounts: a caller who knows a device token can only make that
+  // phone's Remotly show a nuisance notice (actions go phone → bridge and are verified there), and not many.
+  // These run inside the Worker, so they do not protect the free plan's daily invocation quota — the zone-level
+  // rate-limiting rule in README.md "Deploy" does that.
+  "ratelimits": [
+    { "name": "RL_IP", "namespace_id": "1001", "simple": { "limit": 600, "period": 60 } },
+    { "name": "RL_TOKEN", "namespace_id": "1002", "simple": { "limit": 60, "period": 60 } }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "name": "remotly-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Remotly bridge: mirrors herdr panes to the Remotly phone apps",
+  "type": "module",
+  "bin": {
+    "remotly-bridge": "bin/remotly-bridge"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/main.ts serve",
+    "test": "node --test --experimental-test-module-mocks 'test/**/*.test.ts'",
+    "typecheck": "tsc --noEmit",
+    "test:integration": "node scripts/integration.ts"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/qrcode": "^1.5.5",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.9.0"
+  }
+}

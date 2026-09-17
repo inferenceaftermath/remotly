@@ -1,0 +1,24 @@
+total 1232
+drwxr-xr-x 145 root                 root                 12288 Sep  2 06:52 .
+drwxr-xr-x  23 root                 root                  4096 Jul 15 16:50 ..
+-rw-------   1 root                 root                     0 Feb 10  2026 .pwd.lock
+-rw-r--r--   1 root                 root                   862 Feb 10  2026 .resolv.conf.systemd-resolved.bak
+-rw-r--r--   1 root                 root                   208 Feb 10  2026 .updated
+drwxr-xr-x   4 root                 root                  4096 Feb 10  2026 ModemManager
+drwxr-xr-x   8 root                 root                  4096 Jul 16 21:16 NetworkManager
+drwxr-xr-x   3 root                 root                  4096 Jul 15 20:16 OpenCL
+drwxr-xr-x   2 root                 root                  4096 Jul 15 16:54 PackageKit
+drwxr-xr-x   2 root                 root                  4096 Feb 10  2026 UPower
+drwxr-xr-x  12 root                 root                  4096 Feb 10  2026 X11
+-rw-r--r--   1 root                 root                  3444 Jul  5  2023 adduser.conf
+drwxr-xr-x   3 root                 root                  4096 Feb 10  2026 alsa
+drwxr-xr-x   2 root                 root                  4096 Jul 29 17:55 alternatives
+-rw-r--r--   1 root                 root                   335 Apr  8  2024 anacrontab
+-rw-r--r--   1 root                 root                   433 Apr  8  2024 apg.conf
+drwxr-xr-x   5 root                 root                  4096 Feb 10  2026 apm
+drwxr-xr-x   2 root                 root                  4096 Jul 16 21:16 apparmor
+drwxr-xr-x   9 root                 root                 12288 Aug 26 06:56 apparmor.d
+bin                cdrom  home               lib64       mnt   root  sbin.usr-is-merged  swap.img  usr
+bin.usr-is-merged  dev    lib                lost+found  opt   run   snap                sys       var
+boot               etc    lib.usr-is-merged  media       proc  sbin  srv                 tmp
+user@host:/tmp/flow-capture$

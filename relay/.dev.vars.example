@@ -1,0 +1,6 @@
+# Copy to .dev.vars (gitignored) so `wrangler types` lists the secrets and `wrangler dev` can run.
+# Real values live only in the deployed Worker (`wrangler secret put <NAME>`).
+APNS_TEAM_ID=TEAM000000
+APNS_KEY_ID=KEY0000000
+APNS_P8="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+FCM_SERVICE_ACCOUNT={"client_email":"relay@project.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"}

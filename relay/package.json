@@ -1,0 +1,24 @@
+{
+  "name": "remotly-relay",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Remotly push relay: forwards bridge notifications to APNs and FCM so hosts never hold the app's push credentials",
+  "type": "module",
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260915.1",
+    "@types/node": "^24.13.4",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.132.0"
+  },
+  "allowScripts": {
+    "workerd@1.20260915.1": true,
+    "esbuild@0.28.1": true
+  }
+}

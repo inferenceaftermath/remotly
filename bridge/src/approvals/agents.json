@@ -1,0 +1,73 @@
+{
+  "$comment": "Per-agent approval key maps (from the original brief, corrected against real dialogs in M0; fixtures under shared/fixtures/reads). Keys are herdr key names sent 40 ms apart. `signature` is a case-insensitive regex tested against the visible text before sending. `deny_feedback` null means: send `deny`, then type the feedback as a new prompt.",
+  "claude": {
+    "display": "Claude",
+    "approve": [
+      "1"
+    ],
+    "approve_session": [
+      "2"
+    ],
+    "deny": [
+      "esc"
+    ],
+    "deny_feedback": [
+      "esc"
+    ],
+    "feedback_submit": [
+      "enter"
+    ],
+    "interrupt": [
+      "esc"
+    ],
+    "signature": "Do you want to proceed|Do you want to|Allow|don't ask again|always allow|Esc to cancel",
+    "verified_on": "2026-09-03 Claude Code (Sonnet 5): dialog '1. Yes / 2. Yes, and always allow… / 3. Yes, and switch to auto mode / 4. No · Esc to cancel · Tab to amend' (shared/fixtures/reads/claude-permission-prompt); Esc returns to the composer so feedback goes in as the next prompt"
+  },
+  "codex": {
+    "display": "Codex",
+    "approve": [
+      "y"
+    ],
+    "approve_session": [
+      "p"
+    ],
+    "deny": [
+      "esc"
+    ],
+    "deny_feedback": [
+      "esc"
+    ],
+    "feedback_submit": [
+      "enter"
+    ],
+    "interrupt": [
+      "esc"
+    ],
+    "signature": "Would you like to run|Press enter to confirm|Yes, proceed|\\(y\\)|Allow|Approve",
+    "verified_on": "2026-09-03 Codex CLI v0.152.1: dialog '1. Yes, proceed (y) / 2. Yes, and don't ask again for commands that start with … (p) / 3. No, and tell Codex what to do differently (esc) · Press enter to confirm or esc to cancel' (shared/fixtures/reads/codex-permission-prompt); Esc returns to the composer so feedback goes in as the next prompt"
+  },
+  "pi": {
+    "display": "pi",
+    "approve": [
+      "enter"
+    ],
+    "approve_session": [
+      "down",
+      "enter"
+    ],
+    "deny": [
+      "esc"
+    ],
+    "deny_feedback": [
+      "esc"
+    ],
+    "feedback_submit": [
+      "enter"
+    ],
+    "interrupt": [
+      "esc"
+    ],
+    "signature": "Allow|Confirm|Yes|Enter to select|Enter to confirm",
+    "verified_on": "2026-09-03 pi 2026.x: no tool-approval prompt appears with the user's current settings (bash ran unprompted); mapping follows §9 and was exercised only against the /model dialog (Enter selects, Esc cancels)"
+  }
+}

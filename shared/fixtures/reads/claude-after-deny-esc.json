@@ -1,0 +1,36 @@
+{
+  "note": "claude after Esc on the permission prompt (status idle, marker exists: false)",
+  "captured": "2026-09-03T00:42:43.897Z",
+  "herdr": "0.8.0",
+  "rect": {
+    "x": 26,
+    "y": 1,
+    "width": 114,
+    "height": 41
+  },
+  "pty": {
+    "rows": 41,
+    "cols": 113,
+    "tty": "/dev/pts/27"
+  },
+  "rows_in_read": 41,
+  "pane": {
+    "agent": "claude",
+    "display_agent": null,
+    "agent_status": "idle",
+    "title": "Remotly capture marker",
+    "revision": 3,
+    "scroll": {
+      "offset_from_bottom": 0,
+      "max_offset_from_bottom": 0,
+      "viewport_rows": 41
+    },
+    "state_labels": {}
+  },
+  "agent": {
+    "name": "flowcapclaude",
+    "state_change_seq": 48,
+    "interactive_ready": true,
+    "agent_session": "id"
+  }
+}

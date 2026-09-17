@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- The Remotly mark (shared/design/DESIGN.md §4.12): prompt chevron and a teal phone. -->
+    <path
+        android:fillColor="#6B7078"
+        android:pathData="M34.32,39 L48.48,54 L34.32,69 L27.84,69 L42,54 L27.84,39 Z" />
+    <path
+        android:fillColor="#2DD4BF"
+        android:pathData="M64.08,32.4 H71.52 A6.48,6.48 0 0 1 78,38.88 V69.12 A6.48,6.48 0 0 1 71.52,75.6 H64.08 A6.48,6.48 0 0 1 57.6,69.12 V38.88 A6.48,6.48 0 0 1 64.08,32.4 Z" />
+    <path
+        android:fillColor="#0B0C0E"
+        android:pathData="M65.52,35.52 H70.08 A1.32,1.32 0 0 1 71.4,36.84 V36.84 A1.32,1.32 0 0 1 70.08,38.16 H65.52 A1.32,1.32 0 0 1 64.2,36.84 V36.84 A1.32,1.32 0 0 1 65.52,35.52 Z" />
+</vector>

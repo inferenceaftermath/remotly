@@ -1,0 +1,30 @@
+name: Bug report
+description: Something does not work in the bridge, an app, the installer or the relay
+labels: [bug]
+body:
+  - type: dropdown
+    id: part
+    attributes:
+      label: Part
+      options: [Bridge (host daemon), iOS app, Android app, Installer / setup, Push relay, Documentation]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you saw. Screenshots help; blur anything private.
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      description: "`remotly-bridge status` and `herdr --version` on the host; the app version from its Settings; phone OS."
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Bridge log
+      description: "Relevant lines of `journalctl --user -u remotly-bridge -n 100 -o cat`. Info-level lines carry no pane text or tokens; read them before pasting anyway."
+      render: json

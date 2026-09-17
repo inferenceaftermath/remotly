@@ -1,0 +1,3 @@
+# Raw terminal captures (bytes read from herdr panes): their lines end in CR LF, which `git diff --check` would otherwise
+# report as trailing whitespace. Only that is allowed; other whitespace errors in these files still count.
+shared/fixtures/reads/*.ansi whitespace=cr-at-eol

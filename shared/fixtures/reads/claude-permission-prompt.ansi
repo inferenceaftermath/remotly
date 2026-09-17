@@ -1,0 +1,40 @@
+
+[0m[38;5;174m ▐[0m[38;5;174m[48;5;16m▛███▛█[0m   [0m[1mClaude Code [0m[38;5;246mv2.1.259[0m
+[0m[38;5;174m▝▜[0m[38;5;174m[48;5;16m█████[0m[38;5;174m█▀  [0m[38;5;246mSonnet 5 with medium effort · Claude Max[0m
+[0m[38;5;174m  ▝▝ ▝▝    [0m[38;5;246m/tmp/flow-capture[0m
+
+[0m[2m▎ [0m[38;5;246mUsing Sonnet 5 (default) · /model[0m
+
+[0m[38;5;239m[48;5;237m❯ [0m[38;5;231m[48;5;237mRun the shell command [0m[38;5;153m[48;5;237mtouch /tmp/flow-capture-marker-claude.txt[0m[38;5;231m[48;5;237m and then stop. Do nothing else and do not [0m[48;5;237m     [0m
+[0m[48;5;237m  [0m[38;5;231m[48;5;237mexplain.[0m[48;5;237m                                                                                                       [0m
+
+[0m[38;5;246m● [0mCreating marker file
+[0m[38;5;246m  ⎿  $ touch /tmp/flow-capture-marker-claude.txt[0m
+
+[0m[38;5;153m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+ [0m[1m[38;5;153mBash command[0m
+ [0m[1mTip: auto mode handles these prompts for you — choose "switch to auto mode" below[0m
+
+   touch /tmp/flow-capture-marker-claude.txt
+   [0m[38;5;246mCreate marker file[0m
+
+ Do you want to proceed?
+ [0m[38;5;153m❯ [0m[38;5;246m1. [0m[38;5;153mYes[0m
+   [0m[38;5;246m2. [0mYes, and always allow access to [0m[1m/tmp [0mfrom this project
+   [0m[38;5;246m3. [0mYes, and switch to auto mode[0m[38;5;246m · auto mode handles these prompts for you[0m
+   [0m[38;5;246m4. [0mNo
+
+ [0m[38;5;246mEsc to cancel · Tab to amend[0m
+
+
+
+
+
+
+
+                                                                                             
+
+
+
+  
+  

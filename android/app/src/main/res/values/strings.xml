@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Remotly</string>
+    <string name="channel_approvals">Approvals</string>
+    <string name="channel_approvals_desc">Agents waiting for your approval in a herdr pane</string>
+    <string name="channel_done">Finished agents</string>
+    <string name="channel_done_desc">An agent you asked to hear from has finished its turn</string>
+    <string name="channel_status">Working agents</string>
+    <string name="channel_status_desc">Silent ongoing notification while an agent works, with a running timer</string>
+    <string name="action_approve">Approve</string>
+    <string name="action_deny">Deny</string>
+    <string name="action_deny_feedback">Deny with feedback</string>
+    <string name="action_reply">Reply</string>
+    <string name="hint_feedback">What should it do instead?</string>
+    <string name="hint_reply">Your next prompt</string>
+    <string name="status_working">Working</string>
+    <string name="status_blocked">Waiting for approval</string>
+    <string name="status_question">Has a question</string>
+</resources>

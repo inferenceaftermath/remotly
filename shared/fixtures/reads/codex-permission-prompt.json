@@ -1,0 +1,36 @@
+{
+  "note": "codex asking for permission to run `touch /home/user/remotly/.capture/flow-capture-marker-codex.txt` (herdr status blocked)",
+  "captured": "2026-09-03T01:06:10.214Z",
+  "herdr": "0.8.0",
+  "rect": {
+    "x": 26,
+    "y": 1,
+    "width": 114,
+    "height": 41
+  },
+  "pty": {
+    "rows": 41,
+    "cols": 113,
+    "tty": "/dev/pts/27"
+  },
+  "rows_in_read": 32,
+  "pane": {
+    "agent": "codex",
+    "display_agent": null,
+    "agent_status": "blocked",
+    "title": "[ ! ] Action Required | flow-capture-euddXh",
+    "revision": 4,
+    "scroll": {
+      "offset_from_bottom": 0,
+      "max_offset_from_bottom": 2,
+      "viewport_rows": 41
+    },
+    "state_labels": {}
+  },
+  "agent": {
+    "name": "flowcapcodex",
+    "state_change_seq": 68,
+    "interactive_ready": true,
+    "agent_session": "id"
+  }
+}

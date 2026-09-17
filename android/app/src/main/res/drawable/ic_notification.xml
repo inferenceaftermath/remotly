@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Status-bar mark: white alpha mask of the app icon's chevron and phone. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M6.46,7.78 L10.45,12 L6.46,16.22 L4.64,16.22 L8.62,12 L4.64,7.78 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M14.83,5.92 H16.93 A1.82,1.82 0 0 1 18.75,7.74 V16.25 A1.82,1.82 0 0 1 16.93,18.07 H14.83 A1.82,1.82 0 0 1 13.01,16.25 V7.74 A1.82,1.82 0 0 1 14.83,5.92 Z" />
+</vector>

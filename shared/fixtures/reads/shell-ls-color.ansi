@@ -1,0 +1,24 @@
+total 1232
+drwxr-xr-x 145 root                 root                 12288 Sep  2 06:52 [0m[1m[38;5;4m.[0m
+drwxr-xr-x  23 root                 root                  4096 Jul 15 16:50 [0m[1m[38;5;4m..[0m
+-rw-------   1 root                 root                     0 Feb 10  2026 .pwd.lock
+-rw-r--r--   1 root                 root                   862 Feb 10  2026 [0m[38;5;8m.resolv.conf.systemd-resolved.bak[0m
+-rw-r--r--   1 root                 root                   208 Feb 10  2026 .updated
+drwxr-xr-x   4 root                 root                  4096 Feb 10  2026 [0m[1m[38;5;4mModemManager[0m
+drwxr-xr-x   8 root                 root                  4096 Jul 16 21:16 [0m[1m[38;5;4mNetworkManager[0m
+drwxr-xr-x   3 root                 root                  4096 Jul 15 20:16 [0m[1m[38;5;4mOpenCL[0m
+drwxr-xr-x   2 root                 root                  4096 Jul 15 16:54 [0m[1m[38;5;4mPackageKit[0m
+drwxr-xr-x   2 root                 root                  4096 Feb 10  2026 [0m[1m[38;5;4mUPower[0m
+drwxr-xr-x  12 root                 root                  4096 Feb 10  2026 [0m[1m[38;5;4mX11[0m
+-rw-r--r--   1 root                 root                  3444 Jul  5  2023 adduser.conf
+drwxr-xr-x   3 root                 root                  4096 Feb 10  2026 [0m[1m[38;5;4malsa[0m
+drwxr-xr-x   2 root                 root                  4096 Jul 29 17:55 [0m[1m[38;5;4malternatives[0m
+-rw-r--r--   1 root                 root                   335 Apr  8  2024 anacrontab
+-rw-r--r--   1 root                 root                   433 Apr  8  2024 apg.conf
+drwxr-xr-x   5 root                 root                  4096 Feb 10  2026 [0m[1m[38;5;4mapm[0m
+drwxr-xr-x   2 root                 root                  4096 Jul 16 21:16 [0m[1m[38;5;4mapparmor[0m
+drwxr-xr-x   9 root                 root                 12288 Aug 26 06:56 [0m[1m[38;5;4mapparmor.d[0m
+[0m[1m[38;5;6mbin[0m                [0m[1m[38;5;4mcdrom[0m  [0m[1m[38;5;4mhome[0m               [0m[1m[38;5;6mlib64[0m       [0m[1m[38;5;4mmnt[0m   [0m[1m[38;5;4mroot[0m  [0m[1m[38;5;4msbin.usr-is-merged[0m  swap.img  [0m[1m[38;5;4musr[0m
+[0m[1m[38;5;4mbin.usr-is-merged[0m  [0m[1m[38;5;4mdev[0m    [0m[1m[38;5;6mlib[0m                [0m[1m[38;5;4mlost+found[0m  [0m[1m[38;5;4mopt[0m   [0m[1m[38;5;4mrun[0m   [0m[1m[38;5;4msnap[0m                [0m[1m[38;5;4msys[0m       [0m[1m[38;5;4mvar[0m
+[0m[1m[38;5;4mboot[0m               [0m[1m[38;5;4metc[0m    [0m[1m[38;5;4mlib.usr-is-merged[0m  [0m[1m[38;5;4mmedia[0m       [0m[1m[38;5;4mproc[0m  [0m[1m[38;5;6msbin[0m  [0m[1m[38;5;4msrv[0m                 [0m[38;5;0m[48;5;2mtmp[0m
+[0m[1m[38;5;2muser@host[0m:[0m[1m[38;5;4m/tmp/flow-capture[0m$ 

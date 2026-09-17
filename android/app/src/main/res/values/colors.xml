@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Window and launcher backgrounds: DESIGN.md `bg`; accent: DESIGN.md `interactive`. -->
+    <color name="bg">#FF0B0C0E</color>
+    <color name="ic_launcher_background">#FF0B0C0E</color>
+    <color name="accent">#FF7AA2F7</color>
+</resources>

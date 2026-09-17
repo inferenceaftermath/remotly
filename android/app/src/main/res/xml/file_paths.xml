@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Camera captures for the composer's "Take photo" (Attachments.kt); private cache, handed to the camera app via FileProvider. -->
+<paths>
+    <cache-path name="camera" path="camera/" />
+</paths>
