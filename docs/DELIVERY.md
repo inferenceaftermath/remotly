@@ -2,10 +2,34 @@
 
 `.github/workflows/deliver.yml` runs on every push to `main` and delivers what the push touched: `ci/plan.sh` compares the
 changed paths and schedules a Play internal-testing release for `android/`, a TestFlight build for `ios/`, a redeploy of
-the bridge on the herdr host for `bridge/`, all three for `shared/`, `.github/` or `ci/` (except the runner installers
-`ci/setup-*`), and nothing for documentation-only pushes; `gh workflow run deliver.yml -f ios=true …` forces a lane. It runs only in the upstream repository (a job-level guard checks
-`github.repository`) and only on two self-hosted runners labelled `remotly`; pull requests are checked by `ci.yml` on
-GitHub-hosted runners instead. A fork that wants its own lane needs its own records, runners and identifiers, listed here.
+the bridge on the herdr host for `bridge/`, all three for `shared/` (its non-Markdown files: protocol fixtures, design assets) and for the pipeline itself (`.github/workflows/deliver.yml`,
+the `ci/` scripts), and nothing for what is in no build and not run by the host (the bridge deploy copies the whole
+checkout, but these are never executed there): documentation, repository paperwork (licence, templates, CODEOWNERS,
+Dependabot), the release path (`install.sh`, `release.yml`, `bridge/scripts/package.sh`), the pull-request workflow and
+the tests (`ci/test/`, `bridge/test/`, `ios/FlowKit/Tests/`, `android/*/src/test/`), the runner installers `ci/setup-*`
+and the relay (deployed by hand). Inside the apps' own trees (`android/*/src/main/`, `ios/Remotly/`, `ios/Shared/`,
+`ios/FlowActivity/`, `ios/FlowKit/Sources/`) every file delivers, whatever its name. Each lane is diffed from the
+commit it last delivered, not from the push's parent: a lane's last step (`ci/mark-delivered.sh record`) moves its
+marker `refs/delivered/<lane>` on the repository to the commit whose bundle, build or code just reached Play,
+TestFlight or the host (`git ls-remote origin 'refs/delivered/*'` shows the three). A lane forgets its marker right
+before its work (`ci/mark-delivered.sh forget`): a lane that fails before that keeps its old marker and the next push
+retries its changes from there; one that fails after it — a test, the upload, the marker push itself — leaves none,
+and the next push delivers that lane in full (a stale marker would let a later revert look like "nothing changed").
+Only main's tip delivers: a run started behind a newer push (queued runs are not ordered), a rerun of an old run's
+lane, a dispatch from another branch — `ci/lane-guard.sh`, the first step of every lane, finds that its commit is no
+longer the tip and the lane's other steps are skipped; the tip's run delivers whatever the lanes still need, and a
+dispatch overtaken this way forgets the lane it asked for, so that run delivers it in full. A marker outside the current history (main rewritten) makes that lane
+deliver everything; an origin that cannot be read fails the plan rather than guess. Two things the workflow cannot
+guard against, since GitHub runs the workflow file of the ref a run belongs to: a dispatch given another ref (`gh
+workflow run --ref`) runs that ref's own deliver.yml — dispatch from `main` only — and re-running a run from before
+these markers existed replays its old workflow; push instead. A lane whose upload succeeded but whose marker push
+failed is not re-run either (Play and TestFlight refuse the same build number twice): the marker is gone, so the next
+push delivers it. Every run waits its turn (`concurrency.queue: max`, up to
+GitHub's 100 waiting runs; the next accepted push delivers everything pending), so a manual dispatch never displaces a
+waiting push. `ci/test/plan.test.sh`, `ci/test/lane-guard.test.sh` and `ci/test/mark-delivered.test.sh` pin that;
+`gh workflow run deliver.yml -f ios=true …` forces a lane. It runs only in the upstream repository (a
+job-level guard checks `github.repository`) and only on two self-hosted runners labelled `remotly`; pull requests are
+checked by `ci.yml` on GitHub-hosted runners instead. A fork that wants its own lane needs its own records, runners and identifiers, listed here.
 
 ## Channels
 
@@ -20,8 +44,8 @@ FCM has a single environment.
 
 ## What the workflow does
 
-`ci/plan.sh` decides from the changed paths (`workflow_dispatch` has one checkbox per lane): docs-only pushes and the
-runner installers (`ci/setup-*`) deliver nothing; `shared/`, `.github/` or any other `ci/` file deliver everything. Build number and `versionCode` are the run number.
+`ci/plan.sh` decides from the changed paths (`workflow_dispatch` has one checkbox per lane), as listed above; a path it
+does not know delivers everything. Build number and `versionCode` are the run number.
 
 | Job | Runner | Steps |
 |---|---|---|
@@ -75,5 +99,5 @@ job's banner is printed before any step can mask it, so give runner machines a n
   on the host (never in the public log).
 - Re-registering a runner: delete it in GitHub → Settings → Actions → Runners, remove the `.runner` file, rerun the setup script.
 - Apple Developer membership renews yearly; if it lapses, TestFlight installs and APNs pushes stop. TestFlight builds
-  expire after 90 days: a push to `main` that touches `ios/`, `shared/`, `.github/` or `ci/` uploads a fresh one, or
+  expire after 90 days: a push to `main` that `ci/plan.sh` classifies for iOS (see above: `ios/` or `shared/` code, `deliver.yml`, a `ci/` script) uploads a fresh one, or
   dispatch the iOS lane by hand.
