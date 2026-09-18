@@ -1,11 +1,10 @@
-# Checks for pull requests and branches, on GitHub-hosted runners only. The self-hosted `remotly` runners belong to
-# deliver.yml, which runs solely on pushes to `main` of the upstream repository.
+# Checks for pull requests, on GitHub-hosted runners only; a branch without a pull request is not checked (open a
+# draft). The self-hosted `remotly` runners belong to deliver.yml, which runs solely on pushes to `main` of the
+# upstream repository.
 name: ci
 
 on:
   pull_request:
-  push:
-    branches-ignore: [main]
   workflow_dispatch:
 
 permissions:
@@ -31,10 +30,13 @@ jobs:
           npm ci
           npx tsc --noEmit
           npm test
-      - name: Shell syntax, the deploy script's rollback test, the log-mask test
+      - name: Shell syntax and the ci/ scripts' tests (delivery plan, deploy rollback, log mask)
         run: |
           sh -n install.sh
           bash -n bridge/scripts/package.sh ci/*.sh ci/test/*.sh scripts/*.sh
+          bash ci/test/plan.test.sh
+          bash ci/test/lane-guard.test.sh
+          bash ci/test/mark-delivered.test.sh
           bash ci/test/deploy-bridge.test.sh
           bash ci/test/mask-host.test.sh
 

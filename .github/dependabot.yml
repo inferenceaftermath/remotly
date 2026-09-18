@@ -1,15 +1,42 @@
-# Monthly dependency updates, one pull request per ecosystem. ci.yml checks them on GitHub-hosted runners.
+# Monthly dependency updates, checked by ci.yml on GitHub-hosted runners. Minor and patch bumps arrive as one grouped
+# pull request per ecosystem; a major bump gets its own. Version updates wait a week after a release is published
+# (`cooldown`; Dependabot's security updates are not delayed), which keeps most releases that their maintainers withdraw
+# within days out of the pull requests here — fewer of them, not none.
+# `@types/node` follows the Node major the bridge runs and the CI installs (24: bridge/package.json `engines`,
+# install.sh), so its major bumps are ignored until that changes.
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /bridge
     schedule: { interval: monthly }
+    cooldown: { default-days: 7 }
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: npm
     directory: /relay
     schedule: { interval: monthly }
+    cooldown: { default-days: 7 }
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: gradle
     directory: /android
     schedule: { interval: monthly }
+    cooldown: { default-days: 7 }
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: monthly }
+    cooldown: { default-days: 7 }
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
