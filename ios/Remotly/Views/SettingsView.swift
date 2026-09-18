@@ -22,22 +22,26 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+        if model.isDemo { DemoBanner() }
         NavigationStack {
             List {
-                if let host = model.host {
+                if let host = model.displayHost {
                     Section {
                         ValueRow(title: "Name", value: host.name)
-                        ValueRow(title: "Bridge", value: host.url.absoluteString, mono: true)
-                        Button {
-                            UIPasteboard.general.string = host.fingerprint ?? "tailnet"
-                            model.showNotice("copied")
-                        } label: {
-                            ValueRow(title: "Certificate",
-                                     value: host.fingerprint.map { "Self-signed · pinned \($0)" } ?? "From your tailnet",
-                                     mono: host.fingerprint != nil)
+                        if !model.isDemo {
+                            ValueRow(title: "Bridge", value: host.url.absoluteString, mono: true)
+                            Button {
+                                UIPasteboard.general.string = host.fingerprint ?? "tailnet"
+                                model.showNotice("copied")
+                            } label: {
+                                ValueRow(title: "Certificate",
+                                         value: host.fingerprint.map { "Self-signed · pinned \($0)" } ?? "From your tailnet",
+                                         mono: host.fingerprint != nil)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityHint("Copies the certificate")
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityHint("Copies the certificate")
                         ValueRow(title: "This device", value: model.deviceInfo?.name ?? UIDevice.current.name)
                     } header: {
                         SectionLabel("Host", inset: false)
@@ -45,34 +49,38 @@ struct SettingsView: View {
                     .listRowBackground(Theme.panel)
                 }
                 Section {
-                    HStack {
-                        Text("Permission").font(.system(size: 15)).foregroundStyle(Theme.fg)
-                        Spacer()
-                        Text(notificationsAllowed ? "Allowed" : "Not allowed").font(.system(size: 15)).foregroundStyle(Theme.fg2)
-                        if notificationStatus == .denied {
-                            Button("Open system settings") {
-                                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
-                            }
-                            .buttonStyle(QuietButtonStyle(color: Theme.interactive))
-                        } else if !notificationsAllowed {
-                            Button("Enable") {
-                                Task {
-                                    _ = await model.requestNotifications()
-                                    notificationStatus = await FlowNotifications.authorizationStatus()
+                    if model.isDemo {
+                        Text("Notifications and photo uploads require a paired host.").font(.system(size: 15)).foregroundStyle(Theme.fg2)
+                    } else {
+                        HStack {
+                            Text("Permission").font(.system(size: 15)).foregroundStyle(Theme.fg)
+                            Spacer()
+                            Text(notificationsAllowed ? "Allowed" : "Not allowed").font(.system(size: 15)).foregroundStyle(Theme.fg2)
+                            if notificationStatus == .denied {
+                                Button("Open system settings") {
+                                    if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
                                 }
+                                .buttonStyle(QuietButtonStyle(color: Theme.interactive))
+                            } else if !notificationsAllowed {
+                                Button("Enable") {
+                                    Task {
+                                        _ = await model.requestNotifications()
+                                        notificationStatus = await FlowNotifications.authorizationStatus()
+                                    }
+                                }
+                                .buttonStyle(QuietButtonStyle(color: Theme.interactive))
                             }
-                            .buttonStyle(QuietButtonStyle(color: Theme.interactive))
                         }
+                        ToggleRow(title: "Tell me when it's done by default",
+                                  detail: "Every prompt sent from this phone asks for one notification when the agent finishes its turn.",
+                                  isOn: $notifyOnPrompt)
+                        ToggleRow(title: "Require unlock to approve",
+                                  detail: "Approve, Deny with feedback and Reply from a notification work only once the phone is unlocked.",
+                                  isOn: $requireUnlock)
+                        ToggleRow(title: "Show working agents",
+                                  detail: "Each working agent stays visible outside the app with a running timer.",
+                                  isOn: $liveActivities)
                     }
-                    ToggleRow(title: "Tell me when it's done by default",
-                              detail: "Every prompt sent from this phone asks for one notification when the agent finishes its turn.",
-                              isOn: $notifyOnPrompt)
-                    ToggleRow(title: "Require unlock to approve",
-                              detail: "Approve, Deny with feedback and Reply from a notification work only once the phone is unlocked.",
-                              isOn: $requireUnlock)
-                    ToggleRow(title: "Show working agents",
-                              detail: "Each working agent stays visible outside the app with a running timer.",
-                              isOn: $liveActivities)
                 } header: {
                     SectionLabel("Notifications", inset: false)
                 }
@@ -91,16 +99,22 @@ struct SettingsView: View {
                 Section {
                     ValueRow(title: "App", value: "\(AppInfo.version) · protocol \(flowProtocolVersion)")
                     ValueRow(title: "Bridge", value: bridgeVersions)
-                    ValueRow(title: "Push", value: model.pushTokenHex == nil ? "not issued" : "registered · \(PushEnvironmentDetector.current.rawValue)")
+                    ValueRow(title: "Push", value: model.isDemo ? "Unavailable in demo" : model.pushTokenHex == nil ? "not issued" : "registered · \(PushEnvironmentDetector.current.rawValue)")
                     ValueRow(title: "Terminal font", value: "JetBrains Mono · OFL 1.1")
                 } header: {
                     SectionLabel("About", inset: false)
                 }
                 .listRowBackground(Theme.panel)
                 Section {
-                    Button("Forget this host", role: .destructive) { confirmForget = true }
-                        .font(.system(size: 15))
-                        .foregroundStyle(Theme.blocked)
+                    if model.isDemo {
+                        Button("Exit demo") { model.exitDemo(); dismiss() }
+                    } else {
+                        Button("Try demo") { model.enterDemo(); dismiss() }
+                        Text("Local sample sessions. Your saved host is preserved.").font(.system(size: 13)).foregroundStyle(Theme.fg2)
+                        Button("Forget this host", role: .destructive) { confirmForget = true }
+                            .font(.system(size: 15))
+                            .foregroundStyle(Theme.blocked)
+                    }
                 }
                 .listRowBackground(Theme.panel)
             }
@@ -129,6 +143,7 @@ struct SettingsView: View {
             .task { notificationStatus = await FlowNotifications.authorizationStatus() }
             .onChange(of: requireUnlock) { _, _ in FlowSettings.applyNotificationCategories() }
             .onChange(of: liveActivities) { _, on in model.setLiveActivities(on) }
+        }
         }
         .tint(Theme.interactive)
         .presentationBackground(Theme.bg)

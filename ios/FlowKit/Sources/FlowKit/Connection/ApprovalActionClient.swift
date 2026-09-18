@@ -37,8 +37,9 @@ public struct ApprovalOutcomeSummary: Hashable, Sendable {
 
 public enum ApprovalActionClient {
     public static func perform(action: ApprovalAction, payload: PushPayload, host: PairedHost, client: ClientInfo,
-                               feedback: String? = nil, timeout: Duration = .seconds(20)) async -> ApprovalOutcomeSummary {
-        let connection = FlowConnection(host: host, client: client, mode: .action)
+                               feedback: String? = nil, timeout: Duration = .seconds(20),
+                               lifetime: ConnectionLifetime = ConnectionLifetime()) async -> ApprovalOutcomeSummary {
+        let connection = FlowConnection(host: host, client: client, mode: .action, lifetime: lifetime)
         await connection.start()
         defer { Task { await connection.stop() } }
         do {
@@ -53,6 +54,8 @@ public enum ApprovalActionClient {
                         }
                     case .state(.unpaired):
                         throw FlowError.unpaired
+                    case .state(.stopped):
+                        throw FlowError.closed
                     case .approvalResult(let result) where result.promptId == payload.promptId:
                         return result
                     default:
@@ -72,11 +75,11 @@ public enum ApprovalActionClient {
 
     /// Reply typed into a "finished" notification: one `prompt` (armed for the next alert when `notify`), then close.
     public static func reply(text: String, notify: Bool, pane: String, agent: String, host: PairedHost, client: ClientInfo,
-                             timeout: Duration = .seconds(20)) async -> ApprovalOutcomeSummary {
+                             timeout: Duration = .seconds(20), lifetime: ConnectionLifetime = ConnectionLifetime()) async -> ApprovalOutcomeSummary {
         let who = agent.isEmpty ? "The agent" : agent.capitalized
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return ApprovalOutcomeSummary(title: "Nothing sent", body: "The reply was empty.") }
-        let connection = FlowConnection(host: host, client: client, mode: .action)
+        let connection = FlowConnection(host: host, client: client, mode: .action, lifetime: lifetime)
         await connection.start()
         defer { Task { await connection.stop() } }
         do {
@@ -88,6 +91,8 @@ public enum ApprovalActionClient {
                         return
                     case .state(.unpaired):
                         throw FlowError.unpaired
+                    case .state(.stopped):
+                        throw FlowError.closed
                     default:
                         continue
                     }
@@ -128,9 +133,9 @@ public enum ApprovalActionClient {
 /// app's normal connection exists; without it the bridge could never update or end that activity.
 public enum ActivityTokenClient {
     public static func register(_ tokens: [(pane: String?, token: String)], host: PairedHost, client: ClientInfo,
-                                timeout: Duration = .seconds(15)) async -> Bool {
+                                timeout: Duration = .seconds(15), lifetime: ConnectionLifetime = ConnectionLifetime()) async -> Bool {
         guard !tokens.isEmpty else { return true }
-        let connection = FlowConnection(host: host, client: client, mode: .action)
+        let connection = FlowConnection(host: host, client: client, mode: .action, lifetime: lifetime)
         await connection.start()
         defer { Task { await connection.stop() } }
         do {
@@ -142,6 +147,8 @@ public enum ActivityTokenClient {
                         return
                     case .state(.unpaired):
                         throw FlowError.unpaired
+                    case .state(.stopped):
+                        throw FlowError.closed
                     default:
                         continue
                     }

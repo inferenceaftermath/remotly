@@ -97,11 +97,32 @@ targets:
         SWIFT_EMIT_LOC_STRINGS: YES
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
 
+  RemotlyUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: RemotlyUITests
+    dependencies:
+      - target: Remotly
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.inferenceaftermath.remotly.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Remotly
+
 schemes:
-  # The app scheme deliberately has no `test:` action: the only tests live in the local package, and
-  # referencing package test targets from a scheme (`package: FlowKit/FlowKitTests`) is the one
-  # XcodeGen construct here we could not verify. It is confined to the FlowKitTests scheme below so
-  # the build scheme stays valid whatever XcodeGen says (see NOTES.md "Review pass").
+  RemotlyDemoUITests:
+    build:
+      targets:
+        Remotly: all
+        RemotlyUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - RemotlyUITests
+  # Keep app delivery independent of test destinations. Demo UI tests have their own scheme above;
+  # the optional package-test scheme below is separate because XcodeGen's package-target syntax
+  # has not been verified here (see NOTES.md "Review pass").
   Remotly:
     build:
       targets:

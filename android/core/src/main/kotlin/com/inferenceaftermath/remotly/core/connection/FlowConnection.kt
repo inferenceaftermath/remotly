@@ -22,6 +22,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import com.inferenceaftermath.remotly.core.pairing.FlowTls
+import com.inferenceaftermath.remotly.core.demo.DemoBridge
 import com.inferenceaftermath.remotly.core.protocol.ActivityRegister
 import com.inferenceaftermath.remotly.core.protocol.ActivityUnregister
 import com.inferenceaftermath.remotly.core.protocol.Approve
@@ -63,6 +64,7 @@ import com.inferenceaftermath.remotly.core.terminal.TerminalGrid
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.lang.ref.WeakReference
 
 /** Paired host as stored on the device. `url` is the `wss://host:port` origin from the QR. */
 data class HostConfig(
@@ -92,7 +94,12 @@ class FlowConnection(
     private val mode: String = MODE_FULL,
     private val scope: CoroutineScope,
     okHttp: OkHttpClient = FlowTls.client(host.fingerprint),
+    val isDemo: Boolean = false,
+    private val lifetime: ConnectionLifetime = ConnectionLifetime(),
 ) {
+    private val lifetimeKey = Any()
+    private val demo = if (isDemo) DemoBridge() else null
+    private var demoJob: Job? = null
     private val http = okHttp.newBuilder()
         .pingInterval(PING_INTERVAL_S, TimeUnit.SECONDS)
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -149,17 +156,22 @@ class FlowConnection(
 
     fun start() {
         synchronized(lock) {
-            if (!stopped) return
+            if (!stopped || !lifetime.isActive) return
             stopped = false
             backoffMs = INITIAL_BACKOFF_MS
             attempt = 0
+            val weak = WeakReference(this)
+            lifetime.onCancel(lifetimeKey) { weak.get()?.stop() }
         }
         connect()
     }
 
     fun stop() {
         synchronized(lock) {
+            lifetime.remove(lifetimeKey)
             stopped = true
+            demoJob?.cancel()
+            demoJob = null
             reconnectJob?.cancel()
             reconnectJob = null
             socket?.close(1000, "bye")
@@ -172,7 +184,7 @@ class FlowConnection(
     /** Skip the remaining backoff (network came back, app came to the foreground). */
     fun reconnectNow() {
         synchronized(lock) {
-            if (stopped || socket != null) return
+            if (stopped || socket != null || (isDemo && isConnected)) return
             reconnectJob?.cancel()
             reconnectJob = null
         }
@@ -182,17 +194,33 @@ class FlowConnection(
     private fun connect() {
         synchronized(lock) {
             if (stopped || socket != null) return
+            if (demo != null) {
+                handle(demo.welcome())
+                demoJob?.cancel()
+                demoJob = scope.launch {
+                    while (true) {
+                        delay(200)
+                        synchronized(lock) { if (!stopped) demo.tick().forEach(::handle) }
+                    }
+                }
+                return
+            }
             _state.value = ConnectionState.Connecting
-            socket = http.newWebSocket(Request.Builder().url(host.wsUrl).build(), listener)
+            lifetime.whileActive { socket = http.newWebSocket(Request.Builder().url(host.wsUrl).build(), listener) }
         }
     }
 
     private val listener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            webSocket.send(Codec.encode(Hello(host.token, client, mode)))
+            synchronized(lock) {
+                if (!stopped && socket === webSocket) lifetime.whileActive { webSocket.send(Codec.encode(Hello(host.token, client, mode))) }
+                else webSocket.cancel()
+            }
         }
 
-        override fun onMessage(webSocket: WebSocket, text: String) = handle(text)
+        override fun onMessage(webSocket: WebSocket, text: String) {
+            synchronized(lock) { if (!stopped && socket === webSocket) handle(text) }
+        }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
             webSocket.close(code, reason)
@@ -308,10 +336,17 @@ class FlowConnection(
 
     // ------------------------------------------------------------ outbound
 
-    private fun send(msg: ClientMessage): Boolean {
-        val ws = synchronized(lock) { socket } ?: return false
-        if (_state.value !is ConnectionState.Connected) return false
-        return ws.send(Codec.encode(msg))
+    private fun send(msg: ClientMessage): Boolean = synchronized(lock) {
+        if (stopped || !isConnected) return false
+        var sent = false
+        lifetime.whileActive {
+            if (demo != null) {
+                demo.receive(Codec.encode(msg)).forEach(::handle); sent = true
+            } else {
+                sent = socket?.send(Codec.encode(msg)) ?: false
+            }
+        }
+        sent
     }
 
     private suspend fun request(build: (String) -> ClientMessage): ServerMessage {

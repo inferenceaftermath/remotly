@@ -87,6 +87,7 @@ import kotlinx.coroutines.launch
 fun PanesScreen(session: Session, host: HostConfig, onOpenPane: (String) -> Unit, onSettings: () -> Unit) {
     val snapshot by session.snapshot.collectAsStateWithLifecycle()
     val notifyDone by session.notifyDone.collectAsStateWithLifecycle()
+    val demo by session.isDemo.collectAsStateWithLifecycle()
     val conn by session.connection.collectAsStateWithLifecycle()
     val connState by session.connState.collectAsStateWithLifecycle()
     val herdrUp by session.herdrUp.collectAsStateWithLifecycle()
@@ -97,6 +98,7 @@ fun PanesScreen(session: Session, host: HostConfig, onOpenPane: (String) -> Unit
     paneToClose?.let { p ->
         val title = sessionTitle(p)
         CloseTerminalDialog(
+            demo = demo,
             title = title,
             onDismiss = { paneToClose = null },
             onConfirm = {
@@ -119,6 +121,7 @@ fun PanesScreen(session: Session, host: HostConfig, onOpenPane: (String) -> Unit
     if (newTerminal) {
         val c = conn
         NewTerminalDialog(
+            demo = demo,
             enabled = c != null,
             onDismiss = { newTerminal = false },
             onCreate = { label, command -> c!!.createPane(label, command) },
@@ -138,7 +141,7 @@ fun PanesScreen(session: Session, host: HostConfig, onOpenPane: (String) -> Unit
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(host.hostName.ifEmpty { host.url.removePrefix("wss://") }, style = Type.listTitle, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            StatusPill(connWord, connColor)
+            StatusPill(if (demo) "Local" else connWord, if (demo) Tokens.idle else connColor)
             IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Tokens.fg2) }
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -378,6 +381,7 @@ private fun PaneRow(
 /** Name + command for a fresh terminal on the desktop; quick picks start the coding agents (DESIGN.md §4.10). */
 @Composable
 private fun NewTerminalDialog(
+    demo: Boolean,
     enabled: Boolean,
     onDismiss: () -> Unit,
     onCreate: suspend (label: String?, command: String?) -> String,
@@ -429,7 +433,7 @@ private fun NewTerminalDialog(
                         )
                     }
                 }
-                Text("Opens a new herdr tab on the desktop and runs the command once the shell is ready.", style = Type.small.copy(fontSize = 13.sp), color = Tokens.fg3)
+                Text(if (demo) "Demo mode: creates a local sample terminal. Commands are simulated, never executed." else "Opens a new herdr tab on the desktop and runs the command once the shell is ready.", style = Type.small.copy(fontSize = 13.sp), color = Tokens.fg3)
                 if (!enabled) Text("Not connected to the host.", color = Tokens.blocked, style = Type.small)
                 error?.let { Text(it, color = Tokens.blocked, style = Type.small) }
             }
@@ -445,7 +449,7 @@ private fun NewTerminalDialog(
 
 /** Confirmation before `pane.close`: the shell and anything running in it end on the desktop. */
 @Composable
-fun CloseTerminalDialog(title: String, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+fun CloseTerminalDialog(title: String, demo: Boolean = false, onDismiss: () -> Unit, onConfirm: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Tokens.panel,
@@ -453,7 +457,7 @@ fun CloseTerminalDialog(title: String, onDismiss: () -> Unit, onConfirm: () -> U
         textContentColor = Tokens.fg2,
         shape = RoundedCornerShape(16.dp),
         title = { Text("Close $title?", style = Type.navTitle) },
-        text = { Text("Ends the shell on the desktop and anything running in it.", style = Type.description) },
+        text = { Text(if (demo) "Removes this local sample session. Your real host is unchanged." else "Ends the shell on the desktop and anything running in it.", style = Type.description) },
         confirmButton = { TextButton(onClick = onConfirm) { Text("Close terminal", color = Tokens.blocked, fontWeight = FontWeight.SemiBold) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = Tokens.fg2) } },
     )

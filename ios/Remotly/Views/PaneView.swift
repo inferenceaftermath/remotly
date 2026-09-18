@@ -75,7 +75,7 @@ struct PaneView: View {
             Button("Close terminal", role: .destructive) { Task { await model.closePane(paneId) } }
             Button("Cancel", role: .cancel) {} // explicit: the iPad popover adds none of its own (Android shows Cancel)
         } message: {
-            Text("Ends the shell on the desktop and anything running in it.")
+            Text(model.isDemo ? "Removes this local sample session. Your real host is unchanged." : "Ends the shell on the desktop and anything running in it.")
         }
         .onChange(of: fitToDevice) { _, on in
             if !on { model.releaseFit() }
@@ -161,7 +161,7 @@ struct PaneView: View {
                 Label("Copy screen", systemImage: "doc.on.doc")
             }
             Toggle(isOn: $rawMode) { Label("Raw text mode", systemImage: "terminal") }
-            if pane?.hasAgent == true {
+            if pane?.hasAgent == true && !model.isDemo {
                 Toggle(isOn: notifyDone) { Label("Tell me when it's done", systemImage: "bell") }
             }
             Picker("Swiping up and down", selection: scrollMode) {
@@ -309,7 +309,7 @@ struct PaneView: View {
                     .frame(width: 24, height: 24)
                     .background(Theme.line, in: Circle())
             }
-            .disabled(model.host == nil || attachments.count >= 8)
+            .disabled(model.isDemo || model.host == nil || attachments.count >= 8)
             .padding(.bottom, 2)
             .accessibilityLabel("Attach a photo")
             TextField("", text: $draft, prompt: Text(placeholder).foregroundStyle(Theme.fg3), axis: .vertical)
@@ -365,6 +365,7 @@ struct PaneView: View {
 
     /// Straight to the bridge, so the send itself is instant; the chip shows progress and failures (tap to retry).
     private func upload(_ attachment: Attachment) {
+        guard !model.isDemo else { attachment.state = .failed("Photo uploads require a paired host"); return }
         guard let host = model.host else {
             attachment.state = .failed("Not paired")
             return

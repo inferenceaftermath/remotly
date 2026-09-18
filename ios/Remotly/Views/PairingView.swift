@@ -1,5 +1,6 @@
 // Pair with a bridge (shared/design/DESIGN.md §4.8): scan the QR from `remotly-bridge pair`, or type URL + code
 // (+ fingerprint for a self-signed certificate).
+import AVFoundation
 import FlowKit
 import SwiftUI
 import UIKit
@@ -9,6 +10,7 @@ import UIKit
 @MainActor
 struct PairingView: View {
     @Environment(AppModel.self) private var model
+    @State private var cameraAllowed = AVCaptureDevice.authorizationStatus(for: .video) == .authorized
     @State private var mode = Mode.scan
     @State private var urlText = ""
     @State private var codeText = ""
@@ -28,6 +30,10 @@ struct PairingView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                Button("Try demo") { model.enterDemo() }
+                    .buttonStyle(PrimaryButtonStyle()).disabled(isPairing).padding(.horizontal, 16).padding(.top, 14)
+                Text("Explore local sample sessions. Nothing is sent to a host.")
+                    .font(.system(size: 13)).foregroundStyle(Theme.fg2).padding(.horizontal, 16).padding(.top, 6)
                 SegmentedControl(selection: $mode, options: [(Mode.scan, "Scan QR"), (Mode.manual, "Enter code")])
                     .padding(.horizontal, 16)
                     .padding(.top, 14)
@@ -69,7 +75,21 @@ struct PairingView: View {
 
     private var scanner: some View {
         VStack(spacing: 14) {
-            QRScannerView { code in handleScan(code) }
+            Group {
+                if cameraAllowed { QRScannerView { code in handleScan(code) } }
+                else {
+                    VStack(spacing: 8) {
+                        Text("The camera is needed to scan the code.").font(.system(size: 15)).foregroundStyle(Theme.fg2)
+                        Button("Allow camera") {
+                            if AVCaptureDevice.authorizationStatus(for: .video) == .denied {
+                                if let settings = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(settings) }
+                            } else {
+                                Task { cameraAllowed = await AVCaptureDevice.requestAccess(for: .video) }
+                            }
+                        }
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.panel)
+                }
+            }
                 .aspectRatio(4 / 3, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 18))
                 .overlay(CornerBrackets().stroke(Theme.accent, style: StrokeStyle(lineWidth: 3, lineCap: .round)))
@@ -137,7 +157,7 @@ struct PairingView: View {
     // MARK: Actions
 
     private func handleScan(_ code: String) {
-        guard !isPairing, code != lastScanned else { return }
+        guard !model.isDemo, !isPairing, code != lastScanned else { return }
         lastScanned = code
         guard let payload = QRPayload(string: code) else {
             model.showNotice("Not a Remotly pairing code")

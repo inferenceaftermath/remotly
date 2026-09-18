@@ -349,3 +349,17 @@ Toasts: `approval.result · sent` · `copied` · `<title> closed` · `pairing wi
   "<Tool> · <command or path>" followed by " — <description>" when different (a question: the question and its numbered
   options); done title "<display agent> · finished its turn"; Live Activity start alert "<display agent> · Working".
   Action labels are the apps' own (§4.11).
+
+
+## 5. Local sample demo
+
+Pairing has a **Try demo** button above the scan/code controls; Settings offers the same entry for paired users.
+The entry says **Explore local sample sessions. Nothing is sent to a host.** It requires no permissions.
+Both platforms reuse the normal list, terminal, approval, choice and input controls for the same three samples.
+A persistent top strip says **Demo mode · Sample data**, **Local simulation · no host connected**, and **Exit demo**.
+Sheets repeat the label or explicitly describe the local sample action. All output is visibly marked as sample data.
+
+Photo attachment controls are disabled and notification controls omitted in sample sessions; Settings explains that
+notifications and photo uploads require a paired host. Creation and closing copy describes a local sample action.
+Exiting restores the original saved host or pairing screen. Entering again resets the samples. Full behavior and
+reviewer steps: `docs/DEMO.md`.

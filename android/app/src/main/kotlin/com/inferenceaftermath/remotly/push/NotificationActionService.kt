@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import com.inferenceaftermath.remotly.FlowApplication
 import com.inferenceaftermath.remotly.core.connection.ConnectionState
+import com.inferenceaftermath.remotly.core.connection.ConnectionLifetime
 import com.inferenceaftermath.remotly.core.connection.FlowConnection
 import com.inferenceaftermath.remotly.core.connection.FlowException
 import com.inferenceaftermath.remotly.core.protocol.ApprovalAction
@@ -42,10 +43,11 @@ class NotificationActionService : Service() {
             stopSelf(startId)
             return START_NOT_STICKY
         }
+        val lifetime = FlowApplication.of(this).session.realConnectionLifetime
         if (kind == Notifications.KIND_REPLY) {
             scope.launch {
-                val text = runCatching { reply(pane, typed ?: "") }.getOrElse { "Failed: ${it.message ?: it.javaClass.simpleName}" }
-                Notifications.showOutcome(this@NotificationActionService, pane, "", title, text, id = Notifications.doneId(pane), channel = Notifications.CHANNEL_DONE)
+                val text = runCatching { reply(pane, typed ?: "", lifetime) }.getOrElse { "Failed: ${it.message ?: it.javaClass.simpleName}" }
+                if (lifetime.isActive) Notifications.showOutcome(this@NotificationActionService, pane, "", title, text, id = Notifications.doneId(pane), channel = Notifications.CHANNEL_DONE)
                 stopSelf(startId)
             }
             return START_NOT_STICKY
@@ -57,23 +59,25 @@ class NotificationActionService : Service() {
             return START_NOT_STICKY
         }
         scope.launch {
-            val text = runCatching { approve(pane, promptId, action, typed) }.getOrElse { "Failed: ${it.message ?: it.javaClass.simpleName}" }
-            Notifications.showOutcome(this@NotificationActionService, pane, promptId, title, text)
+            val text = runCatching { approve(pane, promptId, action, typed, lifetime) }.getOrElse { "Failed: ${it.message ?: it.javaClass.simpleName}" }
+            if (lifetime.isActive) Notifications.showOutcome(this@NotificationActionService, pane, promptId, title, text)
             stopSelf(startId)
         }
         return START_NOT_STICKY
     }
 
     /** Connects in action mode and runs [block]; connection problems become user-facing lines. */
-    private suspend fun withConnection(block: suspend (FlowConnection) -> String): String {
+    private suspend fun withConnection(lifetime: ConnectionLifetime, block: suspend (FlowConnection) -> String): String {
         val app = FlowApplication.of(this)
+        if (!lifetime.isActive) return "Cancelled: app mode changed"
         val host = app.session.currentHost() ?: return "Not paired: open Remotly to pair with the host"
-        val conn = FlowConnection(host, app.session.clientInfo, FlowConnection.MODE_ACTION, scope)
+        val conn = FlowConnection(host, app.session.clientInfo, FlowConnection.MODE_ACTION, scope, lifetime = lifetime)
         try {
             conn.start()
             val state = withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
-                conn.state.first { it is ConnectionState.Connected || it is ConnectionState.Unpaired }
+                conn.state.first { it is ConnectionState.Connected || it is ConnectionState.Unpaired || !lifetime.isActive }
             } ?: return "Host unreachable (is Tailscale on?). Open Remotly to retry"
+            if (!lifetime.isActive) return "Cancelled: app mode changed"
             if (state is ConnectionState.Unpaired) return "This phone is no longer paired; open Remotly to pair again"
             return block(conn)
         } finally {
@@ -81,7 +85,7 @@ class NotificationActionService : Service() {
         }
     }
 
-    private suspend fun approve(pane: String, promptId: String, action: String, feedback: String?): String = withConnection { conn ->
+    private suspend fun approve(pane: String, promptId: String, action: String, feedback: String?, lifetime: ConnectionLifetime): String = withConnection(lifetime) { conn ->
         // Subscribe before sending so the result cannot slip past (no replay on the flow).
         val result = scope.async(start = CoroutineStart.UNDISPATCHED) { conn.approvals.first { it.prompt_id == promptId } }
         try {
@@ -94,10 +98,10 @@ class NotificationActionService : Service() {
         describe(action, r)
     }
 
-    private suspend fun reply(pane: String, text: String): String {
+    private suspend fun reply(pane: String, text: String, lifetime: ConnectionLifetime): String {
         if (text.isBlank()) return "Nothing to send"
         val notify = FlowApplication.of(this).session.notifyOnPrompt.value
-        return withConnection { conn ->
+        return withConnection(lifetime) { conn ->
             try {
                 conn.prompt(pane, text, notify)
             } catch (e: Exception) {

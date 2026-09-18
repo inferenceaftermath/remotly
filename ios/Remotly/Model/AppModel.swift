@@ -18,6 +18,57 @@ final class AppModel {
 
     // Host and connection
     private(set) var host: PairedHost?
+    private(set) var isDemo = false
+    private var modeEpoch = 0
+    private(set) var realConnectionLifetime = ConnectionLifetime()
+    static let demoHost = PairedHost(name: "Demo host", url: URL(string: "demo://local")!, fingerprint: nil, token: "", deviceId: "demo-device")
+    var displayHost: PairedHost? { isDemo ? Self.demoHost : host }
+
+    func enterDemo() { switchDemo(true) }
+    func exitDemo() { switchDemo(false) }
+
+    private func switchDemo(_ enabled: Bool) {
+        guard isDemo != enabled else { return }
+        realConnectionLifetime.cancel()
+        if !enabled { realConnectionLifetime = ConnectionLifetime() }
+        modeEpoch += 1
+        let old = connection
+        let queued = lifecycleQueue
+        lifecycleQueue = nil
+        eventTask?.cancel()
+        eventTask = nil
+        connection = nil
+        // Clear navigation before replacing the peer. Every asynchronous completion checks its peer.
+        viewingEpoch += 1
+        fitTask?.cancel()
+        noScrollbackHintTask?.cancel()
+        navigationPath = []
+        watchedPane = nil
+        snapshot = nil
+        hostInfo = nil
+        deviceInfo = nil
+        grid = TerminalGrid()
+        history = nil
+        historyHasMore = false
+        isLoadingHistory = false
+        noScrollbackHint = false
+        fitPhase = .none
+        paneAlt = [:]
+        demoScrollModes = [:]
+        approvalResults = [:]
+        approvalInFlight = nil
+        lastApprovalAttempt = [:]
+        notifyDone = []
+        notice = nil
+        lastError = nil
+        registeredPushToken = nil
+        pushRegistered = false
+        connectionState = .idle
+        isDemo = enabled
+        // Keep the keychain pairing and real Live Activities intact.
+        Task { await queued?.value; await old?.stop() }
+        if isForeground { connect() }
+    }
     private(set) var connectionState: ConnectionState = .idle
     private(set) var hostInfo: Welcome.HostInfo?
     private(set) var deviceInfo: Welcome.DeviceInfo?
@@ -61,6 +112,7 @@ final class AppModel {
     private var historyLines = 0
     /// Per pane, persisted in UserDefaults; panes not listed use `.auto`.
     private var scrollModes: [String: ScrollMode] = [:]
+    private var demoScrollModes: [String: ScrollMode] = [:]
     /// From frames: whether an alternate-screen program (Claude Code, vim, less) has the pane. Reset when a pane is opened.
     private(set) var paneAlt: [String: Bool] = [:]
     private static let scrollModesKey = "scrollModes"
@@ -147,21 +199,23 @@ final class AppModel {
         let previous = lifecycleQueue
         lifecycleQueue = Task {
             await previous?.value
+            guard self.connection === connection else { return }
             await operation(connection)
         }
     }
 
     func connect() {
-        guard let host else { return }
+        guard let host = displayHost else { return }
         if connection != nil {
             onConnection { await $0.resume() }
             return
         }
-        let conn = FlowConnection(host: host, client: AppInfo.clientInfo(deviceName: UIDevice.current.name), mode: .full)
+        let conn = FlowConnection(host: host, client: AppInfo.clientInfo(deviceName: UIDevice.current.name), mode: .full, demo: isDemo,
+                                  lifetime: isDemo ? ConnectionLifetime() : realConnectionLifetime)
         connection = conn
         eventTask = Task { [weak self] in
             for await event in conn.events {
-                guard let self else { return }
+                guard !Task.isCancelled, let self, self.connection === conn else { return }
                 self.handle(event)
             }
         }
@@ -242,7 +296,7 @@ final class AppModel {
         let ids = Set(snapshot.panes.map(\.id))
         notifyDone = notifyDone.filter(ids.contains)
         let live = snapshot.livePromptIds
-        Task { await FlowNotifications.removeStaleApprovals(livePromptIds: live) }
+        if !isDemo { Task { await FlowNotifications.removeStaleApprovals(livePromptIds: live) } }
         reconcileActivities()
     }
 
@@ -261,7 +315,8 @@ final class AppModel {
         reconcileActivities()
     }
 
-    private func report(_ error: Error) {
+    private func report(_ error: Error, from source: FlowConnection? = nil) {
+        if let source, connection !== source { return }
         if let flow = error as? FlowError, flow == .notConnected || flow == .closed { return }
         lastError = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
     }
@@ -269,11 +324,14 @@ final class AppModel {
     // MARK: Pairing
 
     func pair(with payload: QRPayload) async throws {
+        guard !isDemo else { throw FlowError.superseded }
+        let epoch = modeEpoch
         let client = PairingClient(origin: payload.origin, fingerprint: payload.fingerprint)
         let response = try await client.pair(code: payload.code, deviceName: UIDevice.current.name, appVersion: AppInfo.version)
         let paired = PairedHost(name: response.hostName.isEmpty ? payload.hostName : response.hostName,
                                 url: payload.origin, fingerprint: payload.fingerprint,
                                 token: response.token, deviceId: response.deviceId)
+        guard !isDemo, modeEpoch == epoch else { throw FlowError.superseded }
         try hostStore.save(paired)
         host = paired
         lastError = nil
@@ -281,6 +339,7 @@ final class AppModel {
     }
 
     func forgetHost() {
+        if isDemo { exitDemo(); return }
         // The old host's cleanup runs after whatever was queued for its connection, but off the queue: the next
         // pairing's `start()` must not wait behind an `unregisterPush` that a dead socket answers only by timeout.
         let queued = lifecycleQueue
@@ -317,6 +376,7 @@ final class AppModel {
     // MARK: Viewing a pane
 
     func openPane(_ id: String) {
+        guard !isDemo || snapshot?.panes.contains(where: { $0.id == id }) == true else { return }
         if navigationPath != [id] { navigationPath = [id] }
     }
 
@@ -333,13 +393,13 @@ final class AppModel {
             paneAlt[pane] = nil // the first frames say whether a full-screen program has it now
         }
         watchedPane = pane
-        Task { await FlowNotifications.removeDelivered(forPane: pane) } // the user is looking at it now
+        if !isDemo { Task { await FlowNotifications.removeDelivered(forPane: pane) } } // the user is looking at it now
         guard let connection else { return }
         Task {
             await connection.setViewing(pane, epoch: epoch)
             // `stopViewing()` (or another pane) may have come while that send was out; a `watch` now would make the
             // connection remember, and restore after the next reconnect, a pane nobody is looking at.
-            guard self.viewingEpoch == epoch, self.watchedPane == pane else { return }
+            guard self.connection === connection, self.viewingEpoch == epoch, self.watchedPane == pane else { return }
             await self.watchRetryingUnknownPane(pane, intent: intent, connection: connection)
         }
     }
@@ -348,7 +408,7 @@ final class AppModel {
     /// now waits for it too); retry `unknown_pane` a few times while this pane is still the one being viewed.
     private func watchRetryingUnknownPane(_ pane: String, intent: Int, connection: FlowConnection) async {
         for attempt in 0..<5 {
-            guard watchedPane == pane else { return }
+            guard self.connection === connection, watchedPane == pane else { return }
             do {
                 _ = try await connection.watch(pane: pane, zoom: zoomWhileViewing, intent: intent)
                 return
@@ -359,10 +419,10 @@ final class AppModel {
                     if watchedPane != pane { return }
                     continue
                 }
-                report(error)
+                report(error, from: connection)
                 return
             } catch {
-                report(error)
+                report(error, from: connection)
                 return
             }
         }
@@ -386,7 +446,7 @@ final class AppModel {
             // A `startViewing` that came while that send was out (the user reopened this or another pane) has the say.
             // Otherwise drop whatever pane the connection watches — which can differ from `pane` if this pane's own
             // `watch` was skipped — so a reconnect does not restore a pane the user has left.
-            guard self.viewingEpoch == epoch else { return }
+            guard self.connection === connection, self.viewingEpoch == epoch else { return }
             await connection.stopWatching(intent: intent)
         }
     }
@@ -403,19 +463,19 @@ final class AppModel {
         let intent = fitIntent
         fitTask = Task {
             try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled, self.watchedPane == pane else { return }
+            guard !Task.isCancelled, self.connection === connection, self.watchedPane == pane else { return }
             self.fitPhase = .sent
             do {
                 _ = try await connection.fit(pane: pane, cols: cols, rows: rows, intent: intent)
                 // Cancelled while waiting (a newer fit, or fit switched off): the reply is stale, say nothing.
-                guard !Task.isCancelled, self.watchedPane == pane else { return }
+                guard !Task.isCancelled, self.connection === connection, self.watchedPane == pane else { return }
                 self.fitPhase = .replied
                 // The pill clears on the next frame; a program that does not redraw on the resize would leave it
                 // stuck, so give up waiting after 3 s (same on Android).
                 try? await Task.sleep(for: .seconds(3))
                 if !Task.isCancelled, self.fitPhase == .replied { self.fitPhase = .none }
             } catch {
-                if self.watchedPane == pane { self.fitPhase = .none }
+                if self.connection === connection, self.watchedPane == pane { self.fitPhase = .none }
             }
         }
     }
@@ -435,7 +495,7 @@ final class AppModel {
     private func perform(_ operation: @escaping @Sendable (FlowConnection) async throws -> Void) {
         guard let connection else { lastError = FlowError.notConnected.errorDescription; return }
         Task {
-            do { try await operation(connection) } catch { self.report(error) }
+            do { try await operation(connection) } catch { if self.connection === connection { self.report(error, from: connection) } }
         }
     }
 
@@ -447,7 +507,7 @@ final class AppModel {
     /// With "Tell me when it's done" on, a prompt to an agent pane arms the finished alert in the same request.
     func sendPrompt(_ text: String) {
         guard let pane = watchedPane, !text.isEmpty else { return }
-        let notify = FlowSettings.notifyOnPrompt && (self.pane(pane)?.hasAgent ?? false)
+        let notify = !isDemo && FlowSettings.notifyOnPrompt && (self.pane(pane)?.hasAgent ?? false)
         if notify { notifyDone.insert(pane) }
         perform { try await $0.sendPrompt(pane: pane, text: text, notify: notify) }
     }
@@ -469,10 +529,10 @@ final class AppModel {
             // `zoomWhileViewing` is the newest intent (set synchronously above by the latest toggle). Rapid on↔off
             // toggles spawn independent, unordered tasks; a stale one whose `on` no longer matches must not run last
             // and re-watch with the wrong flag, which `watch` would then remember and restore after a reconnect.
-            guard self.watchedPane == pane, self.zoomWhileViewing == on else { return }
+            guard self.connection === connection, self.watchedPane == pane, self.zoomWhileViewing == on else { return }
             do { _ = try await connection.watch(pane: pane, zoom: on, intent: intent) }
             catch FlowError.superseded { } // a newer watch/stop replaced it; nothing to report
-            catch { self.report(error) }
+            catch { self.report(error, from: connection) }
         }
     }
 
@@ -487,8 +547,9 @@ final class AppModel {
             do {
                 try await connection.approve(pane: pane, promptId: promptId, action: action, feedback: feedback, force: force)
             } catch {
+                guard self.connection === connection else { return }
                 if self.approvalInFlight == promptId { self.approvalInFlight = nil }
-                self.report(error)
+                self.report(error, from: connection)
             }
         }
     }
@@ -503,8 +564,9 @@ final class AppModel {
             do {
                 try await connection.choose(pane: pane, promptId: promptId, option: option, label: label)
             } catch {
+                guard self.connection === connection else { return }
                 if self.approvalInFlight == promptId { self.approvalInFlight = nil }
-                self.report(error)
+                self.report(error, from: connection)
             }
         }
     }
@@ -521,12 +583,14 @@ final class AppModel {
 
     /// Arm or disarm the finished alert for this phone on a pane; the bridge's answer wins.
     func setNotifyDone(_ pane: String, _ done: Bool) async {
+        guard !isDemo else { showNotice("Notifications require a paired host"); return }
         guard let connection else { lastError = FlowError.notConnected.errorDescription; return }
         do {
             let armed = try await connection.notifyDone(pane: pane, done: done)
+            guard self.connection === connection else { return }
             if armed { notifyDone.insert(pane) } else { notifyDone.remove(pane) }
         } catch {
-            report(error)
+            report(error, from: connection)
         }
     }
 
@@ -543,10 +607,10 @@ final class AppModel {
         isLoadingHistory = true
         let count = min(max(lines, 1), 999)
         Task {
-            defer { self.isLoadingHistory = false }
+            defer { if self.connection === connection { self.isLoadingHistory = false } }
             do {
                 let message = try await connection.history(pane: pane, lines: count)
-                guard self.watchedPane == pane else { return }
+                guard self.connection === connection, self.watchedPane == pane else { return }
                 if message.scrollback == 0 {
                     // herdr holds nothing above the screen: `recent` is the live view again. Stay live and say so
                     // (programs that draw their own screen scroll with the wheel instead).
@@ -559,7 +623,7 @@ final class AppModel {
                 self.historyHasMore = message.hasMore && count < 999
                 self.historyLines = count
             } catch {
-                self.report(error)
+                self.report(error, from: connection)
             }
         }
     }
@@ -597,10 +661,11 @@ final class AppModel {
         }
         do {
             let pane = try await connection.createPane(label: label, command: command)
+            guard self.connection === connection else { return nil }
             navigationPath = [pane]
             return pane
         } catch {
-            report(error)
+            report(error, from: connection)
             return nil
         }
     }
@@ -616,16 +681,18 @@ final class AppModel {
         do {
             try await connection.closePane(id)
         } catch let error as FlowError {
+            guard self.connection === connection else { return }
             // Already gone (exit typed, or closed from elsewhere a moment ago): nothing to report.
             if case .server(let code, _) = error, code == .unknownPane { /* closed all the same */ } else {
                 // The user asked for this: a connection lost between the confirmation and the request is said, not
                 // swallowed as `report` does for background work (Android toasts the same failure).
-                if error == .notConnected || error == .closed { lastError = error.errorDescription } else { report(error) }
+                if error == .notConnected || error == .closed { lastError = error.errorDescription } else { report(error, from: connection) }
                 return
             }
         } catch {
-            return report(error)
+            return report(error, from: connection)
         }
+        guard self.connection === connection else { return }
         if navigationPath.contains(id) { navigationPath = [] }
         showNotice(closedNotice(title: title))
     }
@@ -644,7 +711,7 @@ final class AppModel {
     // MARK: Scroll mode (swipe → phone scrollback, or forwarded to the program)
 
     /// The user's choice for the pane (what the menu shows).
-    func scrollMode(for pane: String) -> ScrollMode { scrollModes[pane] ?? .auto }
+    func scrollMode(for pane: String) -> ScrollMode { (isDemo ? demoScrollModes[pane] : scrollModes[pane]) ?? .auto }
 
     /// What applies right now: `.auto` is wheel while an alternate-screen program has the pane, scrollback otherwise.
     func effectiveScrollMode(for pane: String) -> ScrollMode {
@@ -654,8 +721,11 @@ final class AppModel {
     }
 
     func setScrollMode(_ mode: ScrollMode, for pane: String) {
-        scrollModes[pane] = mode
-        UserDefaults.standard.set(scrollModes.mapValues(\.rawValue), forKey: Self.scrollModesKey)
+        if isDemo { demoScrollModes[pane] = mode }
+        else {
+            scrollModes[pane] = mode
+            UserDefaults.standard.set(scrollModes.mapValues(\.rawValue), forKey: Self.scrollModesKey)
+        }
         if effectiveScrollMode(for: pane) != .scrollback, watchedPane == pane { history = nil }
     }
 
@@ -675,22 +745,26 @@ final class AppModel {
     }
 
     func registerPushIfNeeded() {
+        guard !isDemo else { return }
         guard let connection, connectionState == .connected, let token = pushTokenHex, registeredPushToken != token else { return }
         registeredPushToken = token
         let env = PushEnvironmentDetector.current
         Task {
             do {
                 try await connection.registerPush(token: token, env: env)
+                guard self.connection === connection else { return }
                 self.pushRegistered = true
                 self.syncActivityTokens()
             } catch {
+                guard self.connection === connection else { return }
                 self.registeredPushToken = nil
-                self.report(error)
+                self.report(error, from: connection)
             }
         }
     }
 
     func requestNotifications() async -> Bool {
+        guard !isDemo else { return false }
         let granted = await FlowNotifications.requestAuthorization(requireUnlock: FlowSettings.requireUnlock)
         if granted { UIApplication.shared.registerForRemoteNotifications() }
         return granted
@@ -700,6 +774,7 @@ final class AppModel {
 
     /// Collects the push-to-start token (iOS 17.2+) and every activity's update token; idempotent, off while the setting is off.
     func startObservingActivities() {
+        guard !isDemo else { return }
         guard activityStartTokenTask == nil, FlowSettings.liveActivities else { return }
         for activity in Activity<FlowActivityAttributes>.activities { observe(activity) }
         activityStartTokenTask = Task { @MainActor [weak self] in
@@ -739,6 +814,7 @@ final class AppModel {
     /// (the bridge requires that first), or, when the app was woken in the background by a push-to-start activity and
     /// has no connection, over a short action connection before iOS suspends it again.
     private func syncActivityTokens() {
+        guard !isDemo else { return }
         guard FlowSettings.liveActivities else { return }
         var pending: [(pane: String?, token: String)] = []
         if let token = pushToStartToken, !syncedActivityTokens.contains("start:\(token)") { pending.append((nil, token)) }
@@ -753,10 +829,11 @@ final class AppModel {
         } else if !isForeground, let host {
             syncedActivityTokens.formUnion(keys)
             let client = AppInfo.clientInfo(deviceName: UIDevice.current.name)
+            let lifetime = realConnectionLifetime
             Task {
                 let background = UIApplication.shared.beginBackgroundTask(withName: "flow.activity-token", expirationHandler: nil)
-                let ok = await ActivityTokenClient.register(pending, host: host, client: client)
-                if !ok { self.syncedActivityTokens.subtract(keys) } // the next connection retries
+                let ok = await ActivityTokenClient.register(pending, host: host, client: client, lifetime: lifetime)
+                if !ok, self.realConnectionLifetime === lifetime { self.syncedActivityTokens.subtract(keys) } // the next connection retries
                 UIApplication.shared.endBackgroundTask(background)
             }
         }
@@ -767,6 +844,7 @@ final class AppModel {
     /// (or gone) end now, and a pane keeps only the activity the bridge holds the token for. Covers a bridge that lost
     /// the token (restart before the app could hand it over) and duplicate starts.
     private func reconcileActivities() {
+        guard !isDemo else { return }
         guard let snapshot else { return }
         let statuses = Dictionary(uniqueKeysWithValues: snapshot.panes.map { ($0.id, $0.agentStatus) })
         var keep: [String: Activity<FlowActivityAttributes>] = [:]
@@ -791,6 +869,7 @@ final class AppModel {
 
     /// Settings toggle. Off: the bridge stops pushing (`activity.unregister` without a pane) and current activities end at once.
     func setLiveActivities(_ on: Bool) {
+        guard !isDemo else { return }
         if on {
             syncedActivityTokens = []
             startObservingActivities()

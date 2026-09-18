@@ -10,6 +10,10 @@ The Remotly apps for iPhone and Android are in internal testing (TestFlight and 
 invite on [remotly.dev](https://remotly.dev). You can also build them from source with your own Apple developer team and
 Firebase project: `ios/README.md`, `android/README.md`, and `docs/DELIVERY.md` for a delivery lane of your own.
 
+To explore before setting up a host, tap **Try demo** on the pairing screen. Local sample sessions demonstrate the
+terminal and approval controls without a login or network connection to a bridge; **Exit demo** returns to pairing.
+See `docs/DEMO.md` for a walkthrough.
+
 ## 2. Push credentials — none needed
 
 Notifications go through the app owner's push relay (`relay/README.md`): your bridge posts each notice to
