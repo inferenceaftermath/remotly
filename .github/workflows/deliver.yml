@@ -62,7 +62,7 @@ jobs:
     steps:
       - name: Mask the runner's home directory in the public log
         run: echo "::add-mask::$HOME"
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - id: plan
@@ -83,7 +83,7 @@ jobs:
     steps:
       - name: Mask the runner's home directory in the public log
         run: echo "::add-mask::$HOME"
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: tsc + unit tests
         working-directory: bridge
         run: |
@@ -103,7 +103,7 @@ jobs:
     steps:
       - name: Mask the runner's home directory in the public log
         run: echo "::add-mask::$HOME"
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: guard
         name: Still main's tip?
         env:
@@ -147,7 +147,7 @@ jobs:
     steps:
       - name: Mask the runner's home directory in the public log
         run: echo "::add-mask::$HOME"
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: guard
         name: Still main's tip?
         env:
@@ -192,7 +192,7 @@ jobs:
     steps:
       - name: Mask the runner's home directory in the public log
         run: echo "::add-mask::$HOME"
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: guard
         name: Still main's tip?
         env:
