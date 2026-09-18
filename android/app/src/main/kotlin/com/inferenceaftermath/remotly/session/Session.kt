@@ -16,7 +16,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -26,6 +25,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import com.inferenceaftermath.remotly.core.connection.ConnectionState
+import com.inferenceaftermath.remotly.core.connection.ConnectionLifetime
 import com.inferenceaftermath.remotly.core.connection.FlowConnection
 import com.inferenceaftermath.remotly.core.connection.UploadClient
 import com.inferenceaftermath.remotly.core.connection.HostConfig
@@ -56,6 +56,34 @@ class Session(private val app: Application, val store: HostStore) {
     val hostState: StateFlow<HostState> = store.host
         .map { if (it == null) HostState.None else HostState.Paired(it) }
         .stateIn(scope, SharingStarted.Eagerly, HostState.Loading)
+
+    private val _isDemo = MutableStateFlow(false)
+    val isDemo: StateFlow<Boolean> = _isDemo
+    val demoHost = HostConfig("demo://local", "", hostName = "Demo host", deviceId = "demo-device")
+    @Volatile private var modeEpoch = 0
+    @Volatile var realConnectionLifetime = ConnectionLifetime()
+        private set
+
+    @Synchronized
+    fun enterDemo() = switchDemo(true)
+
+    @Synchronized
+    fun exitDemo() = switchDemo(false)
+
+    private fun switchDemo(enabled: Boolean) {
+        if (_isDemo.value == enabled) return
+        realConnectionLifetime.cancel()
+        if (!enabled) realConnectionLifetime = ConnectionLifetime()
+        modeEpoch++
+        _connection.value?.stop()
+        _connection.value = null
+        requestedPane.value = null
+        notice.value = null
+        _notifyDone.value = emptySet()
+        demoScrollModes.value = emptyMap()
+        _isDemo.value = enabled
+        syncConnection()
+    }
 
     private val _connection = MutableStateFlow<FlowConnection?>(null)
     val connection: StateFlow<FlowConnection?> = _connection
@@ -103,10 +131,11 @@ class Session(private val app: Application, val store: HostStore) {
      * wheel steps while an alternate-screen program has the pane and scrolls the phone's own history otherwise;
      * the other modes fix one behaviour. Panes not in the map use AUTO.
      */
-    val scrollModes: StateFlow<Map<String, ScrollMode>> = store.scrollModes
+    private val demoScrollModes = MutableStateFlow<Map<String, String>>(emptyMap())
+    val scrollModes: StateFlow<Map<String, ScrollMode>> = combine(store.scrollModes, demoScrollModes, isDemo) { real, demo, active -> if (active) demo else real }
         .map { m -> m.mapNotNull { (pane, wire) -> ScrollMode.entries.firstOrNull { it.wire == wire }?.let { pane to it } }.toMap() }
         .stateIn(scope, SharingStarted.Eagerly, emptyMap())
-    fun setScrollMode(pane: String, mode: ScrollMode) { scope.launch { store.setScrollMode(pane, mode.wire) } }
+    fun setScrollMode(pane: String, mode: ScrollMode) { if (isDemo.value) demoScrollModes.update { it + (pane to mode.wire) } else scope.launch { store.setScrollMode(pane, mode.wire) } }
 
     private var active = false
     private val network = app.getSystemService(ConnectivityManager::class.java)
@@ -119,22 +148,24 @@ class Session(private val app: Application, val store: HostStore) {
     init {
         scope.launch { hostState.collect { syncConnection() } }
         scope.launch {
-            connState.map { it is ConnectionState.Connected }.distinctUntilChanged().collect { connected ->
-                if (connected) _connection.value?.let { PushRegistrar.registerCurrentToken(app, this@Session) }
+            _connection.flatMapLatest { c -> c?.state?.map { c to it } ?: emptyFlow() }.collect { (c, state) ->
+                if (c === _connection.value && state is ConnectionState.Connected) {
+                    _notifyDone.value = state.welcome.notify_done.toSet()
+                    if (!c.isDemo) PushRegistrar.registerCurrentToken(app, this@Session)
+                }
             }
         }
         // Remove delivered approval notifications whose prompt is no longer live; forget arms of panes that are gone.
         scope.launch {
             combine(snapshot, connState) { s, c -> if (c is ConnectionState.Connected && s != null) s else null }
                 .collect { s ->
-                    if (s != null) {
+                    if (s != null && !isDemo.value && s === _connection.value?.snapshot?.value) {
                         Notifications.cancelStale(app, s.panes.mapNotNull { it.prompt_id }.toSet())
                         Notifications.reconcileStatus(app, s.panes.associate { it.id to it.agent_status })
                         _notifyDone.update { armed -> armed.filterTo(HashSet()) { s.pane(it) != null } }
                     }
                 }
         }
-        scope.launch { connState.collect { if (it is ConnectionState.Connected) _notifyDone.value = it.welcome.notify_done.toSet() } }
         scope.launch {
             _connection.flatMapLatest { it?.notifyState ?: emptyFlow() }.collect { ns -> _notifyDone.update { if (ns.done) it + ns.pane else it - ns.pane } }
         }
@@ -154,7 +185,7 @@ class Session(private val app: Application, val store: HostStore) {
 
     @Synchronized
     private fun syncConnection() {
-        val host = (hostState.value as? HostState.Paired)?.host
+        val host = if (isDemo.value) demoHost else (hostState.value as? HostState.Paired)?.host
         val current = _connection.value
         if (host == null || !active) {
             current?.stop()
@@ -163,7 +194,8 @@ class Session(private val app: Application, val store: HostStore) {
         }
         if (current == null || current.host != host) {
             current?.stop()
-            _connection.value = FlowConnection(host, clientInfo, FlowConnection.MODE_FULL, scope).also { it.start() }
+            _connection.value = FlowConnection(host, clientInfo, FlowConnection.MODE_FULL, scope, isDemo = isDemo.value,
+                lifetime = if (isDemo.value) ConnectionLifetime() else realConnectionLifetime).also { it.start() }
         } else if (current.state.value !is ConnectionState.Unpaired) {
             current.start()
         }
@@ -172,13 +204,17 @@ class Session(private val app: Application, val store: HostStore) {
     // ------------------------------------------------------------ pairing
 
     suspend fun pair(payload: QrPayload): HostConfig {
+        check(!isDemo.value) { "Exit demo before pairing" }
+        val epoch = modeEpoch
         val result = PairingClient().pair(payload.url, payload.code, payload.fingerprint, PairDevice(clientInfo.device_name, "android", clientInfo.app_version))
         val host = HostConfig(payload.url, result.token, payload.fingerprint, result.host_name.ifEmpty { payload.hostName ?: payload.url }, result.device_id)
+        check(!isDemo.value && epoch == modeEpoch) { "Pairing cancelled" }
         store.save(host)
         return host
     }
 
     suspend fun unpair() {
+        if (isDemo.value) { exitDemo(); return }
         _connection.value?.let { c ->
             if (c.isConnected) runCatching { c.pushUnregister() }
             c.stop()
@@ -191,7 +227,7 @@ class Session(private val app: Application, val store: HostStore) {
     // ------------------------------------------------------------ panes
 
     fun requestPane(pane: String) {
-        requestedPane.value = pane
+        if (!isDemo.value) requestedPane.value = pane
     }
 
     fun consumeRequestedPane(): String? = requestedPane.value.also { requestedPane.value = null }
@@ -233,6 +269,7 @@ class Session(private val app: Application, val store: HostStore) {
 
     /** Ongoing "working" notifications: tell the bridge at once so `status` pushes start or stop. */
     fun setLiveStatus(on: Boolean) {
+        if (isDemo.value) return
         scope.launch {
             store.setLiveStatus(on)
             _connection.value?.takeIf { it.isConnected }?.let { runCatching { if (on) it.activityRegister() else it.activityUnregister() } }
@@ -244,20 +281,23 @@ class Session(private val app: Application, val store: HostStore) {
 
     /** Arm or disarm the finished alert for this phone on a pane. Throws when not connected or refused. */
     suspend fun setNotifyDone(pane: String, done: Boolean) {
+        check(!isDemo.value) { "Notifications require a paired host" }
         val c = _connection.value?.takeIf { it.isConnected } ?: throw IllegalStateException("Not connected to the host")
         val armed = c.notifyDone(pane, done)
+        if (c !== _connection.value) return
         _notifyDone.update { if (armed) it + pane else it - pane }
     }
 
     /** Send a prompt; with "tell me when it's done" on, an agent pane is armed in the same request. */
     suspend fun prompt(c: FlowConnection, pane: String, text: String) {
-        val notify = notifyOnPrompt.value && snapshot.value?.pane(pane)?.hasAgent == true
+        val notify = !c.isDemo && notifyOnPrompt.value && snapshot.value?.pane(pane)?.hasAgent == true
         c.prompt(pane, text, notify)
-        if (notify) _notifyDone.update { it + pane }
+        if (notify && c === _connection.value) _notifyDone.update { it + pane }
     }
 
     /** Store a photo on the host (`POST /upload`); returns its absolute path there. */
     suspend fun upload(jpeg: ByteArray): String {
+        check(!isDemo.value) { "Photo uploads require a paired host" }
         val host = (hostState.value as? HostState.Paired)?.host ?: throw IllegalStateException("Not paired")
         return UploadClient(host).upload(jpeg).path
     }
@@ -272,7 +312,7 @@ class Session(private val app: Application, val store: HostStore) {
     fun onPushToken(token: String) {
         scope.launch {
             store.setPushToken(token)
-            _connection.value?.takeIf { it.isConnected }?.let { c ->
+            _connection.value?.takeIf { it.isConnected && !it.isDemo }?.let { c ->
                 runCatching { c.pushRegister("android", token) }.onSuccess {
                     if (liveStatus.value) runCatching { c.activityRegister() }
                 }
@@ -280,7 +320,11 @@ class Session(private val app: Application, val store: HostStore) {
         }
     }
 
-    suspend fun currentHost(): HostConfig? = store.host.first()
+    suspend fun currentHost(): HostConfig? {
+        if (isDemo.value) return null
+        val host = store.host.first()
+        return if (isDemo.value) null else host
+    }
 
     companion object {
         fun appVersion(app: Application): String = try {

@@ -92,6 +92,7 @@ fun PaneScreen(session: Session, paneId: String, onBack: () -> Unit) {
     val zoomOnDesktop by session.zoomOnDesktop.collectAsStateWithLifecycle()
     val scrollModes by session.scrollModes.collectAsStateWithLifecycle()
     val paneAlt by session.paneAlt.collectAsStateWithLifecycle()
+    val demo by session.isDemo.collectAsStateWithLifecycle()
     val notifyDone by session.notifyDone.collectAsStateWithLifecycle()
     /** The user's choice for this pane (shown in the menu) and what it resolves to right now. */
     val scrollMode = scrollModes[paneId] ?: ScrollMode.AUTO
@@ -139,7 +140,7 @@ fun PaneScreen(session: Session, paneId: String, onBack: () -> Unit) {
     }
 
     // The user is looking at this pane: its approval / finished notifications are read.
-    LaunchedEffect(paneId) { Notifications.cancelForPane(context, paneId) }
+    LaunchedEffect(paneId) { if (!demo) Notifications.cancelForPane(context, paneId) }
 
     // watch + viewing follow the connection object; FlowConnection re-sends both after every reconnect.
     DisposableEffect(conn, paneId) {
@@ -180,11 +181,12 @@ fun PaneScreen(session: Session, paneId: String, onBack: () -> Unit) {
             approvalBusy = false
         }
     }
-    LaunchedEffect(paneId) { session.store.setLastPane(paneId) }
+    LaunchedEffect(paneId) { if (!demo) session.store.setLastPane(paneId) }
     // Title as last seen, for the "closed" notice once the pane is gone from the snapshot.
     var lastTitle by remember(paneId) { mutableStateOf("") }
     if (confirmClose) {
         CloseTerminalDialog(
+            demo = demo,
             title = lastTitle.ifEmpty { paneId },
             onDismiss = { confirmClose = false },
             onConfirm = {
@@ -353,7 +355,7 @@ fun PaneScreen(session: Session, paneId: String, onBack: () -> Unit) {
                             }
                         }
                         MenuItem("Raw text mode", checked = rawMode) { rawMode = !rawMode; menuOpen = false }
-                        if (pane?.hasAgent == true) {
+                        if (pane?.hasAgent == true && !demo) {
                             val armed = paneId in notifyDone
                             MenuItem("Tell me when it's done", checked = armed) {
                                 menuOpen = false
@@ -447,7 +449,7 @@ fun PaneScreen(session: Session, paneId: String, onBack: () -> Unit) {
                 }
             }
             KeyRow(ctrl, onCtrl = { ctrl = it }) { keys -> run { it.keys(paneId, keys) } }
-            Composer(rawMode, ctrl = ctrl, upload = { jpeg -> session.upload(jpeg) }) { text, raw ->
+            Composer(rawMode, ctrl = ctrl, upload = if (demo) null else { jpeg -> session.upload(jpeg) }) { text, raw ->
                 when {
                     ctrl && text.codePointCount(0, text.length) == 1 -> {
                         ctrl = false

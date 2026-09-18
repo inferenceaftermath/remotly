@@ -13,7 +13,8 @@ let package = Package(
     targets: [
         .target(
             name: "FlowKit",
-            path: "Sources/FlowKit"
+            path: "Sources/FlowKit",
+            resources: [.process("Resources")]
         ),
         .testTarget(
             name: "FlowKitTests",

@@ -1,0 +1,114 @@
+{
+  "snapshot": {
+    "t": "snapshot",
+    "workspaces": [
+      {
+        "id": "demo-workspace",
+        "name": "Sample project"
+      }
+    ],
+    "tabs": [
+      {
+        "id": "demo-tab",
+        "workspace_id": "demo-workspace",
+        "name": "Demo sessions"
+      }
+    ],
+    "panes": [
+      {
+        "id": "demo-review",
+        "title": "Review a change",
+        "agent": "claude",
+        "display_agent": "claude",
+        "agent_status": "blocked",
+        "prompt_id": "demo-review@1",
+        "approval": {
+          "tool": "Bash",
+          "command": "npm test",
+          "description": "Run the sample project tests",
+          "question": "",
+          "options": [
+            "Approve",
+            "Approve for session",
+            "Deny"
+          ],
+          "kind": "permission",
+          "selected": 1
+        },
+        "tab_id": "demo-tab",
+        "workspace_id": "demo-workspace",
+        "cwd": "/sample/project"
+      },
+      {
+        "id": "demo-choice",
+        "title": "Choose an approach",
+        "agent": "claude",
+        "display_agent": "claude",
+        "agent_status": "blocked",
+        "prompt_id": "demo-choice@1",
+        "approval": {
+          "description": "Which example should we build?",
+          "question": "Which example should we build?",
+          "options": [
+            "A command-line tool",
+            "A small web app",
+            "A test suite"
+          ],
+          "selected": 1,
+          "kind": "choice"
+        },
+        "tab_id": "demo-tab",
+        "workspace_id": "demo-workspace",
+        "cwd": "/sample/project"
+      },
+      {
+        "id": "demo-shell",
+        "title": "Sample terminal",
+        "agent_status": "idle",
+        "tab_id": "demo-tab",
+        "workspace_id": "demo-workspace",
+        "cwd": "/sample/project"
+      }
+    ],
+    "focused_pane_id": "demo-review"
+  },
+  "lines": {
+    "demo-review": [
+      "REMOTLY DEMO - SAMPLE DATA",
+      "",
+      "> Add tests for the greeting function.",
+      "",
+      "Sample agent: The change is ready.",
+      "May I run npm test?",
+      "",
+      "Use Approve or Deny below.",
+      "No command will run on a computer."
+    ],
+    "demo-choice": [
+      "REMOTLY DEMO - SAMPLE DATA",
+      "",
+      "> Help me start a small project.",
+      "",
+      "Which example should we build?",
+      "1. A command-line tool",
+      "2. A small web app",
+      "3. A test suite",
+      "",
+      "Choose an answer below."
+    ],
+    "demo-shell": [
+      "REMOTLY DEMO - SAMPLE DATA",
+      "",
+      "$ npm test",
+      "",
+      "PASS greeting returns a message",
+      "PASS empty names use a default",
+      "PASS whitespace is trimmed",
+      "",
+      "Tests: 3 passed, 3 total",
+      "",
+      "Try sending a prompt or raw input.",
+      "Responses here are simulated."
+    ]
+  }
+}

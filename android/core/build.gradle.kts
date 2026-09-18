@@ -8,6 +8,8 @@ kotlin {
     jvmToolchain(17)
 }
 
+sourceSets.main { resources.srcDir("../../shared/demo") }
+
 dependencies {
     api(libs.kotlinx.serialization.json)
     api(libs.kotlinx.coroutines.core)
@@ -16,6 +18,7 @@ dependencies {
     testImplementation(kotlin("test"))
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation("com.squareup.okhttp3:mockwebserver:${libs.versions.okhttp.get()}")
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 

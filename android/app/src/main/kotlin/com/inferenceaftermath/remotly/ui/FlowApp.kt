@@ -7,7 +7,11 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.key
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -25,34 +29,56 @@ import com.inferenceaftermath.remotly.session.Session
 @Composable
 fun FlowApp(session: Session) {
     val hostState by session.hostState.collectAsStateWithLifecycle()
-    var paneId by rememberSaveable { mutableStateOf<String?>(null) }
-    var showSettings by rememberSaveable { mutableStateOf(false) }
-    val requested by session.requestedPane.collectAsStateWithLifecycle()
-    LaunchedEffect(requested) {
-        if (requested != null) {
-            paneId = session.consumeRequestedPane()
-            showSettings = false
-        }
-    }
-    NotificationPermissionRequest(enabled = hostState is HostState.Paired)
-
-    when (val hs = hostState) {
-        HostState.Loading -> Box(Modifier.fillMaxSize().background(Tokens.bg))
-        HostState.None -> PairingScreen(session)
-        is HostState.Paired -> {
-            val pane = paneId
-            when {
-                showSettings -> {
-                    BackHandler { showSettings = false }
-                    SettingsScreen(session, hs.host, onBack = { showSettings = false })
-                }
-                pane != null -> {
-                    BackHandler { paneId = null }
-                    PaneScreen(session, pane, onBack = { paneId = null })
-                }
-                else -> PanesScreen(session, hs.host, onOpenPane = { paneId = it }, onSettings = { showSettings = true })
+    val demo by session.isDemo.collectAsStateWithLifecycle()
+    key(demo) {
+        var paneId by rememberSaveable { mutableStateOf<String?>(null) }
+        var showSettings by rememberSaveable { mutableStateOf(false) }
+        val requested by session.requestedPane.collectAsStateWithLifecycle()
+        LaunchedEffect(requested) {
+            if (requested != null) {
+                paneId = session.consumeRequestedPane()
+                showSettings = false
             }
         }
+        NotificationPermissionRequest(enabled = !demo && hostState is HostState.Paired)
+
+        Column(Modifier.fillMaxSize().background(Tokens.bg)) {
+            if (demo) DemoBanner(onExit = session::exitDemo)
+            Box(Modifier.weight(1f).then(if (demo) Modifier.consumeWindowInsets(WindowInsets.statusBars) else Modifier)) {
+                when (val hs = if (demo) HostState.Paired(session.demoHost) else hostState) {
+                    HostState.Loading -> Box(Modifier.fillMaxSize().background(Tokens.bg))
+                    HostState.None -> PairingScreen(session)
+                    is HostState.Paired -> {
+                        val pane = paneId
+                        when {
+                            showSettings -> {
+                                BackHandler { showSettings = false }
+                                SettingsScreen(session, hs.host, onBack = { showSettings = false })
+                            }
+                            pane != null -> {
+                                BackHandler { paneId = null }
+                                PaneScreen(session, pane, onBack = { paneId = null })
+                            }
+                            else -> PanesScreen(session, hs.host, onOpenPane = { paneId = it }, onSettings = { showSettings = true })
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DemoBanner(onExit: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("Demo mode · Sample data", style = Type.body, color = Tokens.accent)
+            Text("Local simulation · no host connected", style = Type.small, color = Tokens.fg2)
+        }
+        LinkText("Exit demo", onClick = onExit)
     }
 }
 

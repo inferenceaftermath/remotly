@@ -30,13 +30,14 @@ struct PaneListView: View {
                     // truncates the host name (same fix as the pane view).
                     ToolbarItem(placement: .principal) {
                         HStack(spacing: 8) {
-                            Text(model.host?.name ?? "Remotly")
+                            Text(model.displayHost?.name ?? "Remotly")
                                 .font(Theme.mono(16))
                                 .foregroundStyle(Theme.fg)
                                 .lineLimit(1)
                                 .accessibilityAddTraits(.isHeader)
                             Spacer(minLength: 0)
-                            ConnectionPill() // no priority: host name and pill share a narrow slot (same as the pane view)
+                            if model.isDemo { StatusPill(color: Theme.idle, text: "Local") }
+                            else { ConnectionPill() } // host name and pill share a narrow slot
                         }
                         .frame(maxWidth: .infinity)
                     }
@@ -47,7 +48,7 @@ struct PaneListView: View {
                         .accessibilityLabel("Settings")
                     }
                 }
-                .sheet(isPresented: $showNewTerminal) { NewTerminalSheet() }
+                .sheet(isPresented: $showNewTerminal) { VStack(spacing: 0) { if model.isDemo { DemoBanner() }; NewTerminalSheet() } }
                 .sheet(isPresented: $showSettings) { SettingsView() }
                 // The same words as the pane's overflow (§4.4).
                 .confirmationDialog("Close \(paneToClose.map { Theme.sessionTitle(for: $0) } ?? "this terminal")?",
@@ -58,7 +59,7 @@ struct PaneListView: View {
                     }
                     Button("Cancel", role: .cancel) {} // explicit: the iPad popover adds none of its own (Android shows Cancel)
                 } message: { _ in
-                    Text("Ends the shell on the desktop and anything running in it.")
+                    Text(model.isDemo ? "Removes this local sample session. Your real host is unchanged." : "Ends the shell on the desktop and anything running in it.")
                 }
                 // A pane opened from outside (notification tap, Live Activity) must show: close whichever sheet was up.
                 .onChange(of: model.navigationPath) { _, path in
@@ -308,7 +309,7 @@ private struct NewTerminalSheet: View {
                         }
                     }
                     .padding(.top, 4)
-                    Text("Opens a new herdr tab on the desktop and runs the command once the shell is ready.")
+                    Text(model.isDemo ? "Demo mode: creates a local sample terminal. Commands are simulated, never executed." : "Opens a new herdr tab on the desktop and runs the command once the shell is ready.")
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.fg3)
                         .padding(.top, 4)

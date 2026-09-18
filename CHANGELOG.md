@@ -6,6 +6,16 @@ them (`ci/plan.sh` picks the lanes; `docs/DELIVERY.md`).
 
 ## Unreleased
 
+### Phone apps — local demo
+
+- Android, iPhone and iPad can explore sample terminal sessions without a bridge or Tailscale: **Try demo** on
+  pairing or Settings, a persistent sample-data banner, and **Exit demo** to return to the saved host.
+- Approvals, questions, input, scrollback and sample terminal creation/closing use the real app controls with local
+  simulated responses. Commands never execute; photos and notifications require a real host. See `docs/DEMO.md`
+  for store-review access and verification.
+- iOS includes the required-reason privacy manifest for its own saved preferences (`UserDefaults`, `CA92.1`).
+- Entering demo cancels pending real-host notification actions before they can send, including a delayed connection.
+
 ### Bridge 0.1.0 — first public release
 
 - `remotly-bridge setup` and `curl -fsSL https://remotly.dev/install.sh | sh`: one command installs the bridge (with a

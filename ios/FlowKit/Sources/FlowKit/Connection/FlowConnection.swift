@@ -66,6 +66,11 @@ public actor FlowConnection {
     public nonisolated let events: AsyncStream<ConnectionEvent>
     private let sink: AsyncStream<ConnectionEvent>.Continuation
 
+    public nonisolated let isDemo: Bool
+    private let demo: DemoBridge?
+    private var demoTask: Task<Void, Never>?
+    private let lifetime: ConnectionLifetime
+    private let lifetimeID = UUID()
     private let host: PairedHost
     private let client: ClientInfo
     private let mode: HelloMode
@@ -143,7 +148,11 @@ public actor FlowConnection {
     private static let logger = Logger(subsystem: "com.inferenceaftermath.remotly", category: "connection")
     #endif
 
-    public init(host: PairedHost, client: ClientInfo, mode: HelloMode = .full) {
+    public init(host: PairedHost, client: ClientInfo, mode: HelloMode = .full, demo: Bool = false,
+                lifetime: ConnectionLifetime = ConnectionLifetime()) {
+        self.lifetime = lifetime
+        self.isDemo = demo
+        self.demo = demo ? DemoBridge() : nil
         self.host = host
         self.client = client
         self.mode = mode
@@ -157,6 +166,8 @@ public actor FlowConnection {
     }
 
     deinit {
+        lifetime.remove(lifetimeID)
+        demoTask?.cancel()
         sink.finish()
         session.invalidateAndCancel()
     }
@@ -170,7 +181,10 @@ public actor FlowConnection {
 
     /// Closes the socket and stops reconnecting. `start()` resumes and re-watches.
     public func stop() {
+        lifetime.remove(lifetimeID)
         stopped = true
+        demoTask?.cancel()
+        demoTask = nil
         generation += 1
         runLoop?.cancel()
         runLoop = nil
@@ -187,6 +201,7 @@ public actor FlowConnection {
     /// since URLSession reports a connection lost while the phone slept only minutes later, if at all. A backoff wait
     /// ends now, and a connect attempt that has been hanging for a few seconds is abandoned for a fresh one.
     public func resume() {
+        if isDemo { if stopped { start() }; return }
         switch state {
         case .connected:
             if FlowConnection.isStale(lastInbound: lastInbound, now: ContinuousClock.now) {
@@ -217,6 +232,8 @@ public actor FlowConnection {
     /// Drop whatever socket there is and connect again under a fresh generation. `attempt` seeds the state shown
     /// (0 "Connecting…", 1+ "Reconnecting… · attempt n") and the backoff should this attempt fail too.
     private func restart(attempt initial: Int, reason: String) {
+        guard lifetime.isActive else { stop(); return }
+        lifetime.onCancel(lifetimeID) { [weak self] in Task { await self?.stop() } }
         if authRejected {
             setState(.unpaired)
             return
@@ -228,9 +245,27 @@ public actor FlowConnection {
         backoffGeneration = nil
         runLoop?.cancel()
         closeSocket()
+        if let demo {
+            socketSeq += 1
+            handle(text: demo.welcome())
+            demoTask?.cancel()
+            demoTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(200))
+                    guard !Task.isCancelled else { return }
+                    await self?.tickDemo(generation: gen)
+                }
+            }
+            return
+        }
         startPathMonitor()
         log("restart gen=\(gen) attempt=\(initial) reason=\(reason)")
         runLoop = Task { await self.run(generation: gen) }
+    }
+
+    private func tickDemo(generation gen: Int) {
+        guard !stopped, gen == generation, let demo else { return }
+        for text in demo.tick() { handle(text: text) }
     }
 
     private func run(generation gen: Int) async {
@@ -260,6 +295,7 @@ public actor FlowConnection {
     private enum WatchEffect { case watching(String), notWatching }
 
     private func connectOnce(generation gen: Int) async -> Outcome {
+        guard lifetime.isActive else { return Outcome(welcomed: false, unpaired: false) }
         let socket = session.webSocketTask(with: host.webSocketURL)
         socket.maximumMessageSize = 1 << 20
         task = socket
@@ -270,7 +306,10 @@ public actor FlowConnection {
         attemptStartedAt = ContinuousClock.now
         socketSeq += 1
         let seq = socketSeq
-        socket.resume()
+        guard lifetime.whileActive({ socket.resume() }) else {
+            finish(socket, generation: gen)
+            return Outcome(welcomed: false, unpaired: false)
+        }
         armDeadline(FlowConnection.attemptTimeout, socket: seq, reason: "attempt timeout")
         // Send the hello and start reading at once, instead of awaiting the send's completion first. A bad token is
         // answered with `error auth` + close 4401, and that send's completion can hang while the socket closes;
@@ -340,8 +379,13 @@ public actor FlowConnection {
         let id = ioSeq
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             sends[id] = continuation
-            socket.send(message) { [weak self] error in
-                Task { await self?.sendCompleted(id, error: error) }
+            let enqueued = lifetime.whileActive {
+                socket.send(message) { [weak self] error in
+                    Task { await self?.sendCompleted(id, error: error) }
+                }
+            }
+            if !enqueued {
+                sends.removeValue(forKey: id)?.resume(throwing: FlowError.closed)
             }
         }
     }
@@ -572,7 +616,7 @@ public actor FlowConnection {
         let seq = socketSeq
         setState(.connected)
         sink.yield(.welcome(welcome))
-        startPing(generation: gen)
+        if !isDemo { startPing(generation: gen) }
         log("welcome gen=\(gen)")
         if watchedPane != nil {
             Task {
@@ -604,13 +648,20 @@ public actor FlowConnection {
     // MARK: Outbound
 
     private func transmit(_ message: ClientMessage) async throws {
+        if let demo {
+            guard !stopped, welcomed else { throw FlowError.notConnected }
+            guard try lifetime.whileActive({
+                for text in try demo.receive(message.encoded()) { handle(text: text) }
+            }) else { throw FlowError.closed }
+            return
+        }
         guard let task else { throw FlowError.notConnected }
         let text = try message.encoded()
         try await send(.string(text), on: task)
     }
 
     private func request(timeout: Duration = .seconds(15), lease: Bool = false, watchEffect: WatchEffect? = nil, requireViewing: String? = nil, _ make: (String) -> ClientMessage) async throws -> ServerMessage {
-        guard welcomed, task != nil else { throw FlowError.notConnected }
+        guard welcomed, task != nil || isDemo else { throw FlowError.notConnected }
         nextId += 1
         let id = String(nextId)
         let message = make(id)
@@ -630,7 +681,7 @@ public actor FlowConnection {
     /// unsent if the UI has since switched away from that pane.
     private func deliver(_ message: ClientMessage, id: String, socket seq: Int, requireViewing: String?) async {
         guard pending[id] != nil else { return }
-        guard seq == socketSeq, welcomed, task != nil else { fail(id: id, error: .closed); return }
+        guard seq == socketSeq, welcomed, task != nil || isDemo else { fail(id: id, error: .closed); return }
         // A `fit` is checked against the pane still viewed at the moment it goes out, not only when it was issued: the
         // send is deferred to this task, so a switch (its `setViewing` transmit) can slip in between. Dropping the fit
         // here — with no suspension before the frame reaches the socket — keeps a stale fit off the wire, so it cannot

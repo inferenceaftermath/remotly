@@ -59,7 +59,7 @@ struct ApprovalCard: View {
         .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }
         .animation(.easeInOut(duration: 0.2), value: result?.outcome.rawValue)
         .animation(.easeInOut(duration: 0.2), value: inFlight)
-        .sheet(isPresented: $showFeedback) { feedbackSheet }
+        .sheet(isPresented: $showFeedback) { VStack(spacing: 0) { if model.isDemo { DemoBanner() }; feedbackSheet } }
     }
 
     // MARK: Head row

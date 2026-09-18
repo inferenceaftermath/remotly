@@ -56,6 +56,7 @@ import kotlinx.coroutines.launch
 fun SettingsScreen(session: Session, host: HostConfig, onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val demo by session.isDemo.collectAsStateWithLifecycle()
     val connState by session.connState.collectAsStateWithLifecycle()
     val fitToDevice by session.fitToDevice.collectAsStateWithLifecycle()
     val zoomOnDesktop by session.zoomOnDesktop.collectAsStateWithLifecycle()
@@ -94,40 +95,44 @@ fun SettingsScreen(session: Session, host: HostConfig, onBack: () -> Unit) {
                 val inset = Modifier.padding(horizontal = 16.dp)
                 SectionLabel("Host", inset)
                 SettingRow("Name", host.hostName.ifEmpty { "—" })
-                SettingRow("Bridge", host.url, mono = true)
-                SettingRow("Certificate", certificate, mono = host.fingerprint != null, onClick = {
-                    context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("certificate", certificate))
-                    session.notify("copied")
-                })
+                if (!demo) {
+                    SettingRow("Bridge", host.url, mono = true)
+                    SettingRow("Certificate", certificate, mono = host.fingerprint != null, onClick = {
+                        context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("certificate", certificate))
+                        session.notify("copied")
+                    })
+                }
                 SettingRow("This device", session.clientInfo.device_name)
 
                 SectionLabel("Notifications", inset)
-                SettingRow(
-                    "Permission",
-                    if (notificationsAllowed) "Allowed" else "Not allowed",
-                    trailing = {
-                        if (!notificationsAllowed) {
-                            if (Build.VERSION.SDK_INT >= 33) LinkText("Enable") { permission.launch(Manifest.permission.POST_NOTIFICATIONS) }
-                            else LinkText("Open system settings") { openSystemNotificationSettings() }
-                        }
-                    },
-                )
-                SettingRow(
-                    "Tell me when it's done by default",
-                    "Every prompt sent from this phone asks for one notification when the agent finishes its turn.",
-                    trailing = { FlowSwitch(notifyOnPrompt) { session.setNotifyOnPrompt(it) } },
-                )
-                SettingRow(
-                    "Require unlock to approve",
-                    "Approve, Deny with feedback and Reply from a notification work only once the phone is unlocked.",
-                    trailing = { FlowSwitch(requireUnlock) { session.setRequireUnlock(it) } },
-                )
-                SettingRow(
-                    "Show working agents",
-                    "Each working agent stays visible outside the app with a running timer.",
-                    trailing = { FlowSwitch(liveStatus) { session.setLiveStatus(it) } },
-                )
-
+                if (demo) SettingRow("Unavailable in demo", "Notifications and photo uploads require a paired host.")
+                else {
+                    SettingRow(
+                        "Permission",
+                        if (notificationsAllowed) "Allowed" else "Not allowed",
+                        trailing = {
+                            if (!notificationsAllowed) {
+                                if (Build.VERSION.SDK_INT >= 33) LinkText("Enable") { permission.launch(Manifest.permission.POST_NOTIFICATIONS) }
+                                else LinkText("Open system settings") { openSystemNotificationSettings() }
+                            }
+                        },
+                    )
+                    SettingRow(
+                        "Tell me when it's done by default",
+                        "Every prompt sent from this phone asks for one notification when the agent finishes its turn.",
+                        trailing = { FlowSwitch(notifyOnPrompt) { session.setNotifyOnPrompt(it) } },
+                    )
+                    SettingRow(
+                        "Require unlock to approve",
+                        "Approve, Deny with feedback and Reply from a notification work only once the phone is unlocked.",
+                        trailing = { FlowSwitch(requireUnlock) { session.setRequireUnlock(it) } },
+                    )
+                    SettingRow(
+                        "Show working agents",
+                        "Each working agent stays visible outside the app with a running timer.",
+                        trailing = { FlowSwitch(liveStatus) { session.setLiveStatus(it) } },
+                    )
+                }
                 SectionLabel("Terminal", inset)
                 SettingRow(
                     "Fit pane to this phone",
@@ -145,13 +150,17 @@ fun SettingsScreen(session: Session, host: HostConfig, onBack: () -> Unit) {
                 SettingRow("Bridge", welcome?.let { "${it.host.flow_version ?: "—"} · herdr ${it.host.herdr_version ?: "—"}" } ?: "not connected")
                 SettingRow(
                     "Push",
-                    (if (pushToken != null) "registered" else "not issued") + " · " + (if (PushRegistrar.isConfigured(context)) "Firebase configured" else "Firebase not configured"),
+                    (if (demo) "Unavailable in demo" else (if (pushToken != null) "registered" else "not issued") + " · " + (if (PushRegistrar.isConfigured(context)) "Firebase configured" else "Firebase not configured")),
                 )
                 SettingRow("Terminal font", "JetBrains Mono · OFL 1.1")
 
                 Spacer(Modifier.height(16.dp))
                 Hairline(inset)
-                SettingRow("Forget this host", titleColor = Tokens.blocked, onClick = { confirmForget = true })
+                if (demo) SettingRow("Exit demo", onClick = { session.exitDemo(); onBack() })
+                else {
+                    SettingRow("Try demo", "Local sample sessions. Your saved host is preserved.", onClick = { session.enterDemo(); onBack() })
+                    SettingRow("Forget this host", titleColor = Tokens.blocked, onClick = { confirmForget = true })
+                }
                 Spacer(Modifier.height(24.dp))
             }
             ToastHost(session)
