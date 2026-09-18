@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,10 +18,16 @@ import {
   parseSetupArgs,
   reconcileHerdrEnv,
   renderUnit,
+  installerEnv,
+  renderRepairScript,
+  renderUpdateUnits,
+  repairScriptPath,
+  timerMarkerPath,
   runSetup,
   stableNodePath,
   systemdUserDir,
   unitFile,
+  updateUnitNames,
   type SetupConfigView,
   type SetupDeps,
   type SetupOptions,
@@ -53,6 +60,8 @@ const STATUS: ControlStatus = {
 const PAIR: PairInfo = { code: 'ABCDEFGH', expires_at: 'x', reusable: true, url: 'wss://host.tail1234.ts.net:7460', host_name: 'host', qr_payload: 'remotly://pair?…' };
 
 const okRun = (stdout = ''): ExecResult => ({ code: 0, stdout, stderr: '' });
+/** `systemctl is-enabled` of a unit that does not exist (what systemd answers on a fresh install). */
+const NOT_FOUND: ExecResult = { code: 4, stdout: 'not-found\n', stderr: 'Failed to get unit file state: No such file or directory' };
 const failRun = (stderr: string, code: number | null = 1): ExecResult => ({ code, stdout: '', stderr });
 const missing = (): ExecResult => failRun('spawn x ENOENT', null);
 
@@ -62,7 +71,9 @@ function fakeExec(script: Record<string, ExecResult | ExecResult[]>) {
   const exec = async (cmd: string, args: string[]): Promise<ExecResult> => {
     const key = `${cmd} ${args.join(' ')}`;
     calls.push(key);
-    const hit = Object.keys(script).find((k) => key.startsWith(k));
+    const hit = Object.keys(script)
+      .filter((k) => key.startsWith(k))
+      .sort((a, b) => b.length - a.length)[0]; // the most specific key answers, whatever the order they were given in
     if (hit === undefined) return okRun();
     const v = script[hit];
     if (Array.isArray(v)) return v.length > 1 ? (v.shift() as ExecResult) : (v[0] as ExecResult);
@@ -73,8 +84,10 @@ function fakeExec(script: Record<string, ExecResult | ExecResult[]>) {
 
 function makeDeps(over: Partial<SetupDeps> & { script?: Record<string, ExecResult | ExecResult[]> } = {}) {
   const out: string[] = [];
-  // Unless a test scripts it, the unit is the daemon that STATUS describes: systemd reports its main pid as 4242.
-  const { exec: scripted, calls } = fakeExec({ [SHOW]: unitShow('loaded', 'active', 'running', 4242), ...(over.script ?? {}) });
+  // Unless a test scripts it, the unit is the daemon that STATUS describes: systemd reports its main pid as 4242 — and
+  // the update units do not exist yet (a fresh install). A test's own keys come after, so the same key overrides, and a
+  // more specific one wins on length.
+  const { exec: scripted, calls } = fakeExec({ [SHOW]: unitShow('loaded', 'active', 'running', 4242), 'systemctl --user is-enabled ': NOT_FOUND, ...(over.script ?? {}) });
   const exec = scripted;
   let t = 1_000_000;
   const sock = path.join(dir, 'herdr.sock');
@@ -88,6 +101,7 @@ function makeDeps(over: Partial<SetupDeps> & { script?: Record<string, ExecResul
     uid: 1000,
     nodePath: '/opt/node/bin/node',
     mainPath: path.join(dir, 'app', 'src', 'main.ts'),
+    env: {},
     unitDir: path.join(dir, 'systemd'),
     configPath: path.join(dir, 'config.json'),
     tlsDir: path.join(dir, 'tls'),
@@ -123,8 +137,8 @@ test('parseSetupArgs: defaults, flags, validation', () => {
   const d = parseSetupArgs([], {});
   assert.deepEqual(d, { unit: 'remotly-bridge', lan: false, wait: true, pair: true, ttlSec: 600 });
   assert.equal(parseSetupArgs([], { REMOTLY_SYSTEMD_UNIT: 'remotly-dev' }).unit, 'remotly-dev');
-  const o = parseSetupArgs(['--unit', 'u2', '--config-dir', '/c', '--herdr-session', 'main', '--herdr-socket', '/s', '--ttl', '120', '--lan', '--no-wait', '--no-pair', '--keep-mode'], {});
-  assert.deepEqual(o, { unit: 'u2', configDir: '/c', herdrSession: 'main', herdrSocket: '/s', ttlSec: 120, lan: true, wait: false, pair: false, keepMode: true });
+  const o = parseSetupArgs(['--unit', 'u2', '--config-dir', '/c', '--herdr-session', 'main', '--herdr-socket', '/s', '--ttl', '120', '--lan', '--no-wait', '--no-pair', '--keep-mode', '--keep-stopped'], {});
+  assert.deepEqual(o, { unit: 'u2', configDir: '/c', herdrSession: 'main', herdrSocket: '/s', ttlSec: 120, lan: true, wait: false, pair: false, keepMode: true, keepStopped: true });
   assert.throws(() => parseSetupArgs(['--ttl', '5'], {}), /between 30 and 3600/);
   assert.throws(() => parseSetupArgs(['--ttl'], {}), /needs a value/);
   assert.throws(() => parseSetupArgs(['--unit', '--lan'], {}), /needs a value/);
@@ -200,6 +214,9 @@ test('renderUnit quotes paths, doubles % and only emits the environment lines it
   assert.match(full, /^Environment="REMOTLY_CONFIG_DIR=\/home\/a\/.config\/remotly-2"$/m);
   assert.match(full, /^Environment="HERDR_SESSION=main"$/m);
   assert.match(full, /^Environment="HERDR_SOCKET_PATH=\/run\/100%%\/herdr.sock"$/m, 'a literal % is %% in a unit file');
+  const repaired = renderUnit({ nodePath: '/usr/bin/node', mainPath: '/h/app/src/main.ts', repairScript: '/h o/repair-app.sh' });
+  assert.match(repaired, /^ExecStartPre=-\/bin\/sh "\/h o\/repair-app\.sh"\nExecStart=/m, 'the repair runs first, and its failure does not stop the start');
+  assert.equal(unit.includes('ExecStartPre'), false, 'no repair for a copy that is not an installed release');
   assert.throws(() => renderUnit({ nodePath: '/usr/bin/node', mainPath: '/x/"quoted"/main.ts' }), /cannot put/);
   assert.throws(() => renderUnit({ nodePath: '/usr/bin/node', mainPath: '/x/$HOME/main.ts' }), /cannot put/);
 });
@@ -490,6 +507,47 @@ test('a running unit that serves another config dir is never repointed (setup --
   assert.match(manual.out.join('\n'), /✖ unit remotly-bridge is running \(pid 4242\) but not on this config dir/);
 });
 
+test('--keep-stopped (what `update` passes): a stopped unit is written and enabled but not restarted, and setup ends there; a running or failed one is restarted; no answer from systemd is not "running"', async () => {
+  const noSocket = async () => {
+    throw new Error('ENOENT');
+  };
+  const stopped = makeDeps({ script: { ...tsScript(), ...lingerYes, [SHOW]: unitShow('loaded', 'inactive', 'dead', 0) }, status: noSocket });
+  stopped.touchSocket();
+  assert.equal(await runSetup(stopped.deps, { ...OPTS, keepStopped: true }), 0);
+  const text = stopped.out.join('\n');
+  assert.match(text, /· service remotly-bridge installed at .*remotly-bridge\.service \(node \/opt\/node\/bin\/node\), but it is inactive: left stopped \(--keep-stopped\);  systemctl --user start remotly-bridge\.service/);
+  assert.match(text, /setup complete \(remotly-bridge left stopped\)$/);
+  assert.ok(stopped.calls.includes('systemctl --user enable remotly-bridge.service'));
+  assert.equal(stopped.calls.some((c) => c === 'systemctl --user restart remotly-bridge.service'), false);
+  assert.equal(text.includes('did not answer'), false, 'no health wait for a unit left stopped on purpose');
+  assert.ok(fs.existsSync(path.join(stopped.deps.unitDir, 'remotly-bridge.service')), 'the unit file is written all the same');
+  // Running: restarted as always (the flag only concerns a stopped unit).
+  const running = makeDeps({ script: { ...tsScript(), ...lingerYes } });
+  running.touchSocket();
+  assert.equal(await runSetup(running.deps, { ...OPTS, keepStopped: true }), 0);
+  assert.ok(running.calls.includes('systemctl --user restart remotly-bridge.service'));
+  assert.match(running.out.join('\n'), /✔ service remotly-bridge installed/);
+  // Failed (a crash loop that hit its start-rate limit): it was running, and this setup may be what repairs it.
+  let restarted = false;
+  const failed = makeDeps({ script: { ...tsScript(), ...lingerYes, [SHOW]: [unitShow('loaded', 'failed', 'failed', 0), unitShow('loaded', 'failed', 'failed', 0), unitShow('loaded', 'failed', 'failed', 0), unitShow('loaded', 'active', 'running', 4242)] }, status: async () => (restarted ? STATUS : noSocket()) });
+  const inner = failed.deps.exec;
+  failed.deps.exec = async (c, a) => ((restarted ||= c === 'systemctl' && a[1] === 'restart'), inner(c, a));
+  failed.touchSocket();
+  assert.equal(await runSetup(failed.deps, { ...OPTS, keepStopped: true }), 0);
+  assert.ok(failed.calls.includes('systemctl --user restart remotly-bridge.service'));
+  // systemd does not answer right before the restart: not started blindly.
+  const blind = makeDeps({ script: { ...tsScript(), ...lingerYes, [SHOW]: [unitShow('loaded', 'active', 'running', 4242), unitShow('loaded', 'active', 'running', 4242), failRun('Failed to connect to bus: No medium found')] } });
+  blind.touchSocket();
+  assert.equal(await runSetup(blind.deps, { ...OPTS, keepStopped: true }), 0);
+  assert.equal(blind.calls.some((c) => c === 'systemctl --user restart remotly-bridge.service'), false);
+  assert.match(blind.out.join('\n'), /but systemd did not say whether it is running: left stopped \(--keep-stopped\)/);
+  // Without the flag a stopped unit is started: that is what a hand-run setup means.
+  const plain = makeDeps({ script: { ...tsScript(), ...lingerYes, [SHOW]: unitShow('loaded', 'inactive', 'dead', 0) }, status: noSocket });
+  plain.touchSocket();
+  await runSetup(plain.deps, OPTS);
+  assert.ok(plain.calls.includes('systemctl --user restart remotly-bridge.service'));
+});
+
 test('a unit in its restart delay (MainPID 0 while activating) is left alone, whatever the socket says', async () => {
   const noSocket = async () => {
     throw new Error('ENOENT');
@@ -772,4 +830,400 @@ test('root, a broken config and a herdr protocol mismatch are reported the way t
   mismatch.touchSocket();
   assert.equal(await runSetup(mismatch.deps, OPTS), 0);
   assert.match(mismatch.out.join('\n'), /✔ herdr 0\.9\.0 \(protocol 20\) at .*\n\s+⚠ this bridge was built against herdr protocol 19/);
+});
+
+// ---- the daily update timer ---------------------------------------------------------------------
+
+/** Turns makeDeps' `dir/app/src/main.ts` into an installed release (package.json beside src/), as install.sh lays it out. */
+function asRelease(deps: SetupDeps): void {
+  fs.mkdirSync(path.dirname(deps.mainPath), { recursive: true });
+  fs.writeFileSync(path.join(path.dirname(path.dirname(deps.mainPath)), 'package.json'), '{"version":"0.1.0"}');
+}
+const UPDATE_TIMER = 'remotly-bridge-update.timer';
+
+test('renderUpdateUnits: a oneshot `update` with the bridge\'s environment, and a daily persistent timer', () => {
+  const { service, timer } = renderUpdateUnits({ unit: 'remotly-dev', nodePath: '/opt/node/bin/node', mainPath: '/h/app/src/main.ts', configDir: '/h/cfg', herdrSession: 'work', herdrSocket: '/h/herdr.sock' });
+  assert.match(service, /^Type=oneshot$/m);
+  assert.match(service, /^ExecStart="\/opt\/node\/bin\/node" "\/h\/app\/src\/main\.ts" update$/m);
+  for (const env of ['REMOTLY_SYSTEMD_UNIT=remotly-dev', 'REMOTLY_CONFIG_DIR=/h/cfg', 'HERDR_SESSION=work', 'HERDR_SOCKET_PATH=/h/herdr.sock']) assert.ok(service.includes(`Environment="${env}"`), env);
+  assert.equal(service.includes('[Install]'), false, 'the service is started by the timer, never enabled itself');
+  assert.match(timer, /^OnCalendar=daily$/m);
+  assert.match(timer, /^RandomizedDelaySec=1h$/m);
+  assert.match(timer, /^Persistent=true$/m);
+  assert.match(timer, /^WantedBy=timers\.target$/m);
+  const plain = renderUpdateUnits({ unit: 'remotly-bridge', nodePath: '/usr/bin/node', mainPath: '/h/app/src/main.ts' });
+  assert.equal(plain.service.match(/^Environment=/gm)?.length, 2, 'NODE_ENV and the unit only');
+  const mirror = renderUpdateUnits({ unit: 'remotly-bridge', nodePath: '/usr/bin/node', mainPath: '/h/app/src/main.ts', installerEnv: { REMOTLY_RELEASE_URL: 'https://mirror.example/releases', REMOTLY_NODE_DIST: 'https://mirror.example/node', REMOTLY_BIN_DIR: '/h/bin', REMOTLY_NODE: '/usr/bin/node', REMOTLY_VERSION: '0.1.0' } });
+  for (const env of ['REMOTLY_RELEASE_URL=https://mirror.example/releases', 'REMOTLY_NODE_DIST=https://mirror.example/node', 'REMOTLY_BIN_DIR=/h/bin', 'REMOTLY_NODE=/usr/bin/node']) assert.ok(mirror.service.includes(`Environment="${env}"`), env);
+  assert.equal(mirror.service.includes('REMOTLY_VERSION'), false, 'the pinned version of one install never reaches the unit');
+  assert.deepEqual(updateUnitNames('remotly-dev.service'), { service: 'remotly-dev-update.service', timer: 'remotly-dev-update.timer' });
+  assert.deepEqual(updateUnitNames('remotly-bridge'), { service: 'remotly-bridge-update.service', timer: UPDATE_TIMER });
+});
+
+test('parseSetupArgs: --no-auto-update', () => {
+  assert.equal(parseSetupArgs([], {}).autoUpdate, undefined);
+  assert.equal(parseSetupArgs(['--no-auto-update'], {}).autoUpdate, false);
+});
+
+test('installerEnv: the mirror and launcher settings from the environment, the launcher found on PATH otherwise, the unit\'s Node unless it is the private one', () => {
+  const home = path.join(dir, 'h');
+  const bin = path.join(home, 'bin');
+  const mainPath = path.join(home, 'app', 'src', 'main.ts');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'remotly-bridge'), `#!/bin/sh\nexec '/usr/bin/node' '${mainPath}' "$@"\n`);
+  assert.deepEqual(installerEnv({ PATH: `/usr/bin:${bin}` }, '/usr/bin/node', mainPath, home), { REMOTLY_BIN_DIR: bin, REMOTLY_NODE: '/usr/bin/node' });
+  assert.deepEqual(installerEnv({ PATH: '/usr/bin' }, path.join(home, 'node', 'bin', 'node'), mainPath, home), {}, 'no launcher on PATH, a private Node');
+  assert.deepEqual(installerEnv({ REMOTLY_RELEASE_URL: 'https://mirror.example/releases ', REMOTLY_NODE_DIST: 'https://mirror.example/node', REMOTLY_BIN_DIR: '/opt/bin', REMOTLY_VERSION: '0.1.0', REMOTLY_HOME: home, PATH: bin }, '/usr/bin/node', mainPath, home), {
+    REMOTLY_RELEASE_URL: 'https://mirror.example/releases',
+    REMOTLY_NODE_DIST: 'https://mirror.example/node',
+    REMOTLY_BIN_DIR: '/opt/bin',
+    REMOTLY_NODE: '/usr/bin/node',
+  });
+});
+
+test('an installed release gets the update timer on its first setup: both units written, daemon-reload, enable, restart', async () => {
+  const { deps, out, calls, touchSocket } = makeDeps({ script: { ...tsScript(), ...lingerYes } });
+  asRelease(deps);
+  touchSocket();
+  assert.equal(await runSetup(deps, OPTS), 0);
+  const text = out.join('\n');
+  assert.match(text, /✔ daily update remotly-bridge-update\.timer \(runs `remotly-bridge update`; off:  systemctl --user disable --now remotly-bridge-update\.timer\)/);
+  assert.equal(text.includes('⚠'), false);
+  const service = fs.readFileSync(path.join(deps.unitDir, 'remotly-bridge-update.service'), 'utf8');
+  assert.match(service, new RegExp(`^ExecStart="/opt/node/bin/node" "${deps.mainPath}" update$`, 'm'));
+  assert.match(service, /^Environment="REMOTLY_SYSTEMD_UNIT=remotly-bridge"$/m);
+  assert.match(service, /^Environment="REMOTLY_NODE=\/opt\/node\/bin\/node"$/m, 'the runtime the unit runs goes to the installer');
+  assert.match(fs.readFileSync(path.join(deps.unitDir, UPDATE_TIMER), 'utf8'), /^OnCalendar=daily$/m);
+  // Both units run the repair script first; setup wrote it beside app/.
+  const home = path.dirname(path.dirname(path.dirname(deps.mainPath)));
+  const repair = repairScriptPath(home);
+  assert.ok(fs.existsSync(repair), 'repair-app.sh written');
+  assert.equal(fs.statSync(repair).mode & 0o777, 0o755);
+  assert.equal(fs.existsSync(timerMarkerPath(path.dirname(repair), 'remotly-bridge')), false, 'the "enabling" marker is gone once the timer is enabled');
+  assert.match(service, new RegExp(`^ExecStartPre=-/bin/sh "${repair}"$`, 'm'));
+  assert.match(fs.readFileSync(path.join(deps.unitDir, 'remotly-bridge.service'), 'utf8'), new RegExp(`^ExecStartPre=-/bin/sh "${repair}"$`, 'm'));
+  const sd = calls.filter((c) => c.startsWith('systemctl') && !c.includes('MainPID'));
+  assert.deepEqual(sd, [
+    'systemctl --user show-environment',
+    'systemctl --user daemon-reload',
+    'systemctl --user enable remotly-bridge.service',
+    'systemctl --user restart remotly-bridge.service',
+    `systemctl --user is-enabled ${UPDATE_TIMER}`,
+    'systemctl --user is-enabled remotly-bridge-update.service',
+    'systemctl --user daemon-reload',
+    `systemctl --user enable ${UPDATE_TIMER}`,
+    `systemctl --user restart ${UPDATE_TIMER}`,
+  ]);
+
+  // The installer's settings travel from setup's environment into the unit, so the timer installs the same way.
+  const mirror = makeDeps({ script: { ...tsScript(), ...lingerYes }, env: { REMOTLY_RELEASE_URL: 'https://mirror.example/releases', REMOTLY_NODE_DIST: 'https://mirror.example/node', REMOTLY_BIN_DIR: '/opt/remotly/bin', REMOTLY_VERSION: '0.1.0' } });
+  mirror.deps.unitDir = path.join(dir, 'systemd-mirror');
+  asRelease(mirror.deps);
+  mirror.touchSocket();
+  assert.equal(await runSetup(mirror.deps, OPTS), 0);
+  const unit = fs.readFileSync(path.join(mirror.deps.unitDir, 'remotly-bridge-update.service'), 'utf8');
+  for (const env of ['REMOTLY_RELEASE_URL=https://mirror.example/releases', 'REMOTLY_NODE_DIST=https://mirror.example/node', 'REMOTLY_BIN_DIR=/opt/remotly/bin']) assert.ok(unit.includes(`Environment="${env}"`), env);
+  assert.equal(unit.includes('REMOTLY_VERSION'), false);
+});
+
+test('a timer the user disabled stays disabled on later setups (rewritten, reloaded, not enabled); a masked one is not even rewritten', async () => {
+  const disabled = makeDeps({ script: { ...tsScript(), ...lingerYes, [`systemctl --user is-enabled ${UPDATE_TIMER}`]: { code: 1, stdout: 'disabled\n', stderr: '' } } });
+  asRelease(disabled.deps);
+  fs.mkdirSync(disabled.deps.unitDir, { recursive: true });
+  fs.writeFileSync(path.join(disabled.deps.unitDir, UPDATE_TIMER), '# old timer\n');
+  disabled.touchSocket();
+  assert.equal(await runSetup(disabled.deps, OPTS), 0);
+  assert.match(disabled.out.join('\n'), /· auto-update off \(remotly-bridge-update\.timer is disabled\); on:  systemctl --user enable --now remotly-bridge-update\.timer/);
+  assert.match(fs.readFileSync(path.join(disabled.deps.unitDir, UPDATE_TIMER), 'utf8'), /^OnCalendar=daily$/m, 'the unit text follows this install');
+  assert.equal(disabled.calls.some((c) => c.includes(`enable ${UPDATE_TIMER}`) || c.includes(`restart ${UPDATE_TIMER}`)), false);
+  assert.equal(disabled.calls.filter((c) => c === 'systemctl --user daemon-reload').length, 2);
+
+  const masked = makeDeps({ script: { ...tsScript(), ...lingerYes, [`systemctl --user is-enabled ${UPDATE_TIMER}`]: { code: 1, stdout: 'masked\n', stderr: '' } } });
+  masked.deps.unitDir = path.join(dir, 'systemd-masked'); // its own unit dir: the case above wrote the timer units
+  asRelease(masked.deps);
+  fs.mkdirSync(masked.deps.unitDir, { recursive: true });
+  fs.writeFileSync(path.join(masked.deps.unitDir, UPDATE_TIMER), '# mask stand-in\n');
+  masked.touchSocket();
+  assert.equal(await runSetup(masked.deps, OPTS), 0);
+  assert.match(masked.out.join('\n'), /· auto-update off: remotly-bridge-update\.timer is masked/);
+  assert.equal(fs.readFileSync(path.join(masked.deps.unitDir, UPDATE_TIMER), 'utf8'), '# mask stand-in\n', 'not rewritten');
+  assert.equal(fs.existsSync(path.join(masked.deps.unitDir, 'remotly-bridge-update.service')), false);
+  assert.equal(masked.calls.filter((c) => c === 'systemctl --user daemon-reload').length, 1);
+
+  // A masked service (the timer would fail every day) counts the same; `masked-runtime` too.
+  const maskedService = makeDeps({ script: { ...tsScript(), ...lingerYes, 'systemctl --user is-enabled remotly-bridge-update.service': okRun('masked-runtime\n') } });
+  maskedService.deps.unitDir = path.join(dir, 'systemd-masked-service');
+  asRelease(maskedService.deps);
+  fs.mkdirSync(maskedService.deps.unitDir, { recursive: true });
+  fs.writeFileSync(path.join(maskedService.deps.unitDir, UPDATE_TIMER), '# old timer\n');
+  maskedService.touchSocket();
+  assert.equal(await runSetup(maskedService.deps, OPTS), 0);
+  assert.match(maskedService.out.join('\n'), /· auto-update off: remotly-bridge-update\.service is masked \(systemctl --user unmask remotly-bridge-update\.service, then setup again, turns it on\)/);
+  assert.equal(fs.readFileSync(path.join(maskedService.deps.unitDir, UPDATE_TIMER), 'utf8'), '# old timer\n', 'not rewritten');
+
+  // Enabled until the next boot only (`enable --runtime`): made permanent like a fresh one.
+  const runtime = makeDeps({ script: { ...tsScript(), ...lingerYes, [`systemctl --user is-enabled ${UPDATE_TIMER}`]: okRun('enabled-runtime\n') } });
+  runtime.deps.unitDir = path.join(dir, 'systemd-runtime');
+  asRelease(runtime.deps);
+  fs.mkdirSync(runtime.deps.unitDir, { recursive: true });
+  fs.writeFileSync(path.join(runtime.deps.unitDir, UPDATE_TIMER), '# old timer\n');
+  runtime.touchSocket();
+  assert.equal(await runSetup(runtime.deps, OPTS), 0);
+  assert.ok(runtime.calls.includes(`systemctl --user enable ${UPDATE_TIMER}`));
+  assert.match(runtime.out.join('\n'), /✔ daily update remotly-bridge-update\.timer/);
+
+  // Started by hand but never enabled: stays the user's business, with a word on what that means.
+  const started = makeDeps({ script: { ...tsScript(), ...lingerYes, [`systemctl --user is-enabled ${UPDATE_TIMER}`]: { code: 1, stdout: 'disabled\n', stderr: '' }, [`systemctl --user is-active ${UPDATE_TIMER}`]: okRun('active\n') } });
+  started.deps.unitDir = path.join(dir, 'systemd-started');
+  asRelease(started.deps);
+  fs.mkdirSync(started.deps.unitDir, { recursive: true });
+  fs.writeFileSync(path.join(started.deps.unitDir, UPDATE_TIMER), '# old timer\n');
+  started.touchSocket();
+  assert.equal(await runSetup(started.deps, OPTS), 0);
+  assert.match(started.out.join('\n'), /· auto-update off \(remotly-bridge-update\.timer is disabled, started by hand: it runs until the next boot only\); on:  systemctl --user enable --now remotly-bridge-update\.timer/);
+
+  // A masked timer that lives nowhere in this unit dir (a runtime mask under /run, or a mask in another directory) is
+  // found through is-enabled and respected on the very first setup: nothing written.
+  const elsewhere = makeDeps({ script: { ...tsScript(), ...lingerYes, [`systemctl --user is-enabled ${UPDATE_TIMER}`]: { code: 1, stdout: 'masked-runtime\n', stderr: '' } } });
+  elsewhere.deps.unitDir = path.join(dir, 'systemd-elsewhere');
+  asRelease(elsewhere.deps);
+  elsewhere.touchSocket();
+  assert.equal(await runSetup(elsewhere.deps, OPTS), 0);
+  assert.match(elsewhere.out.join('\n'), /· auto-update off: remotly-bridge-update\.timer is masked/);
+  assert.equal(fs.existsSync(path.join(elsewhere.deps.unitDir, UPDATE_TIMER)), false);
+
+  // A setup stopped after writing the timer but before enabling it left the marker behind: that "disabled" is not the
+  // user's choice either.
+  const interrupted = makeDeps({ script: { ...tsScript(), ...lingerYes, [`systemctl --user is-enabled ${UPDATE_TIMER}`]: { code: 1, stdout: 'disabled\n', stderr: '' } } });
+  interrupted.deps.unitDir = path.join(dir, 'systemd-interrupted');
+  asRelease(interrupted.deps);
+  fs.mkdirSync(interrupted.deps.unitDir, { recursive: true });
+  fs.writeFileSync(path.join(interrupted.deps.unitDir, UPDATE_TIMER), '# written, never enabled\n');
+  const interruptedHome = path.dirname(path.dirname(path.dirname(interrupted.deps.mainPath)));
+  fs.writeFileSync(timerMarkerPath(interruptedHome, 'remotly-bridge'), '');
+  interrupted.touchSocket();
+  assert.equal(await runSetup(interrupted.deps, OPTS), 0);
+  assert.ok(interrupted.calls.includes(`systemctl --user enable ${UPDATE_TIMER}`), interrupted.calls.join(' | '));
+  assert.equal(fs.existsSync(timerMarkerPath(interruptedHome, 'remotly-bridge')), false, 'the marker goes once the timer is enabled');
+  assert.equal(path.basename(timerMarkerPath(interruptedHome, 'remotly-dev')), 'remotly-dev-update.timer.enabling', 'one marker per timer: two units may share one install');
+
+  // A service file left by a setup stopped before it wrote the timer: systemd knows no timer (not-found, exit 4), so
+  // this is a fresh install, not the user's choice.
+  const partial = makeDeps({ script: { ...tsScript(), ...lingerYes, [`systemctl --user is-enabled ${UPDATE_TIMER}`]: { code: 4, stdout: 'not-found\n', stderr: `Failed to get unit file state for ${UPDATE_TIMER}: No such file or directory` } } });
+  partial.deps.unitDir = path.join(dir, 'systemd-partial');
+  asRelease(partial.deps);
+  fs.mkdirSync(partial.deps.unitDir, { recursive: true });
+  fs.writeFileSync(path.join(partial.deps.unitDir, 'remotly-bridge-update.service'), '# half written\n');
+  partial.touchSocket();
+  assert.equal(await runSetup(partial.deps, OPTS), 0);
+  assert.ok(partial.calls.includes(`systemctl --user enable ${UPDATE_TIMER}`));
+  assert.match(partial.out.join('\n'), /✔ daily update remotly-bridge-update\.timer/);
+});
+
+test('a failed `is-enabled` query (no bus, an error) leaves the update units as they are: nothing written, nothing enabled', async () => {
+  const nobus = makeDeps({ script: { ...tsScript(), ...lingerYes, [`systemctl --user is-enabled ${UPDATE_TIMER}`]: { code: 1, stdout: '', stderr: 'Failed to connect to bus: No medium found' } } });
+  nobus.deps.unitDir = path.join(dir, 'systemd-nobus');
+  asRelease(nobus.deps);
+  nobus.touchSocket();
+  assert.equal(await runSetup(nobus.deps, OPTS), 0);
+  assert.match(nobus.out.join('\n'), /⚠ cannot tell whether remotly-bridge-update\.timer is enabled \(systemctl --user is-enabled remotly-bridge-update\.timer: exit 1, Failed to connect to bus: No medium found\); the update units are left as they are/);
+  assert.equal(fs.existsSync(path.join(nobus.deps.unitDir, UPDATE_TIMER)), false);
+  assert.equal(fs.existsSync(path.join(nobus.deps.unitDir, 'remotly-bridge-update.service')), false);
+  assert.equal(nobus.calls.some((c) => c.includes(`enable ${UPDATE_TIMER}`)), false);
+  // An answer that is no state at all (exit 0, nothing printed) is not "fresh" either.
+  const mute = makeDeps({ script: { ...tsScript(), ...lingerYes, 'systemctl --user is-enabled remotly-bridge-update.service': okRun('') } });
+  mute.deps.unitDir = path.join(dir, 'systemd-mute');
+  asRelease(mute.deps);
+  mute.touchSocket();
+  assert.equal(await runSetup(mute.deps, OPTS), 0);
+  assert.match(mute.out.join('\n'), /cannot tell whether .*: exit 0, no output/);
+  assert.equal(fs.existsSync(path.join(mute.deps.unitDir, UPDATE_TIMER)), false);
+  // An older systemd that prints nothing and complains on stderr means the same as `not-found`: a fresh install. (The
+  // timer's own key, so this answer — not the default `not-found` — is what the code reads.)
+  const older = makeDeps({ script: { ...tsScript(), ...lingerYes, [`systemctl --user is-enabled ${UPDATE_TIMER}`]: { code: 1, stdout: '', stderr: `Failed to get unit file state for ${UPDATE_TIMER}: No such file or directory` } } });
+  older.deps.unitDir = path.join(dir, 'systemd-older');
+  asRelease(older.deps);
+  older.touchSocket();
+  assert.equal(await runSetup(older.deps, OPTS), 0);
+  assert.equal(older.out.join('\n').includes('cannot tell whether'), false, older.out.join('\n'));
+  assert.ok(older.calls.includes(`systemctl --user enable ${UPDATE_TIMER}`));
+  // A bus that is not there says "No such file" too: that is no state, not a fresh install.
+  const nosock = makeDeps({ script: { ...tsScript(), ...lingerYes, [`systemctl --user is-enabled ${UPDATE_TIMER}`]: { code: 1, stdout: '', stderr: 'Failed to connect to bus: No such file or directory' } } });
+  nosock.deps.unitDir = path.join(dir, 'systemd-nosock');
+  asRelease(nosock.deps);
+  nosock.touchSocket();
+  assert.equal(await runSetup(nosock.deps, OPTS), 0);
+  assert.match(nosock.out.join('\n'), /cannot tell whether .*: exit 1, Failed to connect to bus: No such file or directory/);
+  assert.equal(fs.existsSync(path.join(nosock.deps.unitDir, UPDATE_TIMER)), false);
+  assert.equal(nosock.calls.some((c) => c.includes(`enable ${UPDATE_TIMER}`)), false);
+});
+
+test('renderRepairScript: puts app/ back from app.prev, else app.new, and a private node/ back from node.old; leaves what is present alone, and everything alone while an install holds the lock', () => {
+  const home = path.join(dir, "h'ome"); // a quote in the path is quoted for the shell
+  const app = path.join(home, 'app');
+  fs.mkdirSync(home, { recursive: true });
+  const script = path.join(dir, 'repair-app.sh');
+  fs.writeFileSync(script, renderRepairScript(home));
+  const run = () => execFileSync('sh', [script], { stdio: 'pipe' });
+  const lay = (name: string, marker: string) => {
+    fs.mkdirSync(path.join(home, name, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(home, name, 'src', 'main.ts'), marker);
+  };
+  // app/ present: nothing moves, even with app.prev around.
+  lay('app', 'current');
+  lay('app.prev', 'previous');
+  run();
+  assert.equal(fs.readFileSync(path.join(app, 'src', 'main.ts'), 'utf8'), 'current');
+  assert.ok(fs.existsSync(path.join(home, 'app.prev')));
+  // app/ present but odd (no src/main.ts): still not touched — the repair is for a missing app/, nothing else.
+  fs.rmSync(path.join(app, 'src'), { recursive: true });
+  run();
+  assert.ok(fs.existsSync(app) && !fs.existsSync(path.join(app, 'src')));
+  assert.ok(fs.existsSync(path.join(home, 'app.prev')));
+  // app/ gone after a stop between two renames — but an install or update holds the lock (it is between its renames on
+  // purpose): nothing moves.
+  fs.rmSync(app, { recursive: true });
+  lay('app.failed', 'broken');
+  lay('app.new', 'new');
+  if (spawnSync('flock', ['--version']).status === 0) {
+    execFileSync('flock', [path.join(home, 'update.lock'), 'sh', script], { stdio: 'pipe' }); // flock holds the lock while the script runs
+    assert.equal(fs.existsSync(app), false, 'left to the run that holds the lock');
+    assert.ok(fs.existsSync(path.join(home, 'app.prev')));
+  }
+  // Nobody holds the lock: the previous copy comes back, never a failed one. Repairs queue on their own lock file.
+  run();
+  assert.equal(fs.readFileSync(path.join(app, 'src', 'main.ts'), 'utf8'), 'previous');
+  assert.equal(fs.existsSync(path.join(home, 'app.prev')), false);
+  if (spawnSync('flock', ['--version']).status === 0) assert.ok(fs.existsSync(path.join(home, 'update.lock.repair')), 'repairs run one after another on update.lock.repair');
+  assert.ok(fs.existsSync(path.join(home, 'app.new')), 'the new copy is left for the installer');
+  // No previous copy either: the new one.
+  fs.rmSync(app, { recursive: true });
+  run();
+  assert.equal(fs.readFileSync(path.join(app, 'src', 'main.ts'), 'utf8'), 'new');
+  // Nothing at all: exits 0 quietly (the unit start goes on to fail on its own terms).
+  fs.rmSync(app, { recursive: true });
+  run();
+  assert.equal(fs.existsSync(app), false);
+  // A private node/ missing after a stop between the runtime's two renames: node.old back (else node.new), app/ untouched.
+  lay('app', 'current');
+  const runtime = (name: string, marker: string) => {
+    fs.mkdirSync(path.join(home, name, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(home, name, 'bin', 'node'), marker);
+  };
+  runtime('node.old', 'old');
+  runtime('node.new', 'new');
+  run();
+  assert.equal(fs.readFileSync(path.join(home, 'node', 'bin', 'node'), 'utf8'), 'old');
+  assert.ok(fs.existsSync(path.join(home, 'node.new')), 'the new runtime is left for the installer');
+  assert.equal(fs.readFileSync(path.join(app, 'src', 'main.ts'), 'utf8'), 'current');
+  fs.rmSync(path.join(home, 'node'), { recursive: true });
+  run();
+  assert.equal(fs.readFileSync(path.join(home, 'node', 'bin', 'node'), 'utf8'), 'new');
+  // node/ present: node.old is left alone (the installer removes it); no runtime at all (system node): nothing to do.
+  runtime('node.old', 'older');
+  run();
+  assert.equal(fs.readFileSync(path.join(home, 'node', 'bin', 'node'), 'utf8'), 'new');
+  assert.ok(fs.existsSync(path.join(home, 'node.old')));
+  fs.rmSync(path.join(home, 'node'), { recursive: true });
+  fs.rmSync(path.join(home, 'node.old'), { recursive: true });
+  run();
+  assert.equal(fs.existsSync(path.join(home, 'node')), false);
+  assert.throws(() => renderRepairScript('/h\nome'), /newline/);
+});
+
+test('--no-auto-update writes the timer units and disables the timer; a checkout gets no timer at all', async () => {
+  const off = makeDeps({ script: { ...tsScript(), ...lingerYes } });
+  asRelease(off.deps);
+  off.touchSocket();
+  assert.equal(await runSetup(off.deps, { ...OPTS, autoUpdate: false }), 0);
+  assert.ok(fs.existsSync(path.join(off.deps.unitDir, UPDATE_TIMER)));
+  assert.ok(off.calls.includes(`systemctl --user disable --now ${UPDATE_TIMER}`));
+  assert.equal(off.calls.some((c) => c === `systemctl --user enable ${UPDATE_TIMER}`), false);
+  assert.match(off.out.join('\n'), /· auto-update off \(--no-auto-update\); on:  systemctl --user enable --now remotly-bridge-update\.timer/);
+  // `disable --now` failing is said as such, with the line that turns it off — not "the bridge runs without it".
+  const stuck = makeDeps({ script: { ...tsScript(), ...lingerYes, [`systemctl --user is-enabled ${UPDATE_TIMER}`]: okRun('enabled\n'), [`systemctl --user disable --now ${UPDATE_TIMER}`]: failRun('Failed to disable unit: Access denied') } });
+  stuck.deps.unitDir = path.join(dir, 'systemd-stuck');
+  asRelease(stuck.deps);
+  stuck.touchSocket();
+  assert.equal(await runSetup(stuck.deps, { ...OPTS, autoUpdate: false }), 0);
+  assert.match(stuck.out.join('\n'), /⚠ could not turn auto-update off \(.*Access denied.*\): remotly-bridge-update\.timer may still be enabled — off:  systemctl --user disable --now remotly-bridge-update\.timer/);
+  assert.equal(stuck.out.join('\n').includes('the bridge runs without it'), false);
+  assert.ok(fs.existsSync(path.join(stuck.deps.unitDir, UPDATE_TIMER)), 'the units stay: they are what --no-auto-update leaves behind');
+  const stuckHome = path.dirname(path.dirname(path.dirname(stuck.deps.mainPath)));
+  assert.equal(fs.existsSync(timerMarkerPath(stuckHome, 'remotly-bridge')), false, "the opt-out is the user's word, whatever disable made of it");
+
+  const checkout = makeDeps({ script: { ...tsScript(), ...lingerYes } });
+  checkout.deps.unitDir = path.join(dir, 'systemd-checkout'); // its own unit dir: the case above wrote the timer units
+  const root = path.join(dir, 'repo');
+  fs.mkdirSync(path.join(root, 'bridge', 'src'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'install.sh'), '');
+  checkout.deps.mainPath = path.join(root, 'bridge', 'src', 'main.ts');
+  checkout.touchSocket();
+  assert.equal(await runSetup(checkout.deps, OPTS), 0);
+  assert.match(checkout.out.join('\n'), new RegExp(`· no update timer: this copy runs from a repository checkout \\(${root}\\), not from an installed release`));
+  assert.equal(fs.existsSync(path.join(checkout.deps.unitDir, UPDATE_TIMER)), false);
+  assert.equal(checkout.calls.some((c) => c.includes('update.timer')), false);
+});
+
+test('a timer that cannot be installed is a warning, not a failed setup; the units it wrote are taken back so the next setup tries again', async () => {
+  const { deps, out, calls, touchSocket } = makeDeps({ script: { ...tsScript(), ...lingerYes, [`systemctl --user enable ${UPDATE_TIMER}`]: failRun('Failed to enable unit: Access denied') } });
+  asRelease(deps);
+  touchSocket();
+  assert.equal(await runSetup(deps, OPTS), 0);
+  assert.match(out.join('\n'), /⚠ could not install the update timer remotly-bridge-update\.timer: .*Access denied.* — the bridge runs without it; `remotly-bridge update` updates by hand/);
+  assert.match(out.join('\n'), /setup complete$/);
+  assert.equal(fs.existsSync(path.join(deps.unitDir, UPDATE_TIMER)), false, 'no half-installed timer left behind');
+  assert.equal(fs.existsSync(path.join(deps.unitDir, 'remotly-bridge-update.service')), false);
+  assert.equal(calls.filter((c) => c === 'systemctl --user daemon-reload').length, 3, 'reloaded after taking them back');
+  // The next setup (systemd cooperating now) does not read the earlier failure as the user's choice.
+  const again = makeDeps({ script: { ...tsScript(), ...lingerYes } });
+  again.deps.unitDir = deps.unitDir;
+  again.touchSocket();
+  assert.equal(await runSetup(again.deps, OPTS), 0);
+  assert.match(again.out.join('\n'), /✔ daily update remotly-bridge-update\.timer/);
+  assert.ok(again.calls.includes(`systemctl --user enable ${UPDATE_TIMER}`));
+  // Units that existed before are left as they are when the daemon-reload fails.
+  const existing = makeDeps({ script: { ...tsScript(), ...lingerYes, [`systemctl --user is-enabled ${UPDATE_TIMER}`]: okRun('enabled\n'), 'systemctl --user daemon-reload': [okRun(), failRun('Failed to reload daemon: Access denied')] } });
+  existing.deps.unitDir = path.join(dir, 'systemd-existing');
+  asRelease(existing.deps);
+  fs.mkdirSync(existing.deps.unitDir, { recursive: true });
+  fs.writeFileSync(path.join(existing.deps.unitDir, UPDATE_TIMER), '# old timer\n');
+  existing.touchSocket();
+  assert.equal(await runSetup(existing.deps, OPTS), 0);
+  assert.match(existing.out.join('\n'), /⚠ could not install the update timer/);
+  assert.match(fs.readFileSync(path.join(existing.deps.unitDir, UPDATE_TIMER), 'utf8'), /^OnCalendar=daily$/m, 'rewritten and kept');
+  // Enabled, then the start fails: the timer is installed and runs from the next boot — the units stay (taking them
+  // back would leave the enabling link dangling) and the message says how to start it now. Fresh install or not.
+  for (const [name, isEnabled] of [
+    ['fresh', NOT_FOUND],
+    ['enabled', okRun('enabled\n')],
+  ] as const) {
+    const late = makeDeps({ script: { ...tsScript(), ...lingerYes, [`systemctl --user is-enabled ${UPDATE_TIMER}`]: isEnabled, [`systemctl --user restart ${UPDATE_TIMER}`]: failRun('Job failed') } });
+    late.deps.unitDir = path.join(dir, `systemd-late-${name}`);
+    asRelease(late.deps);
+    late.touchSocket();
+    assert.equal(await runSetup(late.deps, OPTS), 0, name);
+    assert.match(late.out.join('\n'), /⚠ daily update remotly-bridge-update\.timer is enabled but could not be started now \(.*Job failed.*\); it starts at the next boot, or now:  systemctl --user start remotly-bridge-update\.timer/, name);
+    assert.equal(late.out.join('\n').includes('could not install the update timer'), false, name);
+    assert.ok(fs.existsSync(path.join(late.deps.unitDir, UPDATE_TIMER)), `${name}: the enabled units stay`);
+    assert.ok(fs.existsSync(path.join(late.deps.unitDir, 'remotly-bridge-update.service')), name);
+    assert.ok(late.calls.includes(`systemctl --user enable ${UPDATE_TIMER}`), name);
+    const lateHome = path.dirname(path.dirname(path.dirname(late.deps.mainPath)));
+    assert.equal(fs.existsSync(timerMarkerPath(lateHome, 'remotly-bridge')), false, `${name}: enabled, so the marker is gone`);
+  }
+  // A marker beside an enabled timer (a setup stopped between `enable` and removing the marker) makes the next setup
+  // enable again, but never take the enabled units back when something fails before that.
+  const enabledMarker = makeDeps({ script: { ...tsScript(), ...lingerYes, [`systemctl --user is-enabled ${UPDATE_TIMER}`]: okRun('enabled\n'), 'systemctl --user daemon-reload': [okRun(), failRun('Failed to reload daemon: Access denied')] } });
+  enabledMarker.deps.unitDir = path.join(dir, 'systemd-enabled-marker');
+  asRelease(enabledMarker.deps);
+  fs.mkdirSync(enabledMarker.deps.unitDir, { recursive: true });
+  fs.writeFileSync(path.join(enabledMarker.deps.unitDir, UPDATE_TIMER), '# enabled timer\n');
+  const emHome = path.dirname(path.dirname(path.dirname(enabledMarker.deps.mainPath)));
+  fs.writeFileSync(timerMarkerPath(emHome, 'remotly-bridge'), '');
+  enabledMarker.touchSocket();
+  assert.equal(await runSetup(enabledMarker.deps, OPTS), 0);
+  assert.match(enabledMarker.out.join('\n'), /⚠ could not install the update timer/);
+  assert.ok(fs.existsSync(path.join(enabledMarker.deps.unitDir, UPDATE_TIMER)), 'an enabled timer is never taken back');
+  assert.ok(fs.existsSync(path.join(enabledMarker.deps.unitDir, 'remotly-bridge-update.service')));
+  assert.ok(fs.existsSync(timerMarkerPath(emHome, 'remotly-bridge')), 'the marker stays for the next setup, which enables again');
 });

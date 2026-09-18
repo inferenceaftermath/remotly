@@ -24,9 +24,32 @@ journalctl --user -u remotly-bridge -f -o cat      # JSON lines; `| jq` for filt
 ## Install / upgrade
 
 - Install and upgrade are the same line: `curl -fsSL https://remotly.dev/install.sh | sh` (what it does:
-  `bridge/README.md` "Install"). Config and devices stay; the unit is re-rendered and restarted; a failed upgrade rolls
-  back to the previous release. From a checkout: `git pull`, `npm ci --omit=dev`, `node src/main.ts setup --no-pair
-  --keep-mode` (`--keep-mode` keeps a LAN host in LAN mode; without it `setup` means "Tailscale again").
+  `bridge/README.md` "Install"). Config and devices stay; the unit is re-rendered and restarted. The installer keeps the
+  previous copy in `~/.local/share/remotly/app.prev`; after a failed hand-run upgrade, put that version back with the
+  installer pinned to it (`curl -fsSL https://remotly.dev/install.sh | REMOTLY_VERSION=X.Y.Z sh`, the version in
+  `app.prev/package.json`) — never `mv app.prev app` while `app/` exists, which would nest it inside. From a checkout: `git pull`, `npm ci --omit=dev`, `node src/main.ts setup --no-pair --keep-mode`
+  (`--keep-mode` keeps a LAN host in LAN mode; without it `setup` means "Tailscale again").
+- Upgrades also arrive by themselves: `setup` installs `remotly-bridge-update.timer` (daily, `systemctl --user
+  list-timers`), which runs `remotly-bridge update` — nothing when the running bridge is the latest release, otherwise
+  that release's installer with the settings the first install used (mirror, launcher directory, runtime: they are in
+  the unit). An update counts as done only when the new daemon has answered steadily for half a minute; when the
+  installer fails or the new bridge does not stay up, the previous copy goes back — best effort: only when `app.prev`
+  holds the version that ran before, and a bridge that is still up on the old copy is left alone — and the unit is
+  restarted on it (`app.failed` keeps the bad one; the reason is in `journalctl --user -u remotly-bridge-update`). One
+  run at a time (`update.lock`, a `flock` lock that `install.sh` takes too — or, started by `update`, confirms on the
+  descriptor it was handed); a run that was stopped half-way is finished by the next one (`update-pending.json`).
+  A stop between an install's or a rollback's two renames (power loss) leaves no `app/`: both units run
+  `<home>/repair-app.sh` first, which puts `app.prev` back, and a private `node/` back from `node.old` (not while an
+  install holds the lock; two repairs queue on `update.lock.repair`). A stopped bridge (`systemctl --user stop`) is not
+  updated — and a stop during the update stands too: the installer's `setup` runs with `--keep-stopped`, and neither it
+  nor a run that finishes an earlier one restarts a stopped unit (or one whose state systemd does not tell) — an update
+  starts the bridge; a `failed` one (crash loop) is updated, since the update may be what repairs it. Everything else
+  is by hand: when a run cannot do something itself it prints the exact line — that release's installer with this
+  install's settings (`REMOTLY_HOME`, release base, launcher directory, runtime, unit, herdr selection,
+  `--config-dir`); the generic form is `curl -fsSL https://remotly.dev/install.sh |
+  REMOTLY_VERSION=X.Y.Z sh` (the variable must reach `sh`, not `curl`) for a default install. Off: `systemctl --user disable --now remotly-bridge-update.timer` (or `setup --no-auto-update`; a masked
+  timer or update service is respected too); on demand: `remotly-bridge update`. A checkout gets no timer (`update`
+  refuses it; `ci/deploy-bridge.sh` delivers there).
 - Config changes (`~/.config/remotly/config.json`) need `systemctl --user restart remotly-bridge`. Invalid config → the
   unit fails fast with a precise message in the journal.
 - Photos uploaded from the phones (`POST /upload`) are files under `~/.local/share/remotly/uploads/<YYYY-MM-DD>/` (0600,
