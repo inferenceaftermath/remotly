@@ -27,7 +27,7 @@ Remotly is three code bases and a Worker that must agree on one wire protocol, s
 |---|---|---|
 | `bridge/` | Node ≥ 24 (runs TypeScript directly) | `npm ci`, `npm run typecheck`, `npm test` |
 | `relay/` | Node ≥ 24 | `npm ci`, `npm run typecheck`, `npm test`; deploying needs a Cloudflare account (`relay/README.md`) |
-| `android/` | JDK 17, Android SDK platform 36 | `./gradlew :core:test :app:assembleDebug :app:lintDebug` (`android/README.md`) |
+| `android/` | JDK 17, Android SDK platform 37 | `./gradlew :core:test :app:assembleDebug :app:lintDebug` (`android/README.md`) |
 | `ios/` | macOS, Xcode 26, xcodegen | `cd ios/FlowKit && swift test`; the app: `xcodegen generate`, then build (`ios/README.md`) |
 
 `.github/workflows/ci.yml` runs the same checks on GitHub-hosted runners for every pull request. `deliver.yml`

@@ -16,6 +16,13 @@ them (`ci/plan.sh` picks the lanes; `docs/DELIVERY.md`).
 - iOS includes the required-reason privacy manifest for its own saved preferences (`UserDefaults`, `CA92.1`).
 - Entering demo cancels pending real-host notification actions before they can send, including a delayed connection.
 
+### Android — build toolchain
+
+- Gradle 9.7.1, Android Gradle Plugin 9.4.0 (its built-in Kotlin replaces the `kotlin-android` plugin; `:core` keeps the
+  Kotlin Gradle plugin, which sets Kotlin 2.4.20 for the whole build), JUnit 6.1.3, Firebase Messaging 25.1.3 and the
+  current androidx.core, coroutines, serialization, Google Services and ZXing releases. Nothing changes for users; the
+  FCM registration token that Firebase now deprecates stays in use until the installation-id move (`docs/BACKLOG.md`).
+
 ### Bridge — next release
 
 - `remotly-bridge update` and a daily `remotly-bridge-update.timer` (installed by `setup`; `--no-auto-update` or
