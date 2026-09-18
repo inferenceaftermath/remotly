@@ -48,6 +48,7 @@ main() {
     trap 'cleanup' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
+    take_lock
     recover_interrupted
 
     find_node
@@ -76,6 +77,26 @@ main() {
 cleanup() {
     rm -rf "${TMP:-}"
     recover_interrupted
+}
+
+# One install or update of this home at a time: `remotly-bridge update` (the daily timer) and a hand-run installer must
+# not move app/ under each other. The lock is flock(1)'s on update.lock, held by this shell (and by the `setup` it execs
+# into) until it exits, however it exits. Started by `update`, this shell inherits update's own lock descriptor (the
+# links under /proc/self/fd name the files): a lock is per open file, so `flock -n` on that descriptor confirms the lock
+# it holds (an open descriptor alone proves nothing) and a second one would only conflict with it.
+take_lock() {
+    lock="$REMOTLY_HOME/update.lock"
+    command -v flock >/dev/null 2>&1 || { warn "flock not found (util-linux): installing without a lock against a concurrent remotly-bridge update"; return; }
+    want="$(readlink -f "$lock" 2>/dev/null || echo "$lock")"
+    for fd in /proc/self/fd/*; do
+        [ "$(readlink "$fd" 2>/dev/null)" = "$want" ] || continue
+        flock -n "${fd##*/}" || err "a descriptor on $lock was inherited, but another install or update of $REMOTLY_HOME holds the lock; try again in a minute"
+        log "running under remotly-bridge update's lock"
+        return
+    done
+    mkdir -p "$REMOTLY_HOME"
+    exec 9>"$lock"
+    flock -n 9 || err "another install or update of $REMOTLY_HOME is running (remotly-bridge update, or its daily timer); try again in a minute"
 }
 
 # After an interrupted or killed run, app/ or node/ may be missing while the previous copy sits beside it: put it back.
@@ -227,7 +248,8 @@ install_app() {
     rm -rf "$APP.new"; mkdir -p "$APP.new"
     tar -xzf "$TMP/$file" -C "$APP.new" --strip-components=1 || err "could not extract $file"
     { [ -f "$APP.new/src/main.ts" ] && [ -d "$APP.new/node_modules" ]; } || err "unexpected tarball layout"
-    # Keep the previous copy for a manual rollback (mv it back and restart the unit); the one before that goes.
+    # Keep the previous copy in app.prev (`remotly-bridge update` rolls back onto it; by hand, this installer pinned to
+    # that version puts it back — never `mv` over a present app/, which nests); the one before that goes.
     # Two renames; `recover_interrupted` puts app.prev back if the second one never happens — from the trap when this
     # run is interrupted, or at the start of the next run after a power loss (the unit and launcher point at app/).
     rm -rf "$APP.prev"

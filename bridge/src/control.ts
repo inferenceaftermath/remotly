@@ -28,6 +28,8 @@ export interface DeviceSummary {
 export interface ControlStatus {
   /** The daemon's pid, so `setup` can tell the unit it just restarted from another instance on the same socket. */
   pid?: number;
+  /** The daemon's version, so `update` can tell a bridge still running the code from before an unfinished update. Absent before 0.2.0. */
+  version?: string;
   herdr: 'up' | 'down';
   listen: { host: string; port: number } | null;
   tls: { mode: 'tailscale' | 'selfsigned'; not_after: string; fingerprint?: string };

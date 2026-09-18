@@ -38,7 +38,8 @@ Google. Nothing to copy. A host that has credentials of its own (you built the a
    check prints its fix and the setup continues by itself once you have applied it — e.g. `sudo tailscale set
    --operator=$USER` when Tailscale refuses certificate requests), requests the certificate, installs the
    `remotly-bridge` user service so it survives logout and reboot, waits for it to come up, and prints one pairing QR.
-   Re-run the same line later to upgrade; `remotly-bridge doctor` prints a fix for every failing check. A host without
+   Upgrades arrive by themselves (a daily `remotly-bridge-update.timer` runs `remotly-bridge update`; run that yourself
+   for one now); `remotly-bridge doctor` prints a fix for every failing check. A host without
    Tailscale (Android phones on the same LAN only): `curl -fsSL https://remotly.dev/install.sh | sh -s -- --lan`.
    `~/.config/remotly/config.json` is written with defaults and needs no edits (every key in `bridge/README.md`).
    Photos sent from the phones' composers land under `~/.local/share/remotly/uploads/<date>/` (`uploads.dir`; day folders

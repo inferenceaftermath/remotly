@@ -17,7 +17,7 @@ tar -C "$dist" --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$epoch"
 rm -rf "$stage"
 cp "$here/../install.sh" "$dist/install.sh"
 (cd "$dist" && sha256sum "$name.tar.gz" install.sh > SHA256SUMS)
-for f in LICENSE NOTICE src/main.ts src/setup.ts; do
+for f in LICENSE NOTICE src/main.ts src/setup.ts src/update.ts; do
   tar -tzf "$dist/$name.tar.gz" "$name/$f" >/dev/null 2>&1 || { echo "package.sh: $f missing from $name.tar.gz" >&2; exit 1; }
 done
 ls -la "$dist"

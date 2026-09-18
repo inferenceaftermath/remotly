@@ -16,6 +16,17 @@ them (`ci/plan.sh` picks the lanes; `docs/DELIVERY.md`).
 - iOS includes the required-reason privacy manifest for its own saved preferences (`UserDefaults`, `CA92.1`).
 - Entering demo cancels pending real-host notification actions before they can send, including a delayed connection.
 
+### Bridge — next release
+
+- `remotly-bridge update` and a daily `remotly-bridge-update.timer` (installed by `setup`; `--no-auto-update` or
+  `systemctl --user disable --now` turns it off): the host installs each new release by itself — nothing when current,
+  otherwise that release's installer with the first install's settings (mirror, launcher directory, runtime); done
+  when the new daemon has answered steadily, otherwise a best-effort rollback: the previous copy goes back when it can
+  be verified as the one that ran before, else the output prints the by-hand line with this install's settings. One
+  run at a time; a run stopped half-way is finished by the next; a stopped bridge is left stopped (`setup
+  --keep-stopped`, which the update passes), a failed one (crash loop) is updated; both units repair a missing `app/`
+  (or `node/`) before they start. `status` shows the daemon's version.
+
 ### Bridge 0.1.0 — first public release
 
 - `remotly-bridge setup` and `curl -fsSL https://remotly.dev/install.sh | sh`: one command installs the bridge (with a

@@ -9,6 +9,7 @@ import { expandHome } from './config.ts';
 import type { ControlStatus, PairInfo } from './control.ts';
 import { tailscaleCertArgs } from './server/tls.ts';
 import { magicDnsName, type ExecFn, type TailscaleStatus, selfIdentified } from './tailscale.ts';
+import { installLayout, launcherDir } from './update.ts';
 
 export const HERDR_INSTALL = 'curl -fsSL https://herdr.dev/install.sh | sh';
 export const TAILSCALE_INSTALL = 'curl -fsSL https://tailscale.com/install.sh | sh';
@@ -43,6 +44,14 @@ export interface SetupOptions {
   /** Print a pairing QR at the end (default). */
   pair: boolean;
   ttlSec: number;
+  /** Enable the daily update timer (default). false (`--no-auto-update`): the timer units are written but left disabled. */
+  autoUpdate?: boolean;
+  /**
+   * Leave a stopped unit stopped: written, reloaded and enabled, but not restarted (`--keep-stopped`; what `update`
+   * passes, so an operator's stop while an unattended update runs stands). A running or failed unit is restarted as
+   * always; no answer from systemd is not read as "running".
+   */
+  keepStopped?: boolean;
 }
 
 /** What `--lan` writes into config.json (keys the daemon otherwise resolves from Tailscale's presence). */
@@ -89,6 +98,12 @@ export function parseSetupArgs(argv: string[], env: NodeJS.ProcessEnv = process.
         break;
       case '--no-pair':
         opts.pair = false;
+        break;
+      case '--no-auto-update':
+        opts.autoUpdate = false;
+        break;
+      case '--keep-stopped':
+        opts.keepStopped = true;
         break;
       default:
         throw new Error(`unknown setup option "${a}"`);
@@ -173,6 +188,8 @@ export interface SetupDeps {
   /** Node binary the unit runs (see `stableNodePath`) and the bridge's own main.ts. */
   nodePath: string;
   mainPath: string;
+  /** The process environment: the installer's REMOTLY_* settings (mirror, launcher dir, runtime) are carried into the update unit. */
+  env: NodeJS.ProcessEnv;
   /** `~/.config/systemd/user`. */
   unitDir: string;
   configPath: string;
@@ -232,7 +249,49 @@ function q(s: string): string {
   return `"${s.replace(/%/g, '%%')}"`;
 }
 
-export function renderUnit(o: { nodePath: string; mainPath: string; configDir?: string | undefined; herdrSession?: string | undefined; herdrSocket?: string | undefined }): string {
+/** Shell single-quoting for a generated script (`'` → `'\''`); a newline is refused, the unit could not carry the path anyway. */
+function sq(s: string): string {
+  if (s.includes('\n')) throw new Error(`cannot put ${JSON.stringify(s)} in a shell script (newline)`);
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+export const repairScriptPath = (home: string): string => path.join(home, 'repair-app.sh');
+/** Present while a setup is installing `unit`'s update timer; a later setup finding it knows that timer's "disabled" is not the user's word (one per timer: two units may share one install). */
+export const timerMarkerPath = (home: string, unit: string): string => path.join(home, `${updateUnitNames(unit).timer}.enabling`);
+
+/** What `systemctl is-enabled` can print (systemd.unit's UnitFileState), plus its `not-found`. */
+const UNIT_FILE_STATES = new Set(['enabled', 'enabled-runtime', 'linked', 'linked-runtime', 'alias', 'masked', 'masked-runtime', 'static', 'indirect', 'disabled', 'generated', 'transient', 'bad', 'not-found']);
+
+/**
+ * What both units run first (`ExecStartPre`) on an installed release: an install or a rollback stopped between its two
+ * renames (power loss) leaves no `app/` at all, and nothing that could repair it would start — this puts the previous
+ * copy back, else the new one (never a failed one); a private `node/` likewise from `node.old`. Nothing when app/ is
+ * there in any form, and nothing while an install or update holds `update.lock` (they are between their renames on
+ * purpose). Two units starting together run it twice: `update.lock.repair` puts the second in line behind the first,
+ * so it finds the copy back rather than its unit starting over a directory still being moved.
+ */
+export function renderRepairScript(home: string): string {
+  return [
+    '#!/bin/sh',
+    '# Written by `remotly-bridge setup`; run by the bridge unit and the update unit before they start. Puts app/ back',
+    '# when an install or a rollback was stopped between its two renames (the previous copy first, else the new one),',
+    '# and a private node/ back from node.old (else node.new). Nothing while an install or update holds update.lock: it',
+    '# is between its renames on purpose. Repairs run one after another (update.lock.repair): the second waits for the',
+    '# first and then finds nothing left to do, so its unit starts on a copy that is there.',
+    `app=${sq(path.join(home, 'app'))}`,
+    `node=${sq(path.join(home, 'node'))}`,
+    `lock=${sq(path.join(home, 'update.lock'))}`,
+    'need() { [ ! -e "$app" ] || { [ ! -e "$node" ] && { [ -d "$node.old" ] || [ -d "$node.new" ]; }; }; }',
+    'need || exit 0',
+    'if command -v flock >/dev/null 2>&1; then exec 8>"$lock.repair"; flock 8; exec 9>"$lock"; flock -n 9 || exit 0; fi',
+    'if [ ! -e "$app" ]; then if [ -d "$app.prev" ]; then mv "$app.prev" "$app"; elif [ -d "$app.new" ]; then mv "$app.new" "$app"; fi; fi',
+    'if [ ! -e "$node" ]; then if [ -d "$node.old" ]; then mv "$node.old" "$node"; elif [ -d "$node.new" ]; then mv "$node.new" "$node"; fi; fi',
+    'exit 0',
+    '',
+  ].join('\n');
+}
+
+export function renderUnit(o: { nodePath: string; mainPath: string; configDir?: string | undefined; herdrSession?: string | undefined; herdrSocket?: string | undefined; repairScript?: string | undefined }): string {
   // A user unit cannot order itself after the system `tailscaled.service` (the user manager does not see system units),
   // so `serve` itself waits for Tailscale at start-up (server/tailscale-wait.ts) instead of an `After=` that would be ignored.
   const lines = [
@@ -242,6 +301,7 @@ export function renderUnit(o: { nodePath: string; mainPath: string; configDir?: 
     'Wants=network-online.target',
     '',
     '[Service]',
+    ...(o.repairScript ? [`ExecStartPre=-/bin/sh ${q(o.repairScript)}`] : []),
     `ExecStart=${q(o.nodePath)} ${q(o.mainPath)} serve`,
     'Restart=always',
     'RestartSec=2',
@@ -252,6 +312,64 @@ export function renderUnit(o: { nodePath: string; mainPath: string; configDir?: 
   if (o.herdrSocket) lines.push(`Environment=${q(`HERDR_SOCKET_PATH=${o.herdrSocket}`)}`);
   lines.push('', '[Install]', 'WantedBy=default.target', '');
   return lines.join('\n');
+}
+
+/** The two units of the daily update: `<unit>-update.service` (oneshot, runs `update`) and `<unit>-update.timer`. */
+export function updateUnitNames(unit: string): { service: string; timer: string } {
+  const base = `${unit.replace(/\.service$/, '')}-update`;
+  return { service: `${base}.service`, timer: `${base}.timer` };
+}
+
+/** The installer settings a later `update` has to repeat, as its unit's Environment= lines: where releases come from, where Node comes from, the launcher directory, the runtime. */
+export const INSTALLER_ENV = ['REMOTLY_RELEASE_URL', 'REMOTLY_NODE_DIST', 'REMOTLY_BIN_DIR', 'REMOTLY_NODE'] as const;
+
+/**
+ * What the update unit must carry so that an unattended run installs the same way the hand-run installer did: a
+ * mirror (REMOTLY_RELEASE_URL, REMOTLY_NODE_DIST) and a launcher directory (REMOTLY_BIN_DIR) from the environment —
+ * the installer exports them to `setup` — or the launcher found on PATH; the runtime (REMOTLY_NODE) is the unit's own
+ * Node unless it is the private one under `<home>/node`, which the installer refreshes itself.
+ */
+export function installerEnv(env: NodeJS.ProcessEnv, nodePath: string, mainPath: string, home: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of ['REMOTLY_RELEASE_URL', 'REMOTLY_NODE_DIST', 'REMOTLY_BIN_DIR'] as const) {
+    const v = env[k]?.trim();
+    if (v) out[k] = v;
+  }
+  if (!out['REMOTLY_BIN_DIR']) {
+    const bin = launcherDir((env['PATH'] ?? '').split(path.delimiter), mainPath);
+    if (bin) out['REMOTLY_BIN_DIR'] = bin;
+  }
+  if (!nodePath.startsWith(path.join(home, 'node') + path.sep)) out['REMOTLY_NODE'] = nodePath;
+  return out;
+}
+
+/** `update` runs with the bridge's environment (unit, config dir, herdr) so the installer's `setup` re-renders the same unit, and with the installer's own settings (`installerEnv`). */
+export function renderUpdateUnits(o: { unit: string; nodePath: string; mainPath: string; configDir?: string | undefined; herdrSession?: string | undefined; herdrSocket?: string | undefined; installerEnv?: Record<string, string> | undefined; repairScript?: string | undefined }): { service: string; timer: string } {
+  const service = [
+    '[Unit]',
+    `Description=Remotly bridge update (installs the newest release for ${o.unit})`,
+    'After=network-online.target',
+    'Wants=network-online.target',
+    '',
+    '[Service]',
+    'Type=oneshot',
+    ...(o.repairScript ? [`ExecStartPre=-/bin/sh ${q(o.repairScript)}`] : []),
+    `ExecStart=${q(o.nodePath)} ${q(o.mainPath)} update`,
+    'Environment=NODE_ENV=production',
+    `Environment=${q(`REMOTLY_SYSTEMD_UNIT=${o.unit}`)}`,
+  ];
+  if (o.configDir) service.push(`Environment=${q(`REMOTLY_CONFIG_DIR=${o.configDir}`)}`);
+  if (o.herdrSession) service.push(`Environment=${q(`HERDR_SESSION=${o.herdrSession}`)}`);
+  if (o.herdrSocket) service.push(`Environment=${q(`HERDR_SOCKET_PATH=${o.herdrSocket}`)}`);
+  for (const k of INSTALLER_ENV) {
+    const v = o.installerEnv?.[k];
+    if (v) service.push(`Environment=${q(`${k}=${v}`)}`);
+  }
+  service.push('');
+  // Daily, at a random moment within an hour of midnight (hosts do not all hit GitHub at once); a missed day (host
+  // off) runs at the next boot.
+  const timer = ['[Unit]', `Description=Remotly bridge update, daily (${o.unit})`, '', '[Timer]', 'OnCalendar=daily', 'RandomizedDelaySec=1h', 'Persistent=true', '', '[Install]', 'WantedBy=timers.target', ''];
+  return { service: service.join('\n'), timer: timer.join('\n') };
 }
 
 /** `name` is null only for `cert: false` checks on a tailnet without MagicDNS. */
@@ -438,17 +556,150 @@ async function systemdCheck(deps: SetupDeps): Promise<Check> {
   };
 }
 
-async function installUnit(deps: SetupDeps, opts: SetupOptions): Promise<void> {
+/** For an installed release, the repair script both units run first (written here, so it follows this install); undefined otherwise. */
+function installRepairScript(deps: SetupDeps): string | undefined {
+  const layout = installLayout(deps.mainPath);
+  if (layout.kind !== 'release') return undefined;
+  const file = repairScriptPath(layout.home);
+  fs.rmSync(`${file}.tmp`, { force: true });
+  fs.writeFileSync(`${file}.tmp`, renderRepairScript(layout.home), { mode: 0o755 });
+  fs.chmodSync(`${file}.tmp`, 0o755); // the mode above is filtered by the umask
+  fs.renameSync(`${file}.tmp`, file);
+  return file;
+}
+
+/** Writes, reloads, enables and restarts the unit; false when `--keep-stopped` found it stopped and left it so. */
+async function installUnit(deps: SetupDeps, opts: SetupOptions): Promise<boolean> {
   fs.mkdirSync(deps.unitDir, { recursive: true });
   const unitPath = path.join(deps.unitDir, unitFile(opts.unit)); // the same name every systemctl call uses
-  const text = renderUnit({ nodePath: deps.nodePath, mainPath: deps.mainPath, configDir: opts.configDir, herdrSession: opts.herdrSession, herdrSocket: opts.herdrSocket });
+  const text = renderUnit({ nodePath: deps.nodePath, mainPath: deps.mainPath, configDir: opts.configDir, herdrSession: opts.herdrSession, herdrSocket: opts.herdrSocket, repairScript: installRepairScript(deps) });
   fs.writeFileSync(`${unitPath}.tmp`, text);
   fs.renameSync(`${unitPath}.tmp`, unitPath);
   await run(deps, 'systemctl', ['--user', 'daemon-reload']);
   await run(deps, 'systemctl', ['--user', 'enable', unitFile(opts.unit)]);
+  if (opts.keepStopped) {
+    // Read right before the restart (the checks above may have taken a while): a unit an operator stopped meanwhile is
+    // not started by an unattended update; a `failed` one (crash loop) was running and is. No answer is neither.
+    const st = await unitState(deps, opts.unit);
+    const stopped = st === null ? 'systemd did not say whether it is running' : st.load === 'loaded' && (st.active === 'inactive' || st.active === 'deactivating') ? `it is ${st.active}` : null;
+    if (stopped !== null) {
+      deps.out(`  · service ${opts.unit} installed at ${unitPath} (node ${deps.nodePath}), but ${stopped}: left stopped (--keep-stopped);  systemctl --user start ${unitFile(opts.unit)}`);
+      return false;
+    }
+  }
   // `restart` also starts a stopped unit, and a running one picks up the code this setup belongs to.
   await run(deps, 'systemctl', ['--user', 'restart', unitFile(opts.unit)]);
   deps.out(`  ✔ service ${opts.unit} installed at ${unitPath} (node ${deps.nodePath})`);
+  return true;
+}
+
+/**
+ * The daily update timer, for an installed release only (a checkout has its own delivery; `update` would only ever
+ * refuse). Written on every setup so it follows the node and paths of this install; enabled on the first install,
+ * afterwards left as the user has it: a timer they disabled or masked stays that way (`--no-auto-update` writes it
+ * disabled). Never fails the setup: the bridge matters more than its updater.
+ */
+async function installUpdateTimer(deps: SetupDeps, opts: SetupOptions): Promise<void> {
+  const names = updateUnitNames(opts.unit);
+  const layout = installLayout(deps.mainPath);
+  if (layout.kind !== 'release') {
+    deps.out(`  · no update timer: this copy runs from ${layout.kind === 'checkout' ? `a repository checkout (${layout.root})` : deps.mainPath}, not from an installed release`);
+    return;
+  }
+  const timerPath = path.join(deps.unitDir, names.timer);
+  const servicePath = path.join(deps.unitDir, names.service);
+  const marker = timerMarkerPath(layout.home, opts.unit);
+  let fresh = false;
+  let takeBack = false; // units this setup wrote and has not enabled: taken back should it fail — never an enabled timer's
+  try {
+    // `is-enabled` of both units, wherever they live (a mask is a symlink under the same directory, a runtime mask
+    // under /run): a mask on either is the user's word — a masked timer never fires, a masked service makes the timer
+    // fail every day. Its stdout is the state (`enabled`, `enabled-runtime`, `disabled`, `masked`, `masked-runtime`, …);
+    // `not-found` (exit 4; an older systemd prints nothing and complains on stderr) means the unit does not exist yet.
+    // Anything else — no answer, an error — leaves the units as they are: a query that failed must not pass for "fresh"
+    // and enable a timer the user turned off.
+    let unreadable = '';
+    const stateOf = async (u: string): Promise<string> => {
+      const r = await deps.exec('systemctl', ['--user', 'is-enabled', u]);
+      const s = r.stdout.trim();
+      if (UNIT_FILE_STATES.has(s)) return s;
+      // The older form names the unit file state it could not get: a bus that is not there says "No such file" too.
+      if (s === '' && (r.code === 4 || /unit file state for \S+: no such file/i.test(r.stderr))) return 'not-found';
+      unreadable ||= `systemctl --user is-enabled ${u}: ${r.code === null ? 'did not run' : `exit ${r.code}`}${(r.stderr || r.stdout).trim() ? `, ${(r.stderr || r.stdout).trim()}` : ', no output'}`;
+      return '';
+    };
+    const timerState = await stateOf(names.timer);
+    const serviceState = await stateOf(names.service);
+    if (unreadable) {
+      deps.out(`  ⚠ cannot tell whether ${names.timer} is enabled (${unreadable}); the update units are left as they are`);
+      return;
+    }
+    const masked = [names.timer, names.service].filter((u, i) => [timerState, serviceState][i]?.startsWith('masked'));
+    if (masked.length > 0) {
+      fs.rmSync(marker, { force: true }); // the user's word, whatever an interrupted setup left behind
+      deps.out(`  · auto-update off: ${masked.join(' and ')} ${masked.length > 1 ? 'are' : 'is'} masked (systemctl --user unmask ${masked.join(' ')}, then setup again, turns it on)`);
+      return;
+    }
+    // A marker left by a setup that stopped between writing the timer and enabling it: that "disabled" is not the
+    // user's word either.
+    fresh = timerState === 'not-found' || fs.existsSync(marker);
+    takeBack = fresh && timerState !== 'enabled' && timerState !== 'enabled-runtime'; // a marker beside an enabled timer: a setup stopped between `enable` and removing it
+    if (fresh) fs.writeFileSync(marker, '');
+    const units = renderUpdateUnits({
+      unit: opts.unit,
+      nodePath: deps.nodePath,
+      mainPath: deps.mainPath,
+      configDir: opts.configDir,
+      herdrSession: opts.herdrSession,
+      herdrSocket: opts.herdrSocket,
+      installerEnv: installerEnv(deps.env, deps.nodePath, deps.mainPath, layout.home),
+      repairScript: repairScriptPath(layout.home), // written by installUnit just before
+    });
+    for (const [file, text] of [[servicePath, units.service], [timerPath, units.timer]] as const) {
+      fs.writeFileSync(`${file}.tmp`, text);
+      fs.renameSync(`${file}.tmp`, file);
+    }
+    await run(deps, 'systemctl', ['--user', 'daemon-reload']);
+    if (opts.autoUpdate === false) {
+      fs.rmSync(marker, { force: true }); // the user's word, whatever `disable` makes of it
+      try {
+        await run(deps, 'systemctl', ['--user', 'disable', '--now', names.timer]);
+      } catch (err) {
+        // The units stay (they are what --no-auto-update leaves behind, disabled); a timer that was enabled before may still be.
+        deps.out(`  ⚠ could not turn auto-update off (${(err as Error).message}): ${names.timer} may still be enabled — off:  systemctl --user disable --now ${names.timer}`);
+        return;
+      }
+      deps.out(`  · auto-update off (--no-auto-update); on:  systemctl --user enable --now ${names.timer}`);
+      return;
+    }
+    // A timer that exists and is not enabled was turned off by the user (`disable`, or never enabled after
+    // --no-auto-update): later setups leave that alone. `enabled-runtime` is enabled until the next boot — made
+    // permanent below like a fresh one. Anything else (`linked`, `static`, …) is a hand-made arrangement: left alone.
+    if (!fresh && timerState !== 'enabled' && timerState !== 'enabled-runtime') {
+      const active = (await deps.exec('systemctl', ['--user', 'is-active', names.timer])).stdout.trim() === 'active';
+      deps.out(`  · auto-update off (${names.timer} is ${timerState}${active ? ', started by hand: it runs until the next boot only' : ''}); on:  systemctl --user enable --now ${names.timer}`);
+      return;
+    }
+    await run(deps, 'systemctl', ['--user', 'enable', names.timer]);
+    takeBack = false; // enabled: the files stay whatever happens next (taking them back would leave the enabling link dangling)
+    fs.rmSync(marker, { force: true }); // and from here on a "disabled" is the user's word (a stop before the restart leaves it enabled)
+    try {
+      await run(deps, 'systemctl', ['--user', 'restart', names.timer]); // starts it, and a running one re-reads the schedule
+    } catch (err) {
+      // Enabled, so it runs from the next boot; the units stay (taking them back would leave the enabling link dangling).
+      deps.out(`  ⚠ daily update ${names.timer} is enabled but could not be started now (${(err as Error).message}); it starts at the next boot, or now:  systemctl --user start ${names.timer}`);
+      return;
+    }
+    deps.out(`  ✔ daily update ${names.timer} (runs \`remotly-bridge update\`; off:  systemctl --user disable --now ${names.timer})`);
+  } catch (err) {
+    // Units this setup wrote and could not enable are taken back: left in place, the next setup would read their
+    // "disabled" as the user's choice and never try again. (The marker stays too, for a setup stopped by a signal.)
+    if (takeBack) {
+      for (const f of [timerPath, servicePath]) fs.rmSync(f, { force: true });
+      await deps.exec('systemctl', ['--user', 'daemon-reload']);
+    }
+    deps.out(`  ⚠ could not install the update timer ${names.timer}: ${(err as Error).message} — the bridge runs without it; \`remotly-bridge update\` updates by hand`);
+  }
 }
 
 async function ensureLinger(deps: SetupDeps): Promise<void> {
@@ -643,13 +894,20 @@ export async function runSetup(deps: SetupDeps, opts: SetupOptions): Promise<num
     return 1;
   }
   if (!(await ownershipGuard(deps, opts))) return 1; // again: the checks above may have waited for minutes
+  let started: boolean;
   try {
-    await installUnit(deps, opts);
+    started = await installUnit(deps, opts);
   } catch (err) {
     deps.out(`  ✖ ${(err as Error).message}`);
     return 1;
   }
   await ensureLinger(deps);
+  await installUpdateTimer(deps, opts);
+  if (!started) {
+    // Nothing to wait for or to pair with: the unit was left stopped on purpose.
+    deps.out(`setup complete (${opts.unit} left stopped)`);
+    return 0;
+  }
 
   const { status, other } = await waitHealthy(deps, opts.unit);
   if (!status) {

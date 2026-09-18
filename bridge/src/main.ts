@@ -1,4 +1,5 @@
-// CLI entry: `remotly-bridge setup | serve | pair | devices | status | push-test | doctor` (§6.1).
+// CLI entry: `remotly-bridge setup | serve | pair | devices | status | push-test | doctor | update` (§6.1).
+import { spawn as spawnProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,15 +26,17 @@ import { buildQrPayload, PairingManager, pairFallbackHost, pairUrl } from './ser
 import { Session } from './server/session.ts';
 import { certInfo, ensureTls, lanIPv4Addresses, startTlsRenewal, tlsPaths, type TlsMaterial } from './server/tls.ts';
 import { execFile as spawn, tailscaleIp4, type TailscaleStatus } from './tailscale.ts';
+import { LOCK_TAKEN_EXIT, inheritedLockFd, runUpdate, type UpdateDeps } from './update.ts';
 
 export const VERSION: string = pkg.version;
 
 const USAGE = `remotly-bridge ${VERSION}
 usage: remotly-bridge <command>
-  setup [--ttl N] [--no-pair] [--no-wait] [--lan] [--keep-mode]
+  setup [--ttl N] [--no-pair] [--no-wait] [--lan] [--keep-mode] [--keep-stopped] [--no-auto-update]
         [--unit NAME] [--config-dir DIR] [--herdr-session NAME] [--herdr-socket PATH]
                               check herdr and Tailscale, get the certificate, install and start the user
-                              service, print one pairing QR for all your phones (what install.sh runs)
+                              service and the daily update timer, print one pairing QR for all your phones
+                              (what install.sh runs)
   serve                       run the daemon (systemd)
   pair [--manual] [--ttl N]   create a single-use pairing code; prints a QR unless --manual
   devices list                list paired devices
@@ -41,6 +44,9 @@ usage: remotly-bridge <command>
   status                      daemon status (herdr, listener, TLS, devices, push)
   push-test <device_id>       send a test notification
   doctor                      environment checks
+  update                      install the newest release when this is not it (what the daily timer runs); a bridge
+                              that does not stay up on it gets the previous copy back when that copy can be verified,
+                              otherwise the output says what to do by hand
 env: REMOTLY_CONFIG_DIR (default ~/.config/remotly), REMOTLY_LOG_LEVEL (debug|info|warn|error), REMOTLY_SYSTEMD_UNIT (the unit setup installs and doctor checks; default remotly-bridge)`;
 
 function arg(argv: string[], name: string): string | undefined {
@@ -150,6 +156,7 @@ async function serve(log: Logger): Promise<void> {
       devices: devices.list().length,
       push: { apns: apns !== null, fcm: fcm !== null, mode: pushMode },
       clients: hub.clientCount,
+      version: VERSION,
     }),
     pushTest: (id) => notifier.pushTest(id),
   };
@@ -253,6 +260,7 @@ async function setup(argv: string[]): Promise<void> {
     uid: process.getuid?.() ?? -1,
     nodePath: stableNodePath(process.execPath, home),
     mainPath: fileURLToPath(import.meta.url),
+    env: process.env,
     unitDir: systemdUserDir(process.env, home),
     configPath: configPath(),
     tlsDir: tlsDir(),
@@ -286,6 +294,7 @@ async function devicesCmd(argv: string[]): Promise<void> {
 
 async function status(): Promise<void> {
   const s = await control<ControlStatus>({ cmd: 'status' });
+  console.log(`version:  ${s.version ?? '-'}`);
   console.log(`herdr:    ${s.herdr}`);
   console.log(`listen:   ${s.listen ? `${s.listen.host}:${s.listen.port}` : '-'}`);
   console.log(`tls:      ${s.tls.mode}, expires ${s.tls.not_after}${s.tls.fingerprint ? `, fingerprint ${s.tls.fingerprint}` : ''}`);
@@ -482,6 +491,66 @@ async function doctor(): Promise<void> {
   if (failures > 0) process.exitCode = 1;
 }
 
+// ---- update -----------------------------------------------------------------------------------
+
+async function update(): Promise<void> {
+  const deps: UpdateDeps = {
+    version: VERSION,
+    mainPath: fileURLToPath(import.meta.url),
+    // The runtime the unit was set up with (setup writes it into the update unit); by hand, the same reading of this
+    // process's node as setup uses (an fnm alias stays an alias, `process.execPath` would pin the version behind it).
+    nodePath: process.env['REMOTLY_NODE'] ?? stableNodePath(process.execPath, os.homedir()),
+    env: process.env,
+    pathDirs: (process.env['PATH'] ?? '').split(path.delimiter),
+    unit: process.env['REMOTLY_SYSTEMD_UNIT'] ?? 'remotly-bridge',
+    out: (line) => console.log(line),
+    exec: spawn,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    now: Date.now,
+    heldLockFd: inheritedLockFd,
+    relock: (cmd, args, env) =>
+      new Promise((resolve) => {
+        const child = spawnProcess(cmd, args, { stdio: 'inherit', env });
+        child.on('error', (err) => resolve({ code: null, signal: null, error: err.message }));
+        child.on('exit', (code, signal) => resolve({ code, signal }));
+      }),
+    // flock on the inherited descriptor, handed to it as fd 3: a lock is per open file, so what the child confirms (or
+    // takes) on its fd 3 is held by this process's descriptor once the child is gone.
+    confirmLock: (lockFd) =>
+      new Promise((resolve) => {
+        const child = spawnProcess('flock', ['-n', '-E', String(LOCK_TAKEN_EXIT), '3'], { stdio: ['ignore', 'inherit', 'inherit', lockFd] });
+        child.on('error', (err) => resolve({ code: null, signal: null, error: err.message }));
+        child.on('exit', (code, signal) => resolve({ code, signal }));
+      }),
+    // Node's fetch hands a `manual` redirect back as the 3xx response itself, Location included.
+    latestTag: async (releases) => {
+      try {
+        const res = await fetch(`${releases}/latest`, { redirect: 'manual', signal: AbortSignal.timeout(30_000) });
+        const loc = res.headers.get('location');
+        return res.status >= 300 && res.status < 400 && loc ? loc : null;
+      } catch {
+        return null;
+      }
+    },
+    download: async (url, dest) => {
+      const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+      if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+      fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()), { mode: 0o600 });
+    },
+    runInstaller: (script, args, env, lockFd) =>
+      new Promise((resolve) => {
+        // The lock descriptor goes along as fd 3 (`stdio` shares only 0–2 by itself): install.sh finds it under
+        // /proc/self/fd and takes no lock of its own, and the lock outlives this process as long as the installer runs.
+        const child = spawnProcess('sh', [script, ...args], { stdio: [0, 1, 2, lockFd], env });
+        child.on('error', (err) => resolve({ code: null, signal: null, error: err.message }));
+        child.on('exit', (code, signal) => resolve({ code, signal }));
+      }),
+    status: (timeoutMs) => controlRequest<ControlStatus>({ cmd: 'status' }, { timeoutMs }),
+    mkdtemp: () => fs.mkdtempSync(path.join(os.tmpdir(), 'remotly-update-')),
+  };
+  process.exitCode = await runUpdate(deps);
+}
+
 // ---- dispatch ---------------------------------------------------------------------------------
 
 async function main(argv: string[]): Promise<void> {
@@ -501,6 +570,8 @@ async function main(argv: string[]): Promise<void> {
       return pushTest(rest);
     case 'doctor':
       return doctor();
+    case 'update':
+      return update();
     case '--version':
     case '-v':
       return console.log(VERSION);
