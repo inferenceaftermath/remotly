@@ -76,6 +76,13 @@ sessions together with the tests that use them; GitHub Releases only (no npm). T
    (Android `Session.kt` un-arms the pane, `Notifications.kt` hides the progress notice; iOS ends the Live Activity) —
    treat push data as a hint and reconcile the armed set / activity state with the bridge on the next connect, or have
    the bridge sign push payloads with a per-device key from pairing. Needs a device token to exploit.
+   Open (Android, bridge, relay, protocol — one coordinated change): firebase-messaging 25.1 deprecates the registration
+   token (`getToken`, `onNewToken`) for the Firebase installation id (`FirebaseMessaging.register()`, `onRegistered`), and
+   the FCM HTTP v1 `Message` gained a `fid` target (`token` is deprecated and accepts an installation id during the
+   transition). The app still registers by token with the two uses marked; moving means `push.register` carrying the
+   installation id, the relay naming the target for what it is and sending `fid` (its token check happens to accept
+   an installation id, which is not the same as supporting it), the protocol document, and re-registration of paired
+   phones. Tokens keep working until Firebase removes them.
 2. **`remotly-bridge setup` + `install.sh` — done 2026-09-16** (`bridge/src/setup.ts`, `install.sh`, `bridge/scripts/package.sh`,
    `.github/workflows/release.yml`; verified on the owner's host with a test unit, and `install.sh` against a local package).
    `remotly.dev` already serves the product site from outside this repository, so there is no Worker for `install.sh`:

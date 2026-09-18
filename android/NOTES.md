@@ -61,18 +61,18 @@
 
 - Jetpack Compose BOM 2025.01.01 (ui, foundation, material3), activity-compose, lifecycle-runtime-compose,
   core-ktx: UI, `collectAsStateWithLifecycle`, `NotificationCompat`, `enableEdgeToEdge`.
-- kotlinx-serialization-json 1.7.3: wire models; sealed-interface polymorphism on `t`.
-- kotlinx-coroutines 1.9.0: flows and request/reply.
+- kotlinx-serialization-json 1.11.0: wire models; sealed-interface polymorphism on `t`.
+- kotlinx-coroutines 1.11.0: flows and request/reply.
 - OkHttp 4.12.0: WebSocket with ping interval, `/pair`, custom `X509TrustManager` for pinning.
 - DataStore Preferences 1.1.7: host/token store (see README on EncryptedSharedPreferences).
-- CameraX 1.4.2 + **ZXing core 3.5.3** for the QR scanner. Chosen over ML Kit barcode scanning because
+- CameraX 1.4.2 + **ZXing core 3.5.4** for the QR scanner. Chosen over ML Kit barcode scanning because
   it is fully offline (ML Kit's unbundled variant downloads a model through Play services, the bundled
   one adds ~3 MB and several transitive artifacts), it is a single small pure-Java jar, and QR is the
   only format we need. `play-services-code-scanner` (the original brief's suggestion) was not used for the same
   Play-services dependency reason and because the manual-entry fallback needs a permission story anyway.
-- firebase-messaging 24.1.2: the only Firebase artifact. Google Services plugin 4.4.4 is applied only
+- firebase-messaging 25.1.3: the only Firebase artifact. Google Services plugin 4.5.0 is applied only
   when `app/google-services.json` exists.
-- Tests: JUnit 5 (junit-jupiter 5.10.2), kotlin-test, kotlinx-coroutines-test.
+- Tests: JUnit (junit-jupiter 6.1.3), kotlin-test, kotlinx-coroutines-test.
 
 No navigation library (three screens, a `when`), no WorkManager, no ViewModel artifact (the
 `Session` object on the Application plays that role), no MockWebServer (socket path is exercised on
@@ -80,8 +80,8 @@ device; inbound dispatch is unit-tested through `FlowConnection.handle`).
 
 ## Toolchain
 
-Gradle 8.12 (wrapper), AGP 8.9.1, Kotlin 2.1.0 with the Compose compiler plugin, compileSdk/targetSdk
-35, minSdk 26, JVM toolchain 17. `android/local.properties` (gitignored) points at the SDK.
+Gradle 9.7.1 (wrapper), AGP 9.4.0 with its built-in Kotlin (2.4.20, the version the Kotlin Gradle plugin on `:core`
+sets for the whole build) and the Compose compiler plugin, compileSdk 37, targetSdk 36, minSdk 26, Java 17. `android/local.properties` (gitignored) points at the SDK.
 
 ## Deferred / not in this pass
 

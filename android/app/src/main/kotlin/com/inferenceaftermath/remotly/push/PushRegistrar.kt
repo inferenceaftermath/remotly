@@ -12,7 +12,10 @@ object PushRegistrar {
     fun registerCurrentToken(context: Context, session: Session) {
         if (!isConfigured(context)) return
         runCatching {
-            FirebaseMessaging.getInstance().token.addOnSuccessListener { token -> if (!token.isNullOrEmpty()) session.onPushToken(token) }
+            // Deprecated since firebase-messaging 25.1 in favour of the installation id (see FlowMessagingService.onNewToken).
+            @Suppress("DEPRECATION")
+            val token = FirebaseMessaging.getInstance().token
+            token.addOnSuccessListener { t -> if (!t.isNullOrEmpty()) session.onPushToken(t) }
         }
     }
 }
