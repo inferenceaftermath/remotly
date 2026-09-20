@@ -29,6 +29,10 @@ class FlowMessagingService : FirebaseMessagingService() {
         }
     }
 
+    // Deprecated since firebase-messaging 25.1: the Firebase installation id (`FirebaseMessaging.register()`, `onRegistered`)
+    // replaces the registration token. Kept until the bridge, the relay and the protocol address a phone by installation id
+    // (docs/BACKLOG.md); tokens keep working meanwhile.
+    @Suppress("OVERRIDE_DEPRECATION")
     override fun onNewToken(token: String) {
         FlowApplication.of(this).session.onPushToken(token)
     }

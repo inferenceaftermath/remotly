@@ -1,8 +1,7 @@
 import java.util.Properties
 
 plugins {
-    alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.android.application) // built-in Kotlin: no org.jetbrains.kotlin.android since AGP 9
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
@@ -55,7 +54,7 @@ val flowVersionName = signingValue("REMOTLY_VERSION_NAME") ?: "0.1.0"
 
 android {
     namespace = "com.inferenceaftermath.remotly"
-    compileSdk = 36
+    compileSdk = 37 // androidx.core 1.19 compiles against API 37 or later; targetSdk (runtime behaviour) stays 36
 
     defaultConfig {
         // Package name registered with Firebase / Play (a fork changes it here, in deliver.yml and in the Kotlin package dirs).
@@ -93,14 +92,16 @@ android {
         compose = true
     }
 
+    // Built-in Kotlin takes its jvmTarget from targetCompatibility.
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
     lint {
         warningsAsErrors = false
         abortOnError = true
     }
-}
-
-kotlin {
-    jvmToolchain(17)
 }
 
 dependencies {

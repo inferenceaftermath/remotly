@@ -6,8 +6,8 @@ two Gradle modules: `:core` (pure JVM protocol/grid/pairing/connection, unit-tes
 
 ## Build
 
-Requirements: Android SDK with platform 36 (`compileSdk`; AGP downloads what is missing), JDK 17,
-network access for Maven on the first build. The Gradle wrapper (8.12) is committed.
+Requirements: Android SDK with platform 37 (`compileSdk`; AGP downloads what is missing), JDK 17,
+network access for Maven on the first build. The Gradle wrapper (9.7.1) is committed.
 
 ```sh
 cd android
@@ -23,7 +23,7 @@ debug key; there is no release keystore in this repo (release signing: `docs/DEL
 
 ## Unit tests
 
-`./gradlew :core:test` runs the JUnit 5 suite: every message decoded from the protocol examples,
+`./gradlew :core:test` runs the JUnit 6 (Jupiter) suite: every message decoded from the protocol examples,
 `TerminalGrid` painted from each golden `*.frame.json` and compared row by row with the `*.txt`
 rendering, partial-frame application, QR parsing, certificate fingerprint pinning, push payload parsing.
 The golden-frame tests skip (with an assumption) when `shared/fixtures/frames` is not present; the path
