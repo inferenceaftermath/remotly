@@ -233,6 +233,8 @@ test('a version left READY_FOR_REVIEW by an earlier run is submitted as it stand
     assert.ok(!f.calls.some((c) => c.method !== 'GET'));
   }
   assert.equal((await submit({ key, bundleId: 'b', version: '0.1.1', release: 'manual', fetchFn: fakeASC(manual).fetchFn, log: () => {} })).resumed, true);
+  const scheduled = fakeASC({ ...state, versions: [shipped, v('v1', '0.1.1', 'READY_FOR_REVIEW', 'SCHEDULED')] });
+  await assert.rejects(submit({ key, bundleId: 'b', version: '0.1.1', fetchFn: scheduled.fetchFn, log: () => {} }), /with release type SCHEDULED, not AFTER_APPROVAL; that cannot be asked for here: change it in App Store Connect/);
   const dry = fakeASC(state);
   assert.deepEqual(await submit({ key, bundleId: 'b', version: '0.1.1', dryRun: true, fetchFn: dry.fetchFn, log: () => {} }), { app: 'app1', build: '36', version: '0.1.1', created: false, resumed: true });
   assert.deepEqual(dry.trail(), [...LOOKUP, 'GET /appStoreVersions/v1/build', 'GET /appStoreVersions/v1/appStoreVersionLocalizations', 'GET /apps/app1/reviewSubmissions', 'GET /reviewSubmissions/subOpen/items']);
@@ -277,5 +279,10 @@ test('bad arguments are refused before any call', async () => {
   await assert.rejects(submit({ key, bundleId: 'b', version: '1.0', build: 'latest', fetchFn: asc.fetchFn }), /--build must be a build number/);
   await assert.rejects(submit({ key, bundleId: 'b', version: '1.0', release: 'now', fetchFn: asc.fetchFn }), /--release must be/);
   await assert.rejects(submit({ key, bundleId: 'b', version: '1.0', notes: 'x'.repeat(4001), fetchFn: asc.fetchFn }), /--notes is 4001 characters; Apple allows 4000/);
+  // Characters, not UTF-16 units (as Play's notes and the workflow's check count): 4000 emoji pass, 4001 do not.
+  await assert.rejects(submit({ key, bundleId: 'b', version: '1.0', notes: '😀'.repeat(4001), fetchFn: asc.fetchFn }), /--notes is 4001 characters/);
   assert.equal(asc.calls.length, 0);
+  const passes = fakeASC();
+  await assert.rejects(submit({ key, bundleId: 'b', version: '1.0', notes: '😀'.repeat(4000), fetchFn: passes.fetchFn }), (err) => !/--notes/.test(err.message));
+  assert.ok(passes.calls.length > 0); // past the argument checks
 });

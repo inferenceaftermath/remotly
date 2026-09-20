@@ -54,9 +54,13 @@ export function plan({ tracks, fraction, versionCode, notes }) {
   const live = Math.max(0, ...completed.flatMap(codesOf));
   if (completed.some((r) => codesOf(r).includes(code))) throw new Error(`version code ${code} is production's completed release already`);
   if (code < live) throw new Error(`version code ${code} is older than production's completed release ${live}`);
+  // A draft on production is somebody's unpublished work (its codes, notes, priority): neither published as this
+  // rollout nor dropped by it — the console decides first. This pipeline never makes one.
+  const drafts = releases.filter((r) => r.status === 'draft');
+  if (drafts.length) throw new Error(`production has a draft release (${drafts.map((r) => codesOf(r).join('+')).join(', ')}); publish or discard it in the Play Console first — a rollout from here would replace it`);
   // A release under way is named by its newest code (a retained older code names nothing); so any code of a rollout
   // above the one named means: not a raise, and not a newer build either.
-  const current = releases.find((r) => r.status !== 'completed' && Math.max(...codesOf(r)) === code);
+  const current = releases.find((r) => ['inProgress', 'halted'].includes(r.status) && Math.max(...codesOf(r)) === code);
   const ahead = releases.filter((r) => ['inProgress', 'halted'].includes(r.status)).flatMap(codesOf).filter((c) => c > code);
   if (ahead.length) throw new Error(`version code ${code} is below ${Math.max(...ahead)}, which production is rolling out already; a rollout is raised by its newest code and replaced only by a newer build`);
   if (current?.status === 'halted') throw new Error(`version code ${code} is halted on production; resume it in the Play Console`);

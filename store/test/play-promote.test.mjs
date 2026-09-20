@@ -85,6 +85,9 @@ test('plan: a rollout is never lowered here, and a halted release is left to the
   assert.throws(() => plan({ tracks: withStaged, fraction: 0.5, versionCode: 31 }), /version code 31 is below 35, which production is rolling out already; a rollout is raised by its newest code and replaced only by a newer build/);
   // A retained older code of the rollout under way names nothing: the rollout is raised by 35, not by 34.
   assert.throws(() => plan({ tracks: withStaged, fraction: 0.5, versionCode: 34 }), /version code 34 is below 35/);
+  // A draft on production is never published as this rollout (by its newest code or a retained one) nor dropped by it.
+  const drafted = [{ track: 'production', releases: [live, { name: '35', status: 'draft', versionCodes: ['34', '35'], releaseNotes: [{ language: 'en-US', text: 'Unfinished' }] }] }, { track: 'internal', releases: [{ status: 'completed', versionCodes: ['36'] }] }];
+  for (const versionCode of [35, 34, 36, undefined]) assert.throws(() => plan({ tracks: drafted, fraction: 1, versionCode }), /production has a draft release \(34\+35\); publish or discard it in the Play Console first/);
   assert.throws(() => plan({ tracks: [{ track: 'production', releases: [live, { ...staged, status: 'halted' }] }], fraction: 0.5, versionCode: 33 }), /below 35/);
   const halted = [{ track: 'production', releases: [live, { ...staged, status: 'halted' }] }, { track: 'internal', releases: [{ status: 'completed', versionCodes: ['36'] }] }];
   assert.throws(() => plan({ tracks: halted, fraction: 0.5, versionCode: 35 }), /version code 35 is halted on production; resume it in the Play Console/);

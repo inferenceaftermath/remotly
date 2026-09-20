@@ -40,7 +40,7 @@ export async function submit({ key, bundleId, version, build, notes, release = '
   if (!/^\d+\.\d+(\.\d+)?$/.test(version ?? '')) throw new Error(`--version must be X.Y or X.Y.Z, got ${version}`);
   if (build !== undefined && !/^\d+$/.test(String(build))) throw new Error(`--build must be a build number, got ${build}`);
   if (!['after-approval', 'manual'].includes(release)) throw new Error(`--release must be after-approval or manual, got ${release}`);
-  if (notes && notes.length > WHATS_NEW_MAX) throw new Error(`--notes is ${notes.length} characters; Apple allows ${WHATS_NEW_MAX} for What's New`);
+  if (notes && [...notes].length > WHATS_NEW_MAX) throw new Error(`--notes is ${[...notes].length} characters; Apple allows ${WHATS_NEW_MAX} for What's New`);
   const token = ascToken(key);
   const call = async (method, path, body) => {
     const r = await fetchFn(`${API}${path}`, { method, headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -116,7 +116,10 @@ export async function submit({ key, bundleId, version, build, notes, release = '
     if (!has) throw new Error(`version ${version} is READY_FOR_REVIEW without a build; remove it from its review submission in App Store Connect and run again`);
     if (build !== undefined && has !== String(build)) throw new Error(`version ${version} is READY_FOR_REVIEW with build ${has}, not ${build}; remove it from its review submission in App Store Connect first`);
     const set = ver.attributes.releaseType;
-    if (set !== releaseType) throw new Error(`version ${version} is READY_FOR_REVIEW with release type ${set}, not ${releaseType}; run again with --release ${set === 'MANUAL' ? 'manual' : 'after-approval'}, or remove it from its review submission in App Store Connect first`);
+    if (set !== releaseType) {
+      const other = { MANUAL: 'manual', AFTER_APPROVAL: 'after-approval' }[set];
+      throw new Error(`version ${version} is READY_FOR_REVIEW with release type ${set}, not ${releaseType}; ${other ? `run again with --release ${other}, or remove it from its review submission in App Store Connect first` : 'that cannot be asked for here: change it in App Store Connect (or submit the version from there) and run again'}`);
+    }
     const loc = update ? await primaryLocalization(ver) : undefined;
     const missing = update && !loc.attributes.whatsNew?.trim();
     if (missing && !notes) throw new Error(`version ${version} is READY_FOR_REVIEW without What's New, which Apple requires for an update; run again with notes`);
