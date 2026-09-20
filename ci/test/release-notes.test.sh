@@ -46,6 +46,11 @@ check "a heading with a suffix" "- the first release" "$(notes 0.1.0)"
 if notes 0.2.0-rc.1 > /dev/null 2> "$tmp/err"; then fail "an empty section must be an error"; fi
 grep -q "is empty" "$tmp/err" || fail "no message for the empty section: $(cat "$tmp/err")"
 echo "ok   an empty section is an error"
+# A section of spaces and tabs only (built with printf: the file must not carry trailing whitespace itself).
+printf '## Unreleased\n\n### Bridge 0.2.0-rc.2\n\n   \t\n  \n\n### Bridge 0.2.0\n\n- x\n' > "$tmp/ws.md"
+if bash "$here/bridge/scripts/release-notes.sh" 0.2.0-rc.2 "$tmp/ws.md" > /dev/null 2> "$tmp/err"; then fail "a section of blanks and tabs must be an error"; fi
+grep -q "is empty" "$tmp/err" || fail "no message for the whitespace section: $(cat "$tmp/err")"
+echo "ok   a section with no visible text is an error"
 if notes 9.9.9 > /dev/null 2> "$tmp/err"; then fail "a missing heading must be an error"; fi
 grep -q "no '### Bridge 9.9.9' section" "$tmp/err" || fail "no message for the missing heading: $(cat "$tmp/err")"
 echo "ok   a missing heading is an error"

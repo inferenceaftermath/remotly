@@ -1,25 +1,27 @@
 # Bridge releases. A push to main whose bridge/package.json names a version with no GitHub Release yet — the merge of a
-# version bump (bridge/scripts/release-prep.sh) — releases it: tests on a GitHub-hosted runner, then the tarball,
-# SHA256SUMS and install.sh on a GitHub Release tagged bridge-vX.Y.Z, created here (a tag pushed by hand, matching
-# package.json, releases the same way). The notes come from CHANGELOG.md's `### Bridge X.Y.Z` section. install.sh
+# version bump (bridge/scripts/release-prep.sh) — releases it: tests on a GitHub-hosted runner, then the tag
+# bridge-vX.Y.Z at this commit and a GitHub Release with the tarball, SHA256SUMS and install.sh. The notes come from
+# CHANGELOG.md's `### Bridge X.Y.Z` section. Tags are never pushed by hand (the tag ruleset would pin a wrong one for
+# good; a tag on a commit whose message skips CI gets no run). `gh workflow run release.yml` plans again on main: for a
+# merge whose message carried the skip-ci marker, or after a release that failed after its tag was created. install.sh
 # resolves /releases/latest, so only bridge releases may be GitHub Releases. Nothing here touches any host: hosts
-# install a release with install.sh, then `remotly-bridge update` and its timer pull the next ones. A merge whose
-# message carries the skip-ci marker is skipped by GitHub: the next push to main releases instead (the version decides,
-# not the commit).
+# install a release with install.sh, then `remotly-bridge update` and its timer pull the next ones.
 name: release
 
 on:
   push:
     branches: [main]
-    tags: ['bridge-v*']
+  workflow_dispatch:
 
 permissions:
   contents: read # the release job takes `write` for the tag and the GitHub Release
 
-# One release at a time; a run is never cancelled once it uploads.
+# One release at a time, every run waits its turn (`queue: max`: the default single pending slot would let a third
+# push cancel the second's run, and that version would never be released), and a running one is never cancelled.
 concurrency:
   group: release-bridge
   cancel-in-progress: false
+  queue: max
 
 jobs:
   plan:
@@ -29,7 +31,6 @@ jobs:
       release: ${{ steps.plan.outputs.release }}
       version: ${{ steps.plan.outputs.version }}
       tag: ${{ steps.plan.outputs.tag }}
-      verify_tag: ${{ steps.plan.outputs.verify_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: plan
@@ -79,12 +80,29 @@ jobs:
           REMOTLY_VERSION="$VER" REMOTLY_RELEASE_URL="file://$RUNNER_TEMP/releases" sh install.sh
           test "$("$REMOTLY_BIN_DIR/remotly-bridge" --version)" = "$VER"
           "$REMOTLY_BIN_DIR/remotly-bridge" --help | grep -q '^  setup'
+      - name: Tag this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # The tag first, on its own: created at this commit, or found there already (the plan checked; a tag that
+        # appeared elsewhere since is caught here — `gh release create --target` would silently use it). The release
+        # then requires it (--verify-tag). A release that fails after this leaves the tag at this commit, and
+        # `gh workflow run release.yml` retries the release for it.
+        run: |
+          if said=$(gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" 2>&1 >/dev/null); then
+            echo "tag $TAG created at $GITHUB_SHA"
+          else
+            case "$said" in
+              *"Reference already exists"*)
+                at=$(bridge/scripts/tag-commit.sh "$TAG")
+                [ "$at" = "$GITHUB_SHA" ] || { echo "tag $TAG exists at ${at:-?}, not at $GITHUB_SHA: not releasing this commit under it — bump bridge/package.json" >&2; exit 1; }
+                echo "tag $TAG is at this commit already" ;;
+              *) echo "could not create tag $TAG: $said" >&2; exit 1 ;;
+            esac
+          fi
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          VERIFY_TAG: ${{ needs.plan.outputs.verify_tag }}
-        # The tag is created with the release at this commit (--target), or must already be there (--verify-tag). The
-        # notes are the CHANGELOG section; without one the release still happens, with the install line only.
+        # The notes are the CHANGELOG section; without one the release still happens, with the install line only.
         run: |
           notes="$RUNNER_TEMP/notes.md"
           if ! bridge/scripts/release-notes.sh "$VER" > "$notes"; then
@@ -93,9 +111,8 @@ jobs:
           fi
           printf '\nInstall or upgrade the bridge on a Linux host:\n\n    curl -fsSL https://remotly.dev/install.sh | sh\n\nAssets: `remotly-bridge-%s.tar.gz` (bridge with its production dependencies, any Linux architecture), `SHA256SUMS`, `install.sh`.\n' "$VER" >> "$notes"
           pre=""; case "$VER" in *-*) pre="--prerelease" ;; esac
-          verify=""; [ "$VERIFY_TAG" != true ] || verify="--verify-tag"
-          # shellcheck disable=SC2086 # $pre and $verify are empty or one flag each
-          gh release create "$TAG" --target "$GITHUB_SHA" $verify --title "remotly-bridge $VER" --notes-file "$notes" $pre bridge/dist/*
+          # shellcheck disable=SC2086 # $pre is empty or one flag
+          gh release create "$TAG" --verify-tag --title "remotly-bridge $VER" --notes-file "$notes" $pre bridge/dist/*
       - name: Install the published release the way users do (latest, unpinned)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -113,7 +130,12 @@ jobs:
                 && test "$("$REMOTLY_BIN_DIR/remotly-bridge" --version)" = "$VER"; then exit 0; fi
             sleep 10
           done
-          # The release goes; the tag stays (the tag ruleset forbids deleting it), so the retry is a new version.
-          echo "unpinned install of $TAG failed; removing the release — bump bridge/package.json for the next attempt" >&2
-          gh release delete "$TAG" --yes || true
+          # The release goes (else /releases/latest would serve what nobody could install); the tag stays at this commit,
+          # so `gh workflow run release.yml` retries once the cause is fixed on a later commit… which needs a new version:
+          # this commit's release is what failed. A release that will not delete is said so, loudly.
+          echo "unpinned install of $TAG failed; removing the release — fix the cause, bump bridge/package.json, release again" >&2
+          for i in 1 2 3; do
+            gh release delete "$TAG" --yes && break || sleep 10
+          done
+          if gh release view "$TAG" > /dev/null 2>&1; then echo "::error::the release $TAG could not be deleted and is what /releases/latest may serve — delete it by hand" >&2; fi
           exit 1

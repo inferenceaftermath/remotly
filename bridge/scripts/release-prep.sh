@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 # Prepare a bridge release: bridge/package.json and its lock go to <version>, CHANGELOG.md must hold the notes under
-# `### Bridge <version>`, and a pull request is opened whose merge releases (release.yml plans from the version).
-# Run at the root of a clean checkout of main, with npm and a `gh` allowed to push and open pull requests.
+# `### Bridge <version>` (the heading is added when missing, and the script stops for the notes to be written), and a
+# pull request is opened whose merge releases (release.yml plans from the version). Run from anywhere in a checkout of
+# main that is clean apart from CHANGELOG.md, with npm and a `gh` allowed to push and open pull requests.
 # Usage: bridge/scripts/release-prep.sh X.Y.Z[-rc.1]
 set -euo pipefail
 ver=${1:?usage: bridge/scripts/release-prep.sh X.Y.Z[-rc.1]}
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$root"
 case "$ver" in [0-9]*.[0-9]*.[0-9]*) ;; *) echo "not a version: $ver (X.Y.Z, optionally -rc.1)" >&2; exit 2 ;; esac
-[ -z "$(git status --porcelain)" ] || { echo "the checkout has uncommitted changes; commit or stash them first" >&2; exit 1; }
+# CHANGELOG.md may be modified (the notes this script asks for); nothing else may be.
+other=$(git status --porcelain | grep -v -E '^ ?M  ?CHANGELOG\.md$' || true)
+[ -z "$other" ] || { printf 'the checkout has changes besides CHANGELOG.md; commit or stash them first:\n%s\n' "$other" >&2; exit 1; }
 current=$(node -p "require('./bridge/package.json').version")
 [ "$current" != "$ver" ] || { echo "bridge/package.json is $ver already" >&2; exit 1; }
 heading="### Bridge $ver"
 if ! grep -qxF -e "$heading" CHANGELOG.md && ! grep -qF -e "$heading " CHANGELOG.md; then
+  grep -qx '## Unreleased' CHANGELOG.md || { echo "CHANGELOG.md has no '## Unreleased' heading to put '$heading' under" >&2; exit 1; }
   awk -v h="$heading" '{ print } /^## Unreleased$/ { print ""; print h; print ""; print "- (release notes)" }' CHANGELOG.md > CHANGELOG.md.new
   mv CHANGELOG.md.new CHANGELOG.md
   echo "CHANGELOG.md: '$heading' added under Unreleased — write the notes there (replace the placeholder), then run this again" >&2; exit 1

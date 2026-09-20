@@ -33,7 +33,7 @@ Remotly is three code bases and a Worker that must agree on one wire protocol, s
 `.github/workflows/ci.yml` runs the same checks for every pull request. `deliver.yml` (TestFlight, Play, the push
 relay's Worker) runs only in the upstream repository, which holds the store and Cloudflare credentials; bridge releases
 come from `release.yml` when a bump of `bridge/package.json` merges (`bridge/scripts/release-prep.sh` prepares the pull
-request; `bridge/README.md`, "Releases").
+request; never push a `bridge-v*` tag by hand; `bridge/README.md`, "Releases").
 
 ## Pull requests
 

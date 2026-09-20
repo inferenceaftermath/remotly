@@ -42,17 +42,18 @@ node src/main.ts setup --unit remotly-dev --config-dir ~/.config/remotly-dev
 REMOTLY_CONFIG_DIR=~/.config/remotly-dev node src/main.ts status
 ```
 
-Releases: `scripts/release-prep.sh X.Y.Z` (at the repository root, on a clean `main`) moves `package.json` and the
-lock to the version, checks that `CHANGELOG.md` holds the notes under `### Bridge X.Y.Z` (it adds the heading when
-missing and stops for you to write them) and opens the pull request. Merging it releases: `.github/workflows/release.yml`
-(`scripts/release-plan.sh`) sees a version without a GitHub Release, runs the tests, builds `remotly-bridge-X.Y.Z.tar.gz`
-(sources + production dependencies, `scripts/package.sh`), `SHA256SUMS` and `install.sh`, checks the installer against
-them, then creates the tag `bridge-vX.Y.Z` and the GitHub Release with the notes (`scripts/release-notes.sh`), and
-installs the published release once like a user would. A tag pushed by hand that matches `package.json` releases the
-same way. `install.sh` resolves `/releases/latest`, so only bridge releases may be GitHub Releases. Two things to know:
-a merge whose message carries `[skip ci]` is skipped by GitHub, and the next push to `main` releases instead (the version
-decides, not the commit); a tag that exists at another commit without a release blocks the workflow — the tag ruleset
-forbids moving it — until `package.json` is bumped past it.
+Releases: `bridge/scripts/release-prep.sh X.Y.Z` (from anywhere in a checkout of `main`, clean apart from
+`CHANGELOG.md`) moves `package.json` and the lock to the version, checks that `CHANGELOG.md` holds the notes under
+`### Bridge X.Y.Z` (it adds the heading when missing and stops for you to write them; run it again) and opens the
+pull request. Merging it releases: `.github/workflows/release.yml` (`scripts/release-plan.sh`) sees a version without
+a GitHub Release, runs the tests, builds `remotly-bridge-X.Y.Z.tar.gz` (sources + production dependencies,
+`scripts/package.sh`), `SHA256SUMS` and `install.sh`, checks the installer against them, creates the tag
+`bridge-vX.Y.Z` at that commit, publishes the GitHub Release with the notes (`scripts/release-notes.sh`), and installs
+the published release once like a user would. `install.sh` resolves `/releases/latest`, so only bridge releases may
+be GitHub Releases. Never push a tag by hand: the tag ruleset pins it for good, and one on a commit whose message
+skips CI gets no run. When a merge was skipped that way, or a release failed after its tag was created,
+`gh workflow run release.yml` plans again on `main` and releases what is missing; a tag that sits at another commit
+without a release blocks the workflow until `package.json` is bumped past it.
 
 ## CLI
 
