@@ -12,6 +12,7 @@ import { createPrivateKey, sign } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const b64 = (o) => Buffer.from(typeof o === 'string' ? o : JSON.stringify(o)).toString('base64url');
+const pct = (f) => `${Math.round(f * 100)}%`;
 
 /** An OAuth access token for the Android Publisher scope from a service-account key. */
 export async function accessToken(sa, fetchFn, now = Math.floor(Date.now() / 1000)) {
@@ -27,25 +28,40 @@ export async function accessToken(sa, fetchFn, now = Math.floor(Date.now() / 100
   return j.access_token;
 }
 
-/** The plan: which version code, and the production release to write. Pure, so the test pins it. */
+/**
+ * The plan: which version code, and the production track's releases to write. Pure, so the test pins it.
+ * The track update names the desired state, so the completed release(s) are sent back unchanged (Play keeps them as
+ * the fallback), the rollout of `code` is raised in place when one is under way (its retained version codes, notes and
+ * targeting kept), and any other staged, halted or draft release is replaced — Play serves one rollout at a time.
+ */
 export function plan({ tracks, fraction, versionCode, notes }) {
   const internal = tracks.find((t) => t.track === 'internal');
   const production = tracks.find((t) => t.track === 'production');
-  const codes = (t) => (t?.releases ?? []).flatMap((r) => (r.versionCodes ?? []).map(Number));
+  const releases = production?.releases ?? [];
+  const codesOf = (r) => (r.versionCodes ?? []).map(Number);
   let code = versionCode;
   if (code === undefined) {
-    const candidates = codes(internal);
+    const candidates = (internal?.releases ?? []).flatMap(codesOf);
     if (candidates.length === 0) throw new Error('the internal track has no release to promote');
     code = Math.max(...candidates);
   }
-  const live = Math.max(0, ...codes(production).filter((c) => production.releases.some((r) => r.status === 'completed' && r.versionCodes?.includes(String(c)))));
+  const completed = releases.filter((r) => r.status === 'completed');
+  const live = Math.max(0, ...completed.flatMap(codesOf));
+  if (completed.some((r) => codesOf(r).includes(code))) throw new Error(`version code ${code} is production's completed release already`);
   if (code < live) throw new Error(`version code ${code} is older than production's completed release ${live}`);
-  const release = { versionCodes: [String(code)], status: fraction >= 1 ? 'completed' : 'inProgress' };
+  const current = releases.find((r) => r.status !== 'completed' && codesOf(r).includes(code));
+  if (current?.status === 'halted') throw new Error(`version code ${code} is halted on production; resume it in the Play Console`);
+  if (current?.status === 'inProgress' && current.userFraction !== undefined && fraction <= current.userFraction) {
+    throw new Error(`version code ${code} is rolled out to ${pct(current.userFraction)} of users already; a rollout is only raised here (halt it in the Play Console)`);
+  }
+  const status = fraction >= 1 ? 'completed' : 'inProgress';
+  const release = current ? { ...current, status } : { versionCodes: [String(code)], status };
+  delete release.userFraction;
   if (fraction < 1) release.userFraction = fraction;
+  else delete release.countryTargeting; // Play allows it on staged rollouts only
   if (notes) release.releaseNotes = [{ language: 'en-US', text: notes }];
-  // Play keeps one release in progress at a time: the rollout of `code` replaces any earlier staged release; a
-  // completed release of an older code stays as the fallback and is retained by Play, not repeated here.
-  return { code, release, replaces: (production?.releases ?? []).filter((r) => r.status === 'inProgress' && !r.versionCodes?.includes(String(code))).map((r) => r.versionCodes) };
+  const replaces = releases.filter((r) => r !== current && r.status !== 'completed').map((r) => `${(r.versionCodes ?? []).join('+')} (${r.status})`);
+  return { code, release, releases: [...completed, release], replaces, raised: Boolean(current) };
 }
 
 export async function promote({ sa, pkg, fraction, versionCode, notes, dryRun, fetchFn = fetch, log = console.log }) {
@@ -62,11 +78,14 @@ export async function promote({ sa, pkg, fraction, versionCode, notes, dryRun, f
   try {
     const { tracks = [] } = await call('GET', `/edits/${edit.id}/tracks`);
     const p = plan({ tracks, fraction, versionCode, notes });
-    log(`production ← ${p.code} as ${p.release.status}${p.release.userFraction ? ` (${Math.round(p.release.userFraction * 100)}% of users)` : ''}${p.replaces.length ? `, replacing the staged ${p.replaces.flat().join(', ')}` : ''}`);
+    log(`production ← ${p.code} as ${p.release.status}${p.release.userFraction ? ` (${pct(p.release.userFraction)} of users${p.raised ? ', raised' : ''})` : ''}${p.replaces.length ? `, replacing ${p.replaces.join(', ')}` : ''}`);
     if (dryRun) { log('dry run: the edit is discarded'); return p; }
-    await call('PUT', `/edits/${edit.id}/tracks/production`, { track: 'production', releases: [p.release] });
+    await call('PUT', `/edits/${edit.id}/tracks/production`, { track: 'production', releases: p.releases });
     await call('POST', `/edits/${edit.id}:validate`);
-    await call('POST', `/edits/${edit.id}:commit`);
+    // Changes the console has in review already are left alone: the commit fails instead of cancelling them.
+    await call('POST', `/edits/${edit.id}:commit?changesInReviewBehavior=ERROR_IF_IN_REVIEW`).catch((err) => {
+      throw new Error(`${err.message}\nif Play reports changes in review: they were made in the Play Console; wait for that review, or send this rollout from the console`);
+    });
     log('committed');
     return p;
   } catch (err) {

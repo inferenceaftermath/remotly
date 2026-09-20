@@ -61,30 +61,38 @@ does not know delivers everything. Build number and `versionCode` are the run nu
 ## Promotion
 
 `.github/workflows/promote.yml` (`workflow_dispatch` only) takes what the lanes put on Play internal testing and
-TestFlight to production; nothing is built or uploaded by it, and it runs only in the upstream repository.
+TestFlight to production; nothing is built or uploaded by it, and it runs only in the upstream repository, from `main`.
+A first job checks the inputs (an input for a platform whose action is off, `ios_submit` without `ios_version`, or
+nothing to do at all fails the run); dispatches queue and run one at a time.
 
 - **Play** (`store/play-promote.mjs`): `play_rollout` = the share of users (5, 10, 25, 50 or 100 %) the newest
   internal-testing build — or `play_version_code` — is rolled out to on the production track, in one edit of the
   Android Publisher API (insert, read the tracks, write production, validate, commit). Below 100 the release is
-  `inProgress` with that `userFraction`; a later run with a higher share, or 100 (`completed`), moves the same code on;
-  a run with a newer code replaces a staged rollout. A code older than production's completed release is refused.
+  `inProgress` with that `userFraction`; a later run with a higher share, or 100 (`completed`), raises the same release
+  in place (its retained version codes, notes, country targeting and update priority kept; new `notes` replace the
+  old); a run with a newer code replaces a staged or halted rollout. The completed release stays on the track as
+  Play's fallback. Refused: a code at or below production's completed release, lowering a rollout, and a halted
+  release (both are Play Console matters). The commit fails rather than cancel changes the console has in review.
   Play's rule: the API can only write production once a production release was made through the console (done for
   0.1.0).
 - **iOS** (`store/asc-submit.mjs`): `ios_submit` with `ios_version` (the App Store version string) attaches the newest
-  processed TestFlight build — or `ios_build` — to that version (reused when it exists and is still editable, created
-  otherwise), sets `ios_release` (release when approved, or manual), puts `notes` into What's New of the primary
-  locale (Apple refuses it on an app's first version: reported, not fatal), and submits one review submission with
-  the version. A version string that is past editing, or any version waiting for or in review, is refused: Apple takes
-  one submission at a time.
-- `notes` is What's New on both platforms; `dry_run` reads everything and changes nothing — the log shows what a real
-  run would do. `gh workflow run promote.yml -f play_rollout=10 -f ios_submit=true -f ios_version=0.1.1 -f notes='…'`.
+  processed TestFlight build whose marketing version is that string (`MARKETING_VERSION` in `ios/project.yml`, so bump
+  it before the lane uploads the build to submit) — or `ios_build`, which must be one of them — to that version
+  (reused when it exists and is still editable, created otherwise), sets `ios_release` (release when approved, or
+  manual), puts `notes` into What's New of the primary locale (not on the app's first version, which has none: noted
+  in the log), and submits one review submission with the version. A version string that is past editing, or any
+  version waiting for or in review, is refused: Apple takes one submission at a time. A version an earlier run left
+  `READY_FOR_REVIEW` (in a submission that was never sent) is submitted as it stands, with the build it has.
+- `notes` is What's New on both platforms; `dry_run` stops after the checks and the choice of build and changes
+  nothing — the log shows what a real run would do.
+  `gh workflow run promote.yml -f play_rollout=10 -f ios_submit=true -f ios_version=0.1.1 -f notes='…'`.
 - Tests: `store/test/*.test.mjs` against a fake API (run by `ci.yml`). The two scripts have no dependencies; both
   sign their own API tokens (Google RS256 from the service account, Apple ES256 from the App Store Connect key).
 
 ## Secrets
 
 The credentials are the repository's Actions secrets (Settings → Secrets and variables → Actions), read by `deliver.yml`
-only; `ci.yml`, which pull requests run, has none. `gh secret set NAME --repo <owner>/remotly < file` creates one without
+and `promote.yml` only; `ci.yml`, which pull requests run, has none. `gh secret set NAME --repo <owner>/remotly < file` creates one without
 echoing it. The jobs write the files into the runner's temp directory and pass paths or values to Gradle and xcodebuild
 through the environment; a lane whose secret is missing fails at that step with the secret's name.
 

@@ -2,8 +2,9 @@
 # the newest internal build (or a given version code) rolls out to a share of users, raised on later runs until 100 %
 # completes it (store/play-promote.mjs). iOS: the newest processed TestFlight build (or a given one) is attached to an
 # App Store version and submitted to review (store/asc-submit.mjs). Nothing is built or uploaded here. Runs only in
-# the upstream repository, with the Play service account and the App Store Connect API key from its secrets
-# (docs/DELIVERY.md, "Promotion"). `dry_run` shows what a run would do and changes nothing.
+# the upstream repository and from main (the scripts of another ref never see the store credentials), with the Play
+# service account and the App Store Connect API key from its secrets (docs/DELIVERY.md, "Promotion"). `dry_run` shows
+# what a run would do and changes nothing.
 name: promote
 
 on:
@@ -50,15 +51,39 @@ permissions:
 concurrency:
   group: promote
   cancel-in-progress: false
+  queue: max # every dispatch runs, one at a time
 
 env:
   REMOTLY_PACKAGE: com.inferenceaftermath.remotly
   ASC_BUNDLE_ID: com.inferenceaftermath.remotly
 
 jobs:
+  check:
+    name: The inputs make sense
+    if: github.repository == 'inferenceaftermath/remotly' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      ROLLOUT: ${{ inputs.play_rollout }}
+      VERSION_CODE: ${{ inputs.play_version_code }}
+      IOS_SUBMIT: ${{ inputs.ios_submit }}
+      IOS_VERSION: ${{ inputs.ios_version }}
+      IOS_BUILD: ${{ inputs.ios_build }}
+    steps:
+      # An input for a platform whose action is off would be ignored silently; a run with nothing to do would be green.
+      - run: |
+          bad=0
+          [ "$ROLLOUT" != none ] || [ -z "$VERSION_CODE" ] || { echo "play_version_code was given without a play_rollout" >&2; bad=1; }
+          [ "$IOS_SUBMIT" = true ] || [ -z "$IOS_VERSION$IOS_BUILD" ] || { echo "ios_version / ios_build were given without ios_submit" >&2; bad=1; }
+          [ "$IOS_SUBMIT" != true ] || [ -n "$IOS_VERSION" ] || { echo "ios_submit needs ios_version (the App Store version string, e.g. 0.1.1)" >&2; bad=1; }
+          [ "$ROLLOUT" != none ] || [ "$IOS_SUBMIT" = true ] || { echo "nothing to do: choose a play_rollout, ios_submit, or both" >&2; bad=1; }
+          [ -z "$VERSION_CODE" ] || case "$VERSION_CODE" in *[!0-9]*|'') echo "play_version_code must be a number" >&2; bad=1 ;; esac
+          [ -z "$IOS_BUILD" ] || case "$IOS_BUILD" in *[!0-9]*|'') echo "ios_build must be a build number" >&2; bad=1 ;; esac
+          exit $bad
+
   play:
     name: Play → production
-    if: github.repository == 'inferenceaftermath/remotly' && inputs.play_rollout != 'none'
+    needs: check
+    if: github.ref == 'refs/heads/main' && inputs.play_rollout != 'none'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -83,7 +108,8 @@ jobs:
 
   ios:
     name: iOS → App Store review
-    if: github.repository == 'inferenceaftermath/remotly' && inputs.ios_submit
+    needs: check
+    if: github.ref == 'refs/heads/main' && inputs.ios_submit
     runs-on: ubuntu-latest # the App Store Connect API is plain HTTPS; no Xcode involved
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
