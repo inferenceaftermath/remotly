@@ -27,7 +27,10 @@ journalctl --user -u remotly-bridge -f -o cat      # JSON lines; `| jq` for filt
   `bridge/README.md` "Install"). Config and devices stay; the unit is re-rendered and restarted. The installer keeps the
   previous copy in `~/.local/share/remotly/app.prev`; after a failed hand-run upgrade, put that version back with the
   installer pinned to it (`curl -fsSL https://remotly.dev/install.sh | REMOTLY_VERSION=X.Y.Z sh`, the version in
-  `app.prev/package.json`) — never `mv app.prev app` while `app/` exists, which would nest it inside. From a checkout: `git pull`, `npm ci --omit=dev`, `node src/main.ts setup --no-pair --keep-mode`
+  `app.prev/package.json`) — never `mv app.prev app` while `app/` exists, which would nest it inside. After a forced
+  install over a repository checkout (`REMOTLY_FORCE=1`), `app.prev` is that checkout, which neither `update rollback` nor
+  the pinned installer restores: `mv app app.failed && mv app.prev app`, point `~/.local/bin/remotly-bridge` back at
+  `app/bridge/bin/remotly-bridge`, then the checkout's own `setup --no-pair --keep-mode`. From a checkout: `git pull`, `npm ci --omit=dev`, `node src/main.ts setup --no-pair --keep-mode`
   (`--keep-mode` keeps a LAN host in LAN mode; without it `setup` means "Tailscale again").
 - Upgrades also arrive by themselves: `setup` installs `remotly-bridge-update.timer` (daily, `systemctl --user
   list-timers`), which runs `remotly-bridge update` — nothing when the running bridge is the latest release, otherwise
@@ -49,7 +52,7 @@ journalctl --user -u remotly-bridge -f -o cat      # JSON lines; `| jq` for filt
   `--config-dir`); the generic form is `curl -fsSL https://remotly.dev/install.sh |
   REMOTLY_VERSION=X.Y.Z sh` (the variable must reach `sh`, not `curl`) for a default install. Off: `systemctl --user disable --now remotly-bridge-update.timer` (or `setup --no-auto-update`; a masked
   timer or update service is respected too); on demand: `remotly-bridge update`. A checkout gets no timer (`update`
-  refuses it; `ci/deploy-bridge.sh` delivers there).
+  refuses it; a checkout is updated by git and its own `setup`).
 - Config changes (`~/.config/remotly/config.json`) need `systemctl --user restart remotly-bridge`. Invalid config → the
   unit fails fast with a precise message in the journal.
 - Photos uploaded from the phones (`POST /upload`) are files under `~/.local/share/remotly/uploads/<YYYY-MM-DD>/` (0600,

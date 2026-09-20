@@ -36,7 +36,7 @@ export interface SetupOptions {
   lan: boolean;
   /**
    * Keep the network mode config.json already has: LAN (the `LAN_CONFIG` triple) stays LAN, anything else stays as it is.
-   * For unattended re-runs (the CI deploy, an upgrade script); without it an ordinary `setup` means "Tailscale again".
+   * For unattended re-runs (`update`, an upgrade script); without it an ordinary `setup` means "Tailscale again".
    */
   keepMode?: boolean;
   /** Poll until a failing check passes (default); false → stop at the first failing check. */

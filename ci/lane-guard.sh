@@ -8,8 +8,8 @@
 # Test: ci/test/lane-guard.test.sh.
 set -euo pipefail
 : "${GITHUB_OUTPUT:?}"
-lane=${1:?usage: ci/lane-guard.sh android|ios|bridge}
-case "$lane" in android|ios|bridge) ;; *) echo "unknown lane: $lane" >&2; exit 2 ;; esac
+lane=${1:?usage: ci/lane-guard.sh android|ios}
+case "$lane" in android|ios) ;; *) echo "unknown lane: $lane" >&2; exit 2 ;; esac
 head=$(git rev-parse HEAD)
 tip=$(git ls-remote --exit-code origin refs/heads/main | cut -f1)
 if [ "$tip" = "$head" ]; then

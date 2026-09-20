@@ -137,7 +137,7 @@ export const describeExit = (e: Exit): string => (e.error !== undefined ? `could
 export type InstallLayout =
   /** `<home>/app/src/main.ts` beside `package.json`: what install.sh lays out. */
   | { kind: 'release'; home: string; app: string }
-  /** `<root>/bridge/src/main.ts` inside a repository (ci/deploy-bridge.sh, or a developer's checkout). */
+  /** `<root>/bridge/src/main.ts` inside a repository (a developer's checkout). */
   | { kind: 'checkout'; root: string }
   | { kind: 'other' };
 
@@ -293,7 +293,7 @@ const unitName = (unit: string): string => `${unit.replace(/\.service$/, '')}.se
 export async function runUpdate(deps: UpdateDeps): Promise<number> {
   const layout = installLayout(deps.mainPath);
   if (layout.kind === 'checkout') {
-    deps.out(`this copy runs from a repository checkout (${layout.root}); update is for a release installed by install.sh — a checkout is updated by git and its own deploy (ci/deploy-bridge.sh)`);
+    deps.out(`this copy runs from a repository checkout (${layout.root}); update is for a release installed by install.sh — a checkout is updated by git and its own setup`);
     return 2;
   }
   if (layout.kind === 'other') {

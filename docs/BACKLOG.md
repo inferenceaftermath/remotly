@@ -22,7 +22,7 @@ Everything still open, in one place. What shipped is in `CHANGELOG.md`; how to r
 ## Hardening
 
 - Host reboot: herdr back, bridge active, phones reconnect, panes restored, no manual steps.
-- herdr restart mid-stream (bridge restarts happen on every CI deploy and phones reconnect in about a second; herdr restart is untested).
+- herdr restart mid-stream (bridge restarts happen on every update and phones reconnect in about a second; herdr restart is untested).
 - Tailscale down/up; LAN mode with the self-signed certificate (Android only: iOS refuses self-signed certificates, see `docs/OPERATIONS.md`).
 - Load: `yes | head -1000000` in a watched pane keeps the phone responsive and the desktop unaffected; record bridge CPU.
 - Security pass: a peer off the tailnet is refused while `require_tailnet` is true; the per-address `/pair` lockout re-verified; no pane text at info log level.
@@ -88,11 +88,12 @@ sessions together with the tests that use them; GitHub Releases only (no npm). T
    `remotly.dev` already serves the product site from outside this repository, so there is no Worker for `install.sh`:
    the owner adds a Cloudflare **redirect rule** `remotly.dev/install.sh` → `https://raw.githubusercontent.com/inferenceaftermath/remotly/main/install.sh`
    (works once the repository is public; `curl -fsSL` follows it). First release: tag `bridge-v0.1.0` after the flip.
-   `ci/deploy-bridge.sh` (a host that follows `main`) rsyncs the repository into `~/.local/share/remotly/app` (bridge under
-   `app/bridge/`) and, since 2026-09-17, renders and restarts the unit with `node bridge/src/main.ts setup --no-pair --no-wait --keep-mode`
-   (`install-service.sh` and the unit template are gone). `install.sh` puts a release tarball (bridge at `app/` top level) in
-   the same directory and refuses to run over a repository deploy (`REMOTLY_FORCE=1` overrides): a host is either
-   CI-deployed from `main` or release-installed, not both. macOS hosts (launchd) deferred.
+   Until bridge 0.2.0 (2026-09-20) the reference host followed `main` through a CI lane (`ci/deploy-bridge.sh`, an rsync of
+   the checkout into `~/.local/share/remotly/app` with the bridge under `app/bridge/`); it now installs releases like every
+   other host: once the release is published, the installer once, pinned (so `latest` cannot still be the previous
+   release), forced over the repository deploy and keeping the mode (`curl -fsSL https://remotly.dev/install.sh |
+   REMOTLY_VERSION=0.2.0 REMOTLY_FORCE=1 sh -s -- --keep-mode`; the checkout ends up in `app.prev`, `docs/OPERATIONS.md`
+   says how it goes back), then `remotly-bridge-update.timer`. The lane is gone: a push touching `bridge/` delivers nothing, a `bridge-vX.Y.Z` tag releases. macOS hosts (launchd) deferred.
 3. **Open-source readiness** per the open-source audit of 2026-09-07 (owner's notes). **Done 2026-09-17 (scrub and public face):**
    Apache-2.0 `LICENSE`/`NOTICE`, identifiers replaced by documentation values in code, tests, protocol and app placeholders,
    owner documents and scripts moved to the private notes repository, fixtures from the owner's sessions deleted (tests use
@@ -131,7 +132,7 @@ sessions together with the tests that use them; GitHub Releases only (no npm). T
 
 - Apple Developer membership renews yearly; if it lapses, TestFlight installs and APNs pushes stop.
 - TestFlight builds expire 90 days after upload; a fresh one is uploaded by a push to `main` that touches `ios/`, `shared/`
-  or the pipeline (`ci/plan.sh`), or on demand by `gh workflow run deliver.yml -f ios=true -f android=false -f bridge=false`.
+  or the pipeline (`ci/plan.sh`), or on demand by `gh workflow run deliver.yml -f ios=true -f android=false`.
   Play internal testing does not expire.
 
 ## Design notes parked on 2026-09-06 (user's dump; to be taken one at a time after the scrolling work)

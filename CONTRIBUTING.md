@@ -31,7 +31,8 @@ Remotly is three code bases and a Worker that must agree on one wire protocol, s
 | `ios/` | macOS, Xcode 26, xcodegen | `cd ios/FlowKit && swift test`; the app: `xcodegen generate`, then build (`ios/README.md`) |
 
 `.github/workflows/ci.yml` runs the same checks on GitHub-hosted runners for every pull request. `deliver.yml`
-(TestFlight, Play, the bridge redeploy) runs only in the upstream repository on its own runners.
+(TestFlight, Play) runs only in the upstream repository on its own runners; bridge releases come from `release.yml` on a
+`bridge-vX.Y.Z` tag.
 
 ## Pull requests
 

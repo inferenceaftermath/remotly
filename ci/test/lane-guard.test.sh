@@ -11,28 +11,28 @@ git init -q --bare "$tmp/origin.git"
 mkdir "$tmp/repo" && cd "$tmp/repo" && git init -q . && git remote add origin "$tmp/origin.git"
 git commit -q --allow-empty -m one && one="$(git rev-parse HEAD)"
 git commit -q --allow-empty -m two && two="$(git rev-parse HEAD)"
-git push -q origin HEAD:refs/heads/main "$one:refs/delivered/ios" "$one:refs/delivered/android" "$one:refs/delivered/bridge"
+git push -q origin HEAD:refs/heads/main "$one:refs/delivered/ios" "$one:refs/delivered/android"
 marker() { git ls-remote origin "refs/delivered/$1" | cut -f1; }
-markers() { echo "android=$(marker android) ios=$(marker ios) bridge=$(marker bridge)"; }
+markers() { echo "android=$(marker android) ios=$(marker ios)"; }
 # guard <lane> [EVENT]: the output line
 guard() { : > "$tmp/output"; env EVENT="${2:-push}" GITHUB_OUTPUT="$tmp/output" bash "$here/ci/lane-guard.sh" "$1" > "$tmp/log" 2>&1 || return $?; cat "$tmp/output"; }
 check "the tip delivers" "deliver=true" "$(guard ios)"
 check "the tip delivers a dispatch too" "deliver=true" "$(guard ios workflow_dispatch)"
-check "markers untouched" "android=$one ios=$one bridge=$one" "$(markers)"
+check "markers untouched" "android=$one ios=$one" "$(markers)"
 git checkout -q HEAD~1
 check "an older commit does not (push)" "deliver=false" "$(guard ios)"
 grep -q "main has moved on to $two" "$tmp/log" || fail "no explanation: $(cat "$tmp/log")"
-check "a stale push keeps the marker" "android=$one ios=$one bridge=$one" "$(markers)"
+check "a stale push keeps the marker" "android=$one ios=$one" "$(markers)"
 check "an older commit does not (dispatch)" "deliver=false" "$(guard ios workflow_dispatch)"
 grep -q "this dispatch asked for ios: forgetting its marker" "$tmp/log" || fail "no note: $(cat "$tmp/log")"
-check "a stale dispatch forgets its lane's marker, the others stay" "android=$one ios= bridge=$one" "$(markers)"
+check "a stale dispatch forgets its lane's marker, the others stay" "android=$one ios=" "$(markers)"
 check "…and is fine when there is none" "deliver=false" "$(guard ios workflow_dispatch)"
 git checkout -q -
 git checkout -q --orphan other && git commit -q --allow-empty -m other
-check "another history does not" "deliver=false" "$(guard bridge)"
-check "a stale dispatch from another history forgets too" "deliver=false" "$(guard bridge workflow_dispatch)"
-check "bridge marker gone" "android=$one ios= bridge=" "$(markers)"
-if guard relay >/dev/null 2>&1; then fail "an unknown lane must be an error"; fi
+check "another history does not" "deliver=false" "$(guard android)"
+check "a stale dispatch from another history forgets too" "deliver=false" "$(guard android workflow_dispatch)"
+check "android marker gone" "android= ios=" "$(markers)"
+for bad in relay bridge; do if guard "$bad" >/dev/null 2>&1; then fail "an unknown lane ($bad) must be an error"; fi; done
 if GITHUB_OUTPUT="$tmp/output" bash "$here/ci/lane-guard.sh" >/dev/null 2>&1; then fail "a missing lane must be an error"; fi
 echo "ok   unknown and missing lanes are errors"
 git remote set-url origin "$tmp/nowhere.git"
