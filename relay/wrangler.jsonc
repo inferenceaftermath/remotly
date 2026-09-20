@@ -1,6 +1,7 @@
 {
-  // Remotly push relay (README.md). Deployed by the app owner with `npm run deploy`; every other bridge
-  // posts its notifications here instead of holding the APNs key and the Firebase service account.
+  // Remotly push relay (README.md). Deployed by .github/workflows/deliver.yml when a push to main changes relay/ (or by
+  // the app owner with `npm run deploy`); every other bridge posts its notifications here instead of holding the APNs
+  // key and the Firebase service account.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "remotly-relay",
   "main": "src/index.ts",

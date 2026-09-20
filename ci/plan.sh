@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Decide which delivery lanes a run needs and emit them as step outputs.
-# Inputs (env): EVENT (push|workflow_dispatch), IN_ANDROID/IN_IOS (dispatch inputs), GITHUB_RUN_NUMBER,
+# Inputs (env): EVENT (push|workflow_dispatch), IN_ANDROID/IN_IOS/IN_RELAY (dispatch inputs), GITHUB_RUN_NUMBER,
 # GITHUB_OUTPUT; the `origin` remote: main's tip, and one marker per lane — refs/delivered/<lane>, moved by
 # ci/mark-delivered.sh to the commit a lane last delivered — which is what each lane's diff is taken from.
 # Test: ci/test/plan.test.sh.
 set -euo pipefail
-android=false ios=false
+android=false ios=false relay=false
 
 # ancestor <a> <b>: 0 when a is an ancestor of b, 1 when not; git failing for any other reason fails the plan.
 ancestor() {
@@ -16,12 +16,12 @@ ancestor() {
 }
 
 # set_lane <lane> <true|false>
-set_lane() { case "$1" in android) android=$2 ;; ios) ios=$2 ;; esac; }
+set_lane() { case "$1" in android) android=$2 ;; ios) ios=$2 ;; relay) relay=$2 ;; esac; }
 # classified <lane>: what classify decided for the lane.
-classified() { case "$1" in android) echo "$c_android" ;; ios) echo "$c_ios" ;; esac; }
-# classify <base>: sets c_android / c_ios from the paths changed between <base> and HEAD.
+classified() { case "$1" in android) echo "$c_android" ;; ios) echo "$c_ios" ;; relay) echo "$c_relay" ;; esac; }
+# classify <base>: sets c_android / c_ios / c_relay from the paths changed between <base> and HEAD.
 classify() {
-  c_android=false c_ios=false
+  c_android=false c_ios=false c_relay=false
   local changed f
   # --no-renames: a file moved across lanes shows as a deletion plus an addition, so both lanes deliver (a rename would
   # show only its new name, and an app file moved under docs/ would deliver nothing).
@@ -36,20 +36,20 @@ classify() {
       docs/*|*.md|.gitignore|.gitattributes|.editorconfig|scratchpad/*) ;;  # never triggers a delivery
       LICENSE|NOTICE|.github/CODEOWNERS|.github/ISSUE_TEMPLATE/*|.github/dependabot.yml) ;;  # paperwork (templates in .md: above)
       install.sh|.github/workflows/release.yml|bridge/scripts/package.sh) ;; # the release path: release.yml on a bridge-v* tag, never deliver.yml
-      .github/workflows/ci.yml|ci/test/*|bridge/test/*|ios/FlowKit/Tests/*|android/*/src/test/*) ;;  # PR checks and tests: in no build, not run by the host
-      relay/*) ;;                                                           # the relay is deployed by hand (relay/README.md)
+      .github/workflows/ci.yml|ci/test/*|bridge/test/*|relay/test/*|ios/FlowKit/Tests/*|android/*/src/test/*) ;;  # PR checks and tests: in no build, not run by the host
+      relay/*) c_relay=true ;;                                              # the push relay: its Worker is deployed (relay/README.md "Deploy")
       bridge/*) ;;                                                          # the bridge is released by a tag (release.yml), never delivered from main
-      .github/*|ci/*) c_android=true c_ios=true ;;                          # the pipeline itself changed → deliver all
-      shared/*) c_android=true c_ios=true ;;                                # protocol and fixtures shared by the apps
+      .github/*|ci/*) c_android=true c_ios=true c_relay=true ;;             # the pipeline itself changed → deliver all
+      shared/*) c_android=true c_ios=true ;;                                # protocol and fixtures shared by the apps (the relay uses none)
       android/*) c_android=true ;;
       ios/*) c_ios=true ;;
-      *) c_android=true c_ios=true ;;                                       # anything unclassified → be safe
+      *) c_android=true c_ios=true c_relay=true ;;                          # anything unclassified → be safe
     esac
   done <<< "$changed"
 }
 
 if [ "${EVENT:-push}" = "workflow_dispatch" ]; then
-  android=${IN_ANDROID:-false}; ios=${IN_IOS:-false}
+  android=${IN_ANDROID:-false}; ios=${IN_IOS:-false}; relay=${IN_RELAY:-false}
 else
   head=$(git rev-parse HEAD)
   # Only main's tip delivers. A run started behind a newer push (the queue is not ordered) does nothing; the newer push's
@@ -59,7 +59,7 @@ else
   if [ "$tip" != "$head" ]; then
     echo "main has moved on to $tip since this push ($head); that push's run delivers — nothing to do here"
   else
-    for lane in android ios; do
+    for lane in android ios relay; do
       marker=$(git ls-remote origin "refs/delivered/$lane" | cut -f1)
       if [ -z "$marker" ]; then
         echo "$lane: never delivered → deliver"; set_lane "$lane" true
@@ -76,5 +76,5 @@ else
   fi
 fi
 build_number=$GITHUB_RUN_NUMBER
-{ echo "android=$android"; echo "ios=$ios"; echo "build_number=$build_number"; } >> "$GITHUB_OUTPUT"
-echo "plan: android=$android ios=$ios build_number=$build_number"
+{ echo "android=$android"; echo "ios=$ios"; echo "relay=$relay"; echo "build_number=$build_number"; } >> "$GITHUB_OUTPUT"
+echo "plan: android=$android ios=$ios relay=$relay build_number=$build_number"

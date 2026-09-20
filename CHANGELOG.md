@@ -31,6 +31,9 @@ them (`ci/plan.sh` picks the lanes; `docs/DELIVERY.md`).
 - Pull requests compile the iOS app on the lane's Xcode (26.6, signing disabled) besides the FlowKit tests: the first
   hosted iOS delivery failed on a Swift concurrency diagnostic the Mac's Xcode 26.3 had not raised (`AppModel`
   ending Live Activities from a task).
+- The push relay is a third lane of `deliver.yml`: a push to `main` that changes `relay/` runs its typecheck and
+  tests, `wrangler deploy` with the `CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable, and checks
+  the deployed `/health` (marker `refs/delivered/relay`); `npm run deploy` by hand remains (`relay/README.md`).
 
 ### Bridge 0.2.0
 
