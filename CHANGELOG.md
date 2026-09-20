@@ -23,6 +23,12 @@ them (`ci/plan.sh` picks the lanes; `docs/DELIVERY.md`).
   current androidx.core, coroutines, serialization, Google Services and ZXing releases. Nothing changes for users; the
   FCM registration token that Firebase now deprecates stays in use until the installation-id move (`docs/BACKLOG.md`).
 
+### Delivery
+
+- Store builds come from GitHub-hosted runners (`ubuntu-latest`, `macos-26`) with the credentials in the
+  repository's Actions secrets (`docs/DELIVERY.md`, "Secrets"); the two self-hosted runners and their installers
+  (`ci/setup-*-runner.sh`, `ci/android-env.sh`) are retired.
+
 ### Bridge 0.2.0
 
 - `remotly-bridge update` and a daily `remotly-bridge-update.timer` (installed by `setup`; `--no-auto-update` or

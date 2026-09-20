@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Archive Remotly with cloud-managed signing and upload it to TestFlight. Runs on the Mac (Xcode 26,
-# xcodegen). Shape: `xcodebuild archive` + `-exportArchive` with
-# destination=upload, authenticated with an App Store Connect API key — no certificates or profiles
-# to install by hand (`-allowProvisioningUpdates` registers the App ID, its capabilities and a
-# cloud-managed distribution certificate on first use).
+# Archive Remotly and upload it to TestFlight. Runs on a Mac with Xcode 26 and xcodegen (a developer's, or a
+# CI runner). Shape: `xcodebuild archive` + `-exportArchive` with destination=upload, authenticated with an App
+# Store Connect API key — no certificates or profiles to install by hand (`-allowProvisioningUpdates` registers
+# the App ID, its capabilities, an Apple Development certificate for this machine if it has none, and the team's
+# cloud-managed distribution certificate on first use; the archive is signed with the former, the export with the
+# latter). On a fresh CI runner that means one new development certificate per run: revoke the stale ones in the
+# developer portal now and then.
 #
 # Required env:
 #   ASC_KEY_ID        App Store Connect API key id (team key)
@@ -43,7 +45,7 @@ if [ -r "$KEYCHAIN_PW_FILE" ]; then
   # stay unlocked for the length of the build (default relocks after 5 min of inactivity)
   security set-keychain-settings -t 3600 "$HOME/Library/Keychains/login.keychain-db" || true
 else
-  echo "flow: no keychain password file ($KEYCHAIN_PW_FILE) — headless signing needs it; GUI sessions do not"
+  echo "flow: no keychain password file ($KEYCHAIN_PW_FILE) — a headless session on a Mac whose login keychain is locked needs it; GUI sessions and fresh CI runners do not"
 fi
 
 if command -v xcodegen >/dev/null; then

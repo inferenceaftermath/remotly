@@ -6,8 +6,7 @@ changed paths and schedules a Play internal-testing release for `android/`, a Te
 the `ci/` scripts), and nothing for what is in no build: documentation, repository paperwork (licence, templates, CODEOWNERS,
 Dependabot), the bridge (`bridge/` reaches hosts as a release: `release.yml` on a `bridge-vX.Y.Z` tag, `install.sh`,
 `remotly-bridge update`), the release path itself (`install.sh`, `release.yml`, `bridge/scripts/package.sh`), the pull-request
-workflow and the tests (`ci/test/`, `bridge/test/`, `ios/FlowKit/Tests/`, `android/*/src/test/`), the runner installers
-`ci/setup-*` and the relay (deployed by hand). Inside the apps' own trees (`android/*/src/main/`, `ios/Remotly/`, `ios/Shared/`,
+workflow and the tests (`ci/test/`, `bridge/test/`, `ios/FlowKit/Tests/`, `android/*/src/test/`) and the relay (deployed by hand). Inside the apps' own trees (`android/*/src/main/`, `ios/Remotly/`, `ios/Shared/`,
 `ios/FlowActivity/`, `ios/FlowKit/Sources/`) every file delivers, whatever its name. Each lane is diffed from the
 commit it last delivered, not from the push's parent: a lane's last step (`ci/mark-delivered.sh record`) moves its
 marker `refs/delivered/<lane>` on the repository to the commit whose bundle or build just reached Play or
@@ -28,8 +27,9 @@ push delivers it. Every run waits its turn (`concurrency.queue: max`, up to
 GitHub's 100 waiting runs; the next accepted push delivers everything pending), so a manual dispatch never displaces a
 waiting push. `ci/test/plan.test.sh`, `ci/test/lane-guard.test.sh` and `ci/test/mark-delivered.test.sh` pin that;
 `gh workflow run deliver.yml -f ios=true …` forces a lane. It runs only in the upstream repository (a
-job-level guard checks `github.repository`) and only on two self-hosted runners labelled `remotly`; pull requests are
-checked by `ci.yml` on GitHub-hosted runners instead. A fork that wants its own lane needs its own records, runners and identifiers, listed here.
+job-level guard checks `github.repository`), on GitHub-hosted runners, with the store credentials in the repository's
+Actions secrets; pull requests are checked by `ci.yml`, which has no secrets. A fork that wants its own lane needs its own
+records, secrets and identifiers, listed here.
 
 ## Channels
 
@@ -49,15 +49,28 @@ does not know delivers everything. Build number and `versionCode` are the run nu
 
 | Job | Runner | Steps |
 |---|---|---|
-| `bridge-test` | Linux | `npm ci`, `tsc --noEmit`, `npm test`; gates both deliveries (the apps speak the protocol the bridge tests pin) |
-| `android` | Linux | `:core:test :app:lintRelease :app:bundleRelease` signed with the upload key, then `r0adkll/upload-google-play` to track `internal` |
-| `ios` | Mac | `swift test` in `ios/FlowKit`, then `ios/scripts/testflight.sh` (archive with cloud-managed signing, export with `destination=upload`) |
+| `plan` | `ubuntu-latest` | `ci/plan.sh` |
+| `bridge-test` | `ubuntu-latest` | `npm ci`, `tsc --noEmit`, `npm test`; gates both deliveries (the apps speak the protocol the bridge tests pin) |
+| `android` | `ubuntu-latest` (JDK 17 from `setup-java`, the image's Android SDK) | the upload key and `google-services.json` written from the secrets into the runner's temp dir, `:core:test :app:lintRelease :app:bundleRelease` signed with the upload key, then `r0adkll/upload-google-play` to track `internal` |
+| `ios` | `macos-26` (Xcode 26; `brew install xcodegen`) | `swift test` in `ios/FlowKit`, then `ios/scripts/testflight.sh`: from the App Store Connect API key alone, the archive signed with an Apple Development certificate Xcode creates for the runner, the export signed with the team's cloud-managed distribution certificate and uploaded (`destination=upload`); nothing is imported into a keychain |
 
-Secrets never enter GitHub. Each runner reads them from `~/.config/remotly` on its own machine; the only values in
-GitHub are two repository variables (Settings → Secrets and variables → Actions → Variables): `ASC_KEY_ID` and
-`ASC_ISSUER_ID`, the App Store Connect API key id and issuer id (the `.p8` stays on the Mac). Log output masks the
-runners' home directories (`::add-mask::`). The machine name in each job's banner is printed before any step can mask
-it, so give runner machines a neutral hostname.
+## Secrets
+
+The credentials are the repository's Actions secrets (Settings → Secrets and variables → Actions), read by `deliver.yml`
+only; `ci.yml`, which pull requests run, has none. `gh secret set NAME --repo <owner>/remotly < file` creates one without
+echoing it. The jobs write the files into the runner's temp directory and pass paths or values to Gradle and xcodebuild
+through the environment; a lane whose secret is missing fails at that step with the secret's name.
+
+| Secret | Content |
+|---|---|
+| `ANDROID_UPLOAD_KEYSTORE_BASE64` | the Play upload keystore, `base64 -w0 upload.jks` |
+| `ANDROID_UPLOAD_STORE_PASSWORD`, `ANDROID_UPLOAD_KEY_ALIAS`, `ANDROID_UPLOAD_KEY_PASSWORD` | its store password, key alias and key password (Gradle reads them as `REMOTLY_STORE_PASSWORD`, `REMOTLY_KEY_ALIAS`, `REMOTLY_KEY_PASSWORD`; `android/app/build.gradle.kts`) |
+| `ANDROID_GOOGLE_SERVICES_JSON` | the Firebase `google-services.json` of the Android app |
+| `PLAY_SERVICE_ACCOUNT_JSON` | a Google service account key (JSON) with release rights on the Play app |
+| `ASC_API_KEY_P8` | the App Store Connect API key (`AuthKey_<id>.p8`): a team key with the Admin role, or App Manager with "Access to Cloud Managed Distribution Certificate" — cloud-managed signing needs that permission |
+
+Two repository variables go with them (Settings → Secrets and variables → Actions → Variables): `ASC_KEY_ID` and
+`ASC_ISSUER_ID`, the App Store Connect API key id and issuer id.
 
 ## Running your own lane
 
@@ -70,27 +83,23 @@ it, so give runner machines a neutral hostname.
    `deliver.yml` `REMOTLY_PACKAGE`, `bridge/scripts/firebase-android-app.ts`, the Kotlin package directories); iOS
    bundle ids (`ios/project.yml`, `HostStore.swift`, `AppInfo.swift`); Apple team id (`ios/project.yml`
    `DEVELOPMENT_TEAM`, `ios/ExportOptions-testflight.plist`, `APPLE_TEAM_ID` in `ios/scripts/testflight.sh`); the
-   repository name in the guard of `deliver.yml` and in `ci/setup-*-runner.sh` (`REMOTLY_REPO`).
-3. **Linux runner**: `ci/setup-linux-runner.sh` registers a runner with
-   the `remotly` label and installs a user unit for it. It needs, under `~/.config/remotly/secrets/`:
-   `keystore.properties` (+ the upload keystore it names), `play-service-account.json` (or `fcm-service-account.json`
-   with release rights on the Play app), `google-services.json`; and Node 24 (fnm default alias, or `REMOTLY_NODE_BIN`),
-   JDK 17 and the Android SDK (`REMOTLY_JAVA_HOME`, `REMOTLY_ANDROID_HOME`, defaults `~/sdks/jdk-17`, `~/sdks/android-sdk`).
-4. **Mac runner**: `ci/setup-mac-runner.sh` (launchd LaunchAgent, no sudo). It needs Xcode, xcodegen, and under
-   `~/.config/remotly/`: `asc-api-key.p8` (the App Store Connect API key) and `keychain-pass` (the login password, so a
-   headless session can unlock the keychain for code signing; `errSecInternalComponent` means it is missing).
-5. **Runner hygiene.** Both runners run as an interactive user with access to that machine's credentials. Keep
-   `deliver.yml` on `push` to `main` and `workflow_dispatch` only, never on
-   `pull_request`; require approval for outside collaborators' workflows; restrict allowed actions and require SHA
-   pinning (Settings → Actions → General); protect `main`.
+   repository name in the guard of `deliver.yml`.
+3. **Secrets and variables** as in "Secrets" above, in your repository's settings.
+4. **Workflow hygiene.** The secrets are only as safe as the workflows that can read them: keep `deliver.yml` on `push`
+   to `main` and `workflow_dispatch` only, never on `pull_request`; require approval for outside collaborators'
+   workflows; restrict allowed actions and require SHA pinning (Settings → Actions → General); protect `main` (a
+   ruleset that requires pull requests).
 
-## Runner operations
+## Operations
 
-- Runner offline → jobs queue (up to 24 h) and run when it returns. `gh run list` shows runs;
-  `gh workflow run deliver.yml -f android=true -f ios=false` re-delivers one lane.
-- Triage: Android upload 403 → the service account lacks Play access or the Google Play Android Developer API is off in
-  its project; iOS `errSecInternalComponent` → keychain locked (password file missing).
-- Re-registering a runner: delete it in GitHub → Settings → Actions → Runners, remove the `.runner` file, rerun the setup script.
+- `gh run list --workflow deliver.yml` shows runs; `gh workflow run deliver.yml -f android=true -f ios=false`
+  re-delivers one lane.
+- Triage: a lane failing with "the repository secret behind … is not set" → that secret is missing or empty; Android
+  upload 403 → the service account lacks Play access or the Google Play Android Developer API is off in its project;
+  iOS provisioning errors → the API key, `ASC_KEY_ID` and `ASC_ISSUER_ID` do not belong together, the key's role lacks
+  cloud-managed distribution ("Secrets"), or the App ID lacks a capability (`ios/NOTES.md`, "Signing"); a message about
+  an Apple Development certificate for "this machine" or a certificate limit → each hosted run creates one, revoke the
+  stale ones under Certificates in the developer portal.
 - Apple Developer membership renews yearly; if it lapses, TestFlight installs and APNs pushes stop. TestFlight builds
   expire after 90 days: a push to `main` that `ci/plan.sh` classifies for iOS (see above: `ios/` or `shared/` code, `deliver.yml`, a `ci/` script) uploads a fresh one, or
   dispatch the iOS lane by hand.

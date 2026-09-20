@@ -37,7 +37,6 @@ classify() {
       LICENSE|NOTICE|.github/CODEOWNERS|.github/ISSUE_TEMPLATE/*|.github/dependabot.yml) ;;  # paperwork (templates in .md: above)
       install.sh|.github/workflows/release.yml|bridge/scripts/package.sh) ;; # the release path: release.yml on a bridge-v* tag, never deliver.yml
       .github/workflows/ci.yml|ci/test/*|bridge/test/*|ios/FlowKit/Tests/*|android/*/src/test/*) ;;  # PR checks and tests: in no build, not run by the host
-      ci/setup-*) ;;                                                        # runner installers: no delivery
       relay/*) ;;                                                           # the relay is deployed by hand (relay/README.md)
       bridge/*) ;;                                                          # the bridge is released by a tag (release.yml), never delivered from main
       .github/*|ci/*) c_android=true c_ios=true ;;                          # the pipeline itself changed → deliver all

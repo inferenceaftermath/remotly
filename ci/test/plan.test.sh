@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Exercises ci/plan.sh against a throwaway repository: which paths deliver which lane; that documentation, paperwork,
-# the bridge (released by a tag, never delivered from main), the pull-request workflow and tests, the runner installers
-# and the relay deliver nothing; that a file moved across lanes delivers both; that an unclassified path, a pipeline
+# the bridge (released by a tag, never delivered from main), the pull-request workflow and tests and
+# the relay deliver nothing; that a file moved across lanes delivers both; that an unclassified path, a pipeline
 # change or an unusable base delivers everything; that workflow_dispatch takes its checkboxes. Run: bash ci/test/plan.test.sh
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -49,7 +49,6 @@ expect "documentation and markdown"     false false docs/DELIVERY.md CHANGELOG.m
 expect "repository paperwork"           false false LICENSE NOTICE .github/CODEOWNERS .github/ISSUE_TEMPLATE/bug.yml .github/PULL_REQUEST_TEMPLATE.md .github/dependabot.yml .gitattributes .editorconfig
 expect "the release path"               false false install.sh .github/workflows/release.yml bridge/scripts/package.sh
 expect "pull-request checks and tests"  false false .github/workflows/ci.yml ci/test/plan.test.sh bridge/test/server/http.test.ts ios/FlowKit/Tests/FlowKitTests/GridTests.swift android/core/src/test/kotlin/MessagesTest.kt
-expect "runner installers"              false false ci/setup-linux-runner.sh ci/setup-mac-runner.sh
 expect "the relay"                      false false relay/src/index.ts relay/wrangler.jsonc relay/package.json
 # The bridge reaches hosts as a release (release.yml on a bridge-v* tag, install.sh, `remotly-bridge update`), never from a push.
 expect "the bridge"                     false false bridge/src/main.ts bridge/bin/remotly-bridge bridge/package.json bridge/package-lock.json bridge/src/approvals/agents.json

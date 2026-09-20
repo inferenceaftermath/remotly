@@ -1,6 +1,5 @@
-# Checks for pull requests, on GitHub-hosted runners only; a branch without a pull request is not checked (open a
-# draft). The self-hosted `remotly` runners belong to deliver.yml, which runs solely on pushes to `main` of the
-# upstream repository.
+# Checks for pull requests; a branch without a pull request is not checked (open a draft). Deliveries to the stores
+# are deliver.yml's, on pushes to `main` of the upstream repository.
 name: ci
 
 on:

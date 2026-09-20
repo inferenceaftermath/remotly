@@ -149,4 +149,4 @@ and pair again. `tailscale cert` (publicly trusted, auto-renewed, no pinning) is
 - A phone factory-reset or revoked: `devices revoke <id>` if the old record should go, then `pair` again.
 - Direct push only: an APNs key or Firebase service account rotated → replace the file under `~/.config/remotly/secrets/`
   (mode 600), `systemctl --user restart remotly-bridge`, check `status` shows `apns=ready fcm=ready`.
-- Running your own delivery lane (TestFlight expiry, Play, runners): `docs/DELIVERY.md`.
+- Running your own delivery lane (TestFlight expiry, Play, secrets): `docs/DELIVERY.md`.
