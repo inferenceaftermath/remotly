@@ -4,8 +4,8 @@
 # repository secrets (docs/DELIVERY.md, "Secrets"); the App Store Connect key id and issuer id and the Cloudflare account
 # id are repository variables. Build number / versionCode = the run number, monotonic (a store lane whose upload
 # succeeded is not re-run — the stores refuse a build number twice; the next push delivers it). Pull requests are
-# checked by ci.yml. The bridge is not delivered from main: a `bridge-vX.Y.Z` tag releases it (release.yml) and hosts
-# install releases (install.sh, then `remotly-bridge update` and its timer).
+# checked by ci.yml. The bridge is not delivered from main: a bump of bridge/package.json releases it (release.yml,
+# tag bridge-vX.Y.Z) and hosts install releases (install.sh, then `remotly-bridge update` and its timer).
 name: deliver
 
 on:
@@ -37,7 +37,7 @@ on:
 # from what it last delivered (refs/delivered/<lane>, ci/plan.sh), not from the push's parent. Runs are not started in
 # push order: only main's tip delivers (ci/lane-guard.sh), the others do nothing.
 concurrency:
-  group: deliver-main
+  group: deliver-main # shared with promote.yml: one Play edit open at a time (a new one by the same account invalidates it)
   cancel-in-progress: false
   queue: max
 

@@ -1,0 +1,158 @@
+# Store promotion, by hand: builds deliver.yml put on Play internal testing and TestFlight go to production, each named
+# by its delivery's build number (`play_build`: the Play version code; `ios_build`: the TestFlight build number — the
+# same number when one delivery ran both lanes, different ones when a change touched one app only). The numbers are
+# required — dispatches queue behind deliveries, so a run picking "the newest" could take a later delivery's build.
+# Play: the build rolls out to a share of users, raised on later runs until 100 % completes it (store/play-promote.mjs);
+# Play sends the commit for review together with every change waiting in the Play Console's Publishing overview (as
+# the console's own button does). iOS: the build is attached to an App Store version and submitted to review
+# (store/asc-submit.mjs). Nothing is built or uploaded here. Runs only in the upstream repository and from main
+# (the scripts of another ref never see the store credentials), with the Play service account and the App Store
+# Connect API key from its secrets (docs/DELIVERY.md, "Promotion"). `dry_run` shows what a run would do and changes
+# nothing.
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      play_rollout:
+        description: "Play: roll play_build out to production for this share of users (100 completes the rollout; Play sends the changes waiting in the Publishing overview along with it)"
+        type: choice
+        options: [none, '5', '10', '25', '50', '100']
+        default: none
+      play_build:
+        description: "Play: the version code to roll out — its delivery's build number (required with play_rollout; a queued run must not pick up a later delivery's build)"
+        type: string
+        default: ''
+      ios_submit:
+        description: "iOS: submit ios_build to App Store review"
+        type: boolean
+        default: false
+      ios_version:
+        description: "iOS: the App Store version string to submit (X.Y.Z; required with ios_submit)"
+        type: string
+        default: ''
+      ios_build:
+        description: "iOS: the TestFlight build number to submit — its delivery's build number (required with ios_submit)"
+        type: string
+        default: ''
+      ios_release:
+        description: "iOS: release when Apple approves, or wait for a manual release"
+        type: choice
+        options: [after-approval, manual]
+        default: after-approval
+      notes:
+        description: "What's New shown in the stores (both platforms; Apple requires it for an app update; Play allows 500 characters)"
+        type: string
+        default: ''
+      dry_run:
+        description: Show what would happen and change nothing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One queue with deliver.yml: a Play edit opened by the service account invalidates the one a delivery has open (even a
+# dry run opens one), so nothing here runs beside an upload; and every dispatch runs, one at a time.
+concurrency:
+  group: deliver-main
+  cancel-in-progress: false
+  queue: max
+
+env:
+  REMOTLY_PACKAGE: com.inferenceaftermath.remotly
+  ASC_BUNDLE_ID: com.inferenceaftermath.remotly
+
+jobs:
+  check:
+    name: The inputs make sense
+    if: github.repository == 'inferenceaftermath/remotly' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      ROLLOUT: ${{ inputs.play_rollout }}
+      PLAY_BUILD: ${{ inputs.play_build }}
+      IOS_SUBMIT: ${{ inputs.ios_submit }}
+      IOS_VERSION: ${{ inputs.ios_version }}
+      IOS_BUILD: ${{ inputs.ios_build }}
+      IOS_RELEASE: ${{ inputs.ios_release }}
+      NOTES: ${{ inputs.notes }}
+      LC_ALL: C.UTF-8 # ${#NOTES} counts characters, as the stores do
+    steps:
+      # Each build is named, never "the newest": this run may start after a later delivery. An input for a platform whose
+      # action is off would be ignored silently; a run with nothing to do would be green. And what the scripts would
+      # refuse on sight (the version string's shape, the notes' length) is refused here, before either store is touched:
+      # the two platforms are independent jobs, and one is not undone when the other fails.
+      - run: |
+          bad=0
+          if [ "$ROLLOUT" != none ]; then
+            case "$PLAY_BUILD" in *[!0-9]*|'') echo "play_rollout needs play_build: the version code, i.e. its delivery's build number (e.g. 37)" >&2; bad=1 ;; esac
+            [ "${#NOTES}" -le 500 ] || { echo "notes is ${#NOTES} characters; Play allows 500" >&2; bad=1; }
+          else
+            [ -z "$PLAY_BUILD" ] || { echo "play_build was given without a play_rollout" >&2; bad=1; }
+          fi
+          if [ "$IOS_SUBMIT" = true ]; then
+            [[ "$IOS_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo "ios_submit needs ios_version, the App Store version string X.Y or X.Y.Z (e.g. 0.1.1), got '$IOS_VERSION'" >&2; bad=1; }
+            case "$IOS_BUILD" in *[!0-9]*|'') echo "ios_submit needs ios_build: the TestFlight build number, i.e. its delivery's build number (e.g. 37)" >&2; bad=1 ;; esac
+            [ "${#NOTES}" -le 4000 ] || { echo "notes is ${#NOTES} characters; Apple allows 4000 for What's New" >&2; bad=1; }
+          else
+            [ -z "$IOS_VERSION$IOS_BUILD" ] || { echo "ios_version / ios_build were given without ios_submit" >&2; bad=1; }
+            [ "$IOS_RELEASE" = after-approval ] || { echo "ios_release was chosen without ios_submit" >&2; bad=1; }
+          fi
+          [ "$ROLLOUT" != none ] || [ "$IOS_SUBMIT" = true ] || { echo "nothing to do: choose a play_rollout, ios_submit, or both" >&2; bad=1; }
+          exit $bad
+
+  play:
+    name: Play → production
+    needs: check
+    if: github.ref == 'refs/heads/main' && inputs.play_rollout != 'none'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Roll out
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          PLAY_PACKAGE: ${{ env.REMOTLY_PACKAGE }}
+          ROLLOUT: ${{ inputs.play_rollout }}
+          BUILD: ${{ inputs.play_build }}
+          NOTES: ${{ inputs.notes }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          [ -n "$PLAY_SERVICE_ACCOUNT_JSON" ] || { echo "the repository secret PLAY_SERVICE_ACCOUNT_JSON is not set (docs/DELIVERY.md, \"Secrets\")" >&2; exit 1; }
+          set -- --fraction "$(awk -v p="$ROLLOUT" 'BEGIN { printf "%g", p / 100 }')" --version-code "$BUILD"
+          [ -z "$NOTES" ] || set -- "$@" --notes "$NOTES"
+          [ "$DRY_RUN" != true ] || set -- "$@" --dry-run
+          node store/play-promote.mjs "$@"
+
+  ios:
+    name: iOS → App Store review
+    needs: check
+    if: github.ref == 'refs/heads/main' && inputs.ios_submit
+    runs-on: ubuntu-latest # the App Store Connect API is plain HTTPS; no Xcode involved
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Submit
+        env:
+          ASC_KEY_ID: ${{ vars.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ vars.ASC_ISSUER_ID }}
+          ASC_API_KEY_P8_CONTENT: ${{ secrets.ASC_API_KEY_P8 }}
+          VERSION: ${{ inputs.ios_version }}
+          BUILD: ${{ inputs.ios_build }}
+          RELEASE: ${{ inputs.ios_release }}
+          NOTES: ${{ inputs.notes }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ]; then
+            echo "set the repository variables ASC_KEY_ID and ASC_ISSUER_ID (Settings → Secrets and variables → Actions → Variables)" >&2; exit 1
+          fi
+          [ -n "$ASC_API_KEY_P8_CONTENT" ] || { echo "the repository secret ASC_API_KEY_P8 is not set (docs/DELIVERY.md, \"Secrets\")" >&2; exit 1; }
+          [ -n "$VERSION" ] || { echo "ios_version is required with ios_submit (the App Store version string, e.g. 0.1.1)" >&2; exit 1; }
+          set -- --version "$VERSION" --build "$BUILD" --release "$RELEASE"
+          [ -z "$NOTES" ] || set -- "$@" --notes "$NOTES"
+          [ "$DRY_RUN" != true ] || set -- "$@" --dry-run
+          node store/asc-submit.mjs "$@"

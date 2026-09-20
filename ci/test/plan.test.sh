@@ -53,6 +53,7 @@ expect "the relay"                      false false true  relay/src/index.ts rel
 expect "relay tests and README"         false false false relay/test/relay.test.ts relay/README.md
 # The bridge reaches hosts as a release (release.yml on a bridge-v* tag, install.sh, `remotly-bridge update`), never from a push.
 expect "the bridge"                     false false false bridge/src/main.ts bridge/bin/remotly-bridge bridge/package.json bridge/package-lock.json bridge/src/approvals/agents.json
+expect "store promotion"                false false false store/play-promote.mjs store/asc-submit.mjs store/test/asc-submit.test.mjs .github/workflows/promote.yml
 expect "a no-change push"               false false false
 expect "android"                        true  false false android/app/build.gradle.kts
 expect "ios"                            false true false  ios/Remotly/Views/PaneView.swift
