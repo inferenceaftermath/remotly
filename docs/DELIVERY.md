@@ -5,7 +5,7 @@ changed paths and schedules a Play internal-testing release for `android/`, a Te
 deployment for `relay/` (the push relay, `relay/README.md`), the two app lanes for `shared/` (its non-Markdown files:
 protocol fixtures, design assets), all three for the pipeline itself (`.github/workflows/deliver.yml`, the `ci/` scripts),
 and nothing for what is in no build: documentation, repository paperwork (licence, templates, CODEOWNERS,
-Dependabot), the bridge (`bridge/` reaches hosts as a release: `release.yml` on a `bridge-vX.Y.Z` tag, `install.sh`,
+Dependabot), the bridge (`bridge/` reaches hosts as a release: `release.yml` when a version bump merges, `install.sh`,
 `remotly-bridge update`), the release path itself (`install.sh`, `release.yml`, `bridge/scripts/package.sh`), and the pull-request
 workflow and the tests (`ci/test/`, `bridge/test/`, `relay/test/`, `ios/FlowKit/Tests/`, `android/*/src/test/`). Inside the apps' own trees (`android/*/src/main/`, `ios/Remotly/`, `ios/Shared/`,
 `ios/FlowActivity/`, `ios/FlowKit/Sources/`) every file delivers, whatever its name. Each lane is diffed from the

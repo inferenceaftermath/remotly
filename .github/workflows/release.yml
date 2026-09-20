@@ -1,20 +1,52 @@
-# Tag bridge-vX.Y.Z (matching bridge/package.json) → tests on a GitHub-hosted runner → tarball, SHA256SUMS and
-# install.sh attached to a GitHub Release. install.sh resolves /releases/latest, so only bridge releases may be GitHub
-# Releases. Nothing here touches any host: hosts install a release with install.sh, then `remotly-bridge update` and its
-# timer pull the next ones.
+# Bridge releases. A push to main whose bridge/package.json names a version with no GitHub Release yet — the merge of a
+# version bump (bridge/scripts/release-prep.sh) — releases it: tests on a GitHub-hosted runner, then the tarball,
+# SHA256SUMS and install.sh on a GitHub Release tagged bridge-vX.Y.Z, created here (a tag pushed by hand, matching
+# package.json, releases the same way). The notes come from CHANGELOG.md's `### Bridge X.Y.Z` section. install.sh
+# resolves /releases/latest, so only bridge releases may be GitHub Releases. Nothing here touches any host: hosts
+# install a release with install.sh, then `remotly-bridge update` and its timer pull the next ones. A merge whose
+# message carries the skip-ci marker is skipped by GitHub: the next push to main releases instead (the version decides,
+# not the commit).
 name: release
 
 on:
   push:
+    branches: [main]
     tags: ['bridge-v*']
 
 permissions:
-  contents: write
+  contents: read # the release job takes `write` for the tag and the GitHub Release
+
+# One release at a time; a run is never cancelled once it uploads.
+concurrency:
+  group: release-bridge
+  cancel-in-progress: false
 
 jobs:
+  plan:
+    name: Is there a bridge version to release?
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      verify_tag: ${{ steps.plan.outputs.verify_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bridge/scripts/release-plan.sh
+
   release:
     name: Bridge release
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # the tag and the GitHub Release
+    env:
+      VER: ${{ needs.plan.outputs.version }}
+      TAG: ${{ needs.plan.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -22,22 +54,18 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: bridge/package-lock.json
-      - name: Tag matches bridge/package.json
-        run: |
-          ver="$(node -p "require('./bridge/package.json').version")"
-          test "$GITHUB_REF_NAME" = "bridge-v$ver" || { echo "tag $GITHUB_REF_NAME does not match bridge/package.json version $ver" >&2; exit 1; }
       - name: Typecheck and tests
         working-directory: bridge
         run: |
           npm ci
           npx tsc --noEmit
           npm test
-      - name: Installer lint
+      - name: Installer and script lint
         run: |
           sh -n install.sh
           shellcheck -s sh install.sh
-          bash -n bridge/scripts/package.sh
-          shellcheck bridge/scripts/package.sh
+          bash -n bridge/scripts/*.sh
+          shellcheck bridge/scripts/*.sh
       - name: Package
         run: bridge/scripts/package.sh
       - name: Install from the package like a user would
@@ -46,20 +74,28 @@ jobs:
           REMOTLY_HOME: ${{ runner.temp }}/remotly-home
           REMOTLY_BIN_DIR: ${{ runner.temp }}/remotly-bin
         run: |
-          ver="$(node -p "require('./bridge/package.json').version")"
-          mkdir -p "$RUNNER_TEMP/releases/download/bridge-v$ver"
-          cp bridge/dist/* "$RUNNER_TEMP/releases/download/bridge-v$ver/"
-          REMOTLY_VERSION="$ver" REMOTLY_RELEASE_URL="file://$RUNNER_TEMP/releases" sh install.sh
-          test "$("$REMOTLY_BIN_DIR/remotly-bridge" --version)" = "$ver"
+          mkdir -p "$RUNNER_TEMP/releases/download/$TAG"
+          cp bridge/dist/* "$RUNNER_TEMP/releases/download/$TAG/"
+          REMOTLY_VERSION="$VER" REMOTLY_RELEASE_URL="file://$RUNNER_TEMP/releases" sh install.sh
+          test "$("$REMOTLY_BIN_DIR/remotly-bridge" --version)" = "$VER"
           "$REMOTLY_BIN_DIR/remotly-bridge" --help | grep -q '^  setup'
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          VERIFY_TAG: ${{ needs.plan.outputs.verify_tag }}
+        # The tag is created with the release at this commit (--target), or must already be there (--verify-tag). The
+        # notes are the CHANGELOG section; without one the release still happens, with the install line only.
         run: |
-          ver="$(node -p "require('./bridge/package.json').version")"
-          pre=""; case "$ver" in *-*) pre="--prerelease" ;; esac
-          notes="$(printf 'Install or upgrade the bridge on a Linux host:\n\n    curl -fsSL https://remotly.dev/install.sh | sh\n\nAssets: `remotly-bridge-%s.tar.gz` (bridge with its production dependencies, any Linux architecture), `SHA256SUMS`, `install.sh`.' "$ver")"
-          gh release create "$GITHUB_REF_NAME" --title "remotly-bridge $ver" --notes "$notes" $pre bridge/dist/*
+          notes="$RUNNER_TEMP/notes.md"
+          if ! bridge/scripts/release-notes.sh "$VER" > "$notes"; then
+            echo "::warning::CHANGELOG.md has no notes under '### Bridge $VER'; the release carries the install line only"
+            : > "$notes"
+          fi
+          printf '\nInstall or upgrade the bridge on a Linux host:\n\n    curl -fsSL https://remotly.dev/install.sh | sh\n\nAssets: `remotly-bridge-%s.tar.gz` (bridge with its production dependencies, any Linux architecture), `SHA256SUMS`, `install.sh`.\n' "$VER" >> "$notes"
+          pre=""; case "$VER" in *-*) pre="--prerelease" ;; esac
+          verify=""; [ "$VERIFY_TAG" != true ] || verify="--verify-tag"
+          # shellcheck disable=SC2086 # $pre and $verify are empty or one flag each
+          gh release create "$TAG" --target "$GITHUB_SHA" $verify --title "remotly-bridge $VER" --notes-file "$notes" $pre bridge/dist/*
       - name: Install the published release the way users do (latest, unpinned)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -67,17 +103,17 @@ jobs:
           REMOTLY_HOME: ${{ runner.temp }}/remotly-home-2
           REMOTLY_BIN_DIR: ${{ runner.temp }}/remotly-bin-2
         run: |
-          ver="$(node -p "require('./bridge/package.json').version")"
           # A prerelease (0.2.0-rc.1) is not what /releases/latest resolves to, so only the version decides — never the
           # tag name, whose fixed `bridge-v` prefix contains a hyphen.
-          case "$ver" in *-*) echo "prerelease $ver: /releases/latest does not point at it; skipping the unpinned install"; exit 0 ;; esac
+          case "$VER" in *-*) echo "prerelease $VER: /releases/latest does not point at it; skipping the unpinned install"; exit 0 ;; esac
           # /releases/latest points at the newest non-prerelease; give GitHub a moment to index it.
           for i in 1 2 3 4 5 6; do
-            if curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/bridge-v$ver/install.sh" \
+            if curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG/install.sh" \
                 | REMOTLY_RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases" sh \
-                && test "$("$REMOTLY_BIN_DIR/remotly-bridge" --version)" = "$ver"; then exit 0; fi
+                && test "$("$REMOTLY_BIN_DIR/remotly-bridge" --version)" = "$VER"; then exit 0; fi
             sleep 10
           done
-          echo "unpinned install of bridge-v$ver failed; removing the release" >&2
-          gh release delete "$GITHUB_REF_NAME" --yes --cleanup-tag || true
+          # The release goes; the tag stays (the tag ruleset forbids deleting it), so the retry is a new version.
+          echo "unpinned install of $TAG failed; removing the release — bump bridge/package.json for the next attempt" >&2
+          gh release delete "$TAG" --yes || true
           exit 1

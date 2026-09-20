@@ -42,12 +42,17 @@ node src/main.ts setup --unit remotly-dev --config-dir ~/.config/remotly-dev
 REMOTLY_CONFIG_DIR=~/.config/remotly-dev node src/main.ts status
 ```
 
-Releases: tag `bridge-vX.Y.Z` (matching `package.json`) → `.github/workflows/release.yml` builds
-`remotly-bridge-X.Y.Z.tar.gz` (sources + production dependencies, `scripts/package.sh`), `SHA256SUMS` and `install.sh`
-into a GitHub Release; `install.sh` resolves `/releases/latest`, so only bridge releases may be GitHub Releases. The
-tagged commit's message must not carry `[skip ci]`: GitHub skips the workflows for the tag push as well, and no release
-is made. The tag ruleset forbids moving the tag afterwards, so either bump `package.json` and tag a later commit with the
-new version, or re-tag with the ruleset disabled for the moment.
+Releases: `scripts/release-prep.sh X.Y.Z` (at the repository root, on a clean `main`) moves `package.json` and the
+lock to the version, checks that `CHANGELOG.md` holds the notes under `### Bridge X.Y.Z` (it adds the heading when
+missing and stops for you to write them) and opens the pull request. Merging it releases: `.github/workflows/release.yml`
+(`scripts/release-plan.sh`) sees a version without a GitHub Release, runs the tests, builds `remotly-bridge-X.Y.Z.tar.gz`
+(sources + production dependencies, `scripts/package.sh`), `SHA256SUMS` and `install.sh`, checks the installer against
+them, then creates the tag `bridge-vX.Y.Z` and the GitHub Release with the notes (`scripts/release-notes.sh`), and
+installs the published release once like a user would. A tag pushed by hand that matches `package.json` releases the
+same way. `install.sh` resolves `/releases/latest`, so only bridge releases may be GitHub Releases. Two things to know:
+a merge whose message carries `[skip ci]` is skipped by GitHub, and the next push to `main` releases instead (the version
+decides, not the commit); a tag that exists at another commit without a release blocks the workflow — the tag ruleset
+forbids moving it — until `package.json` is bumped past it.
 
 ## CLI
 
