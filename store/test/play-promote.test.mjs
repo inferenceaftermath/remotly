@@ -101,7 +101,8 @@ test('promote: one edit — insert, tracks, put production (completed release ke
   assert.deepEqual(play.trail(), ['POST token', 'POST /edits', 'GET /edits/e1/tracks', 'PUT /edits/e1/tracks/production', 'POST /edits/e1:validate', 'POST /edits/e1:commit?changesInReviewBehavior=ERROR_IF_IN_REVIEW']);
   assert.deepEqual(play.calls[3].body, { track: 'production', releases: [live, { versionCodes: ['36'], status: 'inProgress', userFraction: 0.25, releaseNotes: [{ language: 'en-US', text: 'Hello' }] }] });
   assert.match(logs[0], /^production ← 36 as inProgress \(25% of users\)$/);
-  assert.equal(logs[1], 'committed');
+  assert.match(logs[1], /Publishing overview/);
+  assert.equal(logs[2], 'committed');
 });
 
 test('promote: the log names a raised rollout and what is replaced', async () => {

@@ -20,9 +20,15 @@ const shipped = v('v0', '0.1.0', 'READY_FOR_DISTRIBUTION'); // the app is past i
  * version) and `whatsNew` (by version id) are the current state; every call is recorded. Sparse fieldsets are honoured
  * the way the real API does: an item names its version only when `appStoreVersion` is in its fields and included.
  */
-function fakeASC({ versions = [shipped], submissions = [], attached, whatsNew = {}, fail = [] } = {}) {
+// `after`: { 'METHOD /path': () => … } runs after that call — for what somebody else does while the run is under way.
+function fakeASC({ versions = [shipped], submissions = [], attached, whatsNew = {}, fail = [], after = {} } = {}) {
   const calls = [];
   const fetchFn = async (url, init = {}) => {
+    const res = await handle(url, init);
+    after[`${init.method ?? 'GET'} ${url.replace('https://api.appstoreconnect.apple.com/v1', '').split('?')[0]}`]?.(submissions);
+    return res;
+  };
+  const handle = async (url, init) => {
     const method = init.method ?? 'GET';
     const path = url.replace('https://api.appstoreconnect.apple.com/v1', '');
     const body = init.body ? JSON.parse(init.body) : undefined;
@@ -51,13 +57,16 @@ function fakeASC({ versions = [shipped], submissions = [], attached, whatsNew = 
     }
     if (method === 'PATCH' && bare.startsWith('/appStoreVersionLocalizations/')) return respond(200, { data: { id: bare.split('/')[2] } });
     if (method === 'GET' && bare === '/apps/app1/reviewSubmissions') { const states = q.get('filter[state]').split(','); return respond(200, { data: submissions.filter((s) => states.includes(s.attributes.state)) }); }
-    if (method === 'POST' && bare === '/reviewSubmissions') return respond(201, { data: { id: 'subNew', attributes: { state: 'READY_FOR_REVIEW' } } });
+    if (method === 'POST' && bare === '/reviewSubmissions') { submissions.push({ id: 'subNew', attributes: { state: 'READY_FOR_REVIEW' }, items: [] }); return respond(201, { data: { id: 'subNew', attributes: { state: 'READY_FOR_REVIEW' } } }); }
     if (method === 'GET' && /^\/reviewSubmissions\/[^/]+\/items$/.test(bare)) {
       const named = (q.get('fields[reviewSubmissionItems]') ?? 'state,appStoreVersion').split(',').includes('appStoreVersion') && q.get('include') === 'appStoreVersion';
       const items = submissions.find((x) => x.id === bare.split('/')[2])?.items ?? [];
       return respond(200, { data: items.map((i) => (named ? i : { id: i.id, attributes: i.attributes })) });
     }
-    if (method === 'POST' && bare === '/reviewSubmissionItems') return respond(201, { data: { id: 'item1', attributes: { state: 'READY_FOR_REVIEW' } } });
+    if (method === 'POST' && bare === '/reviewSubmissionItems') {
+      submissions.find((x) => x.id === body.data.relationships.reviewSubmission.data.id)?.items.push(item('item1', body.data.relationships.appStoreVersion.data.id));
+      return respond(201, { data: { id: 'item1', attributes: { state: 'READY_FOR_REVIEW' } } });
+    }
     if (method === 'PATCH' && bare.startsWith('/reviewSubmissionItems/')) return respond(200, { data: { id: bare.split('/')[2] } });
     if (method === 'PATCH' && /^\/reviewSubmissions\/[^/]+$/.test(bare)) return respond(200, { data: { id: bare.split('/')[2], attributes: { state: 'WAITING_FOR_REVIEW' } } });
     return respond(404, { errors: [{ title: `unexpected ${method} ${bare}` }] });
@@ -81,7 +90,7 @@ test('an update as a new version: created, the newest build of that version atta
   const r = await submit({ key, bundleId: 'com.example.app', version: '0.1.1', notes: 'Fixes', fetchFn: asc.fetchFn, log: (l) => logs.push(l) });
   assert.deepEqual(r, { app: 'app1', build: '36', version: '0.1.1', created: true, submission: 'subNew' });
   assert.deepEqual(asc.trail(), [...LOOKUP, 'GET /builds', 'GET /apps/app1/reviewSubmissions', 'POST /appStoreVersions', 'PATCH /appStoreVersions/vNew/relationships/build',
-    'GET /appStoreVersions/vNew/appStoreVersionLocalizations', 'PATCH /appStoreVersionLocalizations/loc-en-vNew', 'POST /reviewSubmissions', 'POST /reviewSubmissionItems', 'PATCH /reviewSubmissions/subNew']);
+    'GET /appStoreVersions/vNew/appStoreVersionLocalizations', 'PATCH /appStoreVersionLocalizations/loc-en-vNew', 'POST /reviewSubmissions', 'POST /reviewSubmissionItems', 'GET /reviewSubmissions/subNew/items', 'PATCH /reviewSubmissions/subNew']);
   assert.match(asc.calls[4].path, /filter\[preReleaseVersion\.version\]=0\.1\.1&filter\[preReleaseVersion\.platform\]=IOS&filter\[processingState\]=VALID&filter\[expired\]=false&sort=-uploadedDate/);
   const created = asc.calls[6].body.data;
   assert.deepEqual(created.attributes, { platform: 'IOS', versionString: '0.1.1', releaseType: 'AFTER_APPROVAL' });
@@ -90,7 +99,7 @@ test('an update as a new version: created, the newest build of that version atta
   assert.match(asc.calls[8].path, /filter\[locale\]=en-US/);
   assert.equal(asc.calls[9].body.data.attributes.whatsNew, 'Fixes');
   assert.equal(asc.calls[11].body.data.relationships.appStoreVersion.data.id, 'vNew');
-  assert.deepEqual(asc.calls[12].body.data.attributes, { submitted: true });
+  assert.deepEqual(asc.calls[13].body.data.attributes, { submitted: true });
   assert.match(logs[0], /new version 0\.1\.1 ← build 36 .*release AFTER_APPROVAL, What's New from notes/);
   assert.match(logs.at(-1), /submitted: version 0\.1\.1 with build 36/);
 });
@@ -100,7 +109,7 @@ test('a rejected version with its What\'s New is reused; a different release typ
   const logs = [];
   const r = await submit({ key, bundleId: 'com.example.app', version: '0.1.1', build: '35', release: 'manual', fetchFn: asc.fetchFn, log: (l) => logs.push(l) });
   assert.deepEqual(r, { app: 'app1', build: '35', version: '0.1.1', created: false, submission: 'subOpen' });
-  assert.deepEqual(asc.trail(), [...LOOKUP, 'GET /builds', 'GET /appStoreVersions/v1/appStoreVersionLocalizations', 'GET /apps/app1/reviewSubmissions', 'GET /reviewSubmissions/subOpen/items', 'PATCH /appStoreVersions/v1', 'PATCH /appStoreVersions/v1/relationships/build', 'PATCH /reviewSubmissionItems/i1', 'PATCH /reviewSubmissions/subOpen']);
+  assert.deepEqual(asc.trail(), [...LOOKUP, 'GET /builds', 'GET /appStoreVersions/v1/appStoreVersionLocalizations', 'GET /apps/app1/reviewSubmissions', 'GET /reviewSubmissions/subOpen/items', 'PATCH /appStoreVersions/v1', 'PATCH /appStoreVersions/v1/relationships/build', 'PATCH /reviewSubmissionItems/i1', 'GET /reviewSubmissions/subOpen/items', 'PATCH /reviewSubmissions/subOpen']);
   assert.deepEqual(asc.calls[8].body.data.attributes, { releaseType: 'MANUAL' });
   assert.deepEqual(asc.calls[9].body, { data: { type: 'builds', id: 'b35' } });
   assert.match(asc.calls[7].path, /fields\[reviewSubmissionItems\]=state,appStoreVersion&include=appStoreVersion&limit=200/);
@@ -113,13 +122,22 @@ test('the review submission is exactly the one for the version: an empty open on
   const r = await submit({ key, bundleId: 'b', version: '0.1.1', notes: 'x', fetchFn: empty.fetchFn, log: () => {} });
   assert.equal(r.submission, 'subEmpty');
   assert.deepEqual(empty.trail(), [...LOOKUP, 'GET /builds', 'GET /apps/app1/reviewSubmissions', 'GET /reviewSubmissions/subEmpty/items', 'POST /appStoreVersions', 'PATCH /appStoreVersions/vNew/relationships/build',
-    'GET /appStoreVersions/vNew/appStoreVersionLocalizations', 'PATCH /appStoreVersionLocalizations/loc-en-vNew', 'POST /reviewSubmissionItems', 'PATCH /reviewSubmissions/subEmpty']);
+    'GET /appStoreVersions/vNew/appStoreVersionLocalizations', 'PATCH /appStoreVersionLocalizations/loc-en-vNew', 'POST /reviewSubmissionItems', 'GET /reviewSubmissions/subEmpty/items', 'PATCH /reviewSubmissions/subEmpty']);
   // Somebody's draft: the run stops before anything changes — in a dry run and in a real one, for a new and a reused version.
   const draft = { submissions: [{ id: 'subEvent', attributes: { state: 'READY_FOR_REVIEW' }, items: [{ id: 'e1', attributes: { state: 'READY_FOR_REVIEW' }, relationships: { appEvent: { data: { type: 'appEvents', id: 'ev1' } } } }] }] };
   for (const [state, dryRun] of [[fakeASC(draft), true], [fakeASC(draft), false], [fakeASC({ ...draft, versions: [shipped, v('v1', '0.1.1', 'PREPARE_FOR_SUBMISSION')], whatsNew: { v1: 'y' } }), false]]) {
     await assert.rejects(submit({ key, bundleId: 'b', version: '0.1.1', notes: 'x', dryRun, fetchFn: state.fetchFn, log: () => {} }), /an open review submission \(READY_FOR_REVIEW\) holds 1 item\(s\) that are not version 0\.1\.1; submit or remove it in App Store Connect first/);
     assert.ok(!state.calls.some((c) => c.method !== 'GET'), state.trail().join(' '));
   }
+  // An item added to the chosen submission while the run is under way (an empty one, and the one holding the version):
+  // seen at the last look, nothing is submitted.
+  const late = (subs) => subs.find((x) => x.items.some((i) => i.id === 'item1' || i.id === 'i1')).items.push({ id: 'e2', attributes: { state: 'READY_FOR_REVIEW' }, relationships: {} });
+  const grew = fakeASC({ submissions: [{ id: 'subEmpty', attributes: { state: 'READY_FOR_REVIEW' }, items: [] }], after: { 'POST /reviewSubmissionItems': late } });
+  await assert.rejects(submit({ key, bundleId: 'b', version: '0.1.1', notes: 'x', fetchFn: grew.fetchFn, log: () => {} }), /the review submission holds 2 item\(s\) now, not version 0\.1\.1 alone; nothing was submitted/);
+  assert.deepEqual(grew.trail().slice(-2), ['POST /reviewSubmissionItems', 'GET /reviewSubmissions/subEmpty/items']);
+  const grewToo = fakeASC({ versions: [shipped, v('v1', '0.1.1', 'PREPARE_FOR_SUBMISSION')], submissions: [{ id: 'subOpen', attributes: { state: 'READY_FOR_REVIEW' }, items: [item('i1', 'v1')] }], whatsNew: { v1: 'y' }, after: { 'PATCH /appStoreVersions/v1/relationships/build': late } });
+  await assert.rejects(submit({ key, bundleId: 'b', version: '0.1.1', fetchFn: grewToo.fetchFn, log: () => {} }), /holds 2 item\(s\) now/);
+  assert.ok(!grewToo.trail().some((t) => t === 'PATCH /reviewSubmissions/subOpen'));
   // Ours plus another item: not submitted from here either.
   const mixed = fakeASC({ versions: [shipped, v('v1', '0.1.1', 'PREPARE_FOR_SUBMISSION')], submissions: [{ id: 'subMixed', attributes: { state: 'READY_FOR_REVIEW' }, items: [item('i1', 'v1'), { id: 'e1', attributes: { state: 'READY_FOR_REVIEW' }, relationships: {} }] }], whatsNew: { v1: 'y' } });
   await assert.rejects(submit({ key, bundleId: 'b', version: '0.1.1', fetchFn: mixed.fetchFn, log: () => {} }), /holding version 0\.1\.1 holds 1 other item\(s\) too/);
@@ -161,7 +179,7 @@ test('a version string already waiting for review, any version in review, or one
   await assert.rejects(submit({ key, bundleId: 'b', version: '0.1.0', fetchFn: waiting.fetchFn, log: () => {} }), /version 0\.1\.0 \(WAITING_FOR_REVIEW\) is already waiting for or in review/);
   await assert.rejects(submit({ key, bundleId: 'b', version: '0.1.1', fetchFn: waiting.fetchFn, log: () => {} }), /version 0\.1\.0 \(WAITING_FOR_REVIEW\) is already waiting for or in review/);
   const compliance = fakeASC({ versions: [v('v1', '0.1.0', 'WAITING_FOR_EXPORT_COMPLIANCE')] });
-  await assert.rejects(submit({ key, bundleId: 'b', version: '0.1.1', fetchFn: compliance.fetchFn, log: () => {} }), /version 0\.1\.0 \(WAITING_FOR_EXPORT_COMPLIANCE\) is already waiting for or in review; Apple takes one at a time \(complete its export compliance in App Store Connect, or remove it from review\)/);
+  await assert.rejects(submit({ key, bundleId: 'b', version: '0.1.1', fetchFn: compliance.fetchFn, log: () => {} }), /version 0\.1\.0 \(WAITING_FOR_EXPORT_COMPLIANCE\) is already waiting for or in review; Apple takes one at a time \(wait for Apple's export-compliance review, or remove it from review\)/);
   const sale = fakeASC({ versions: [v('v1', '0.1.0', 'READY_FOR_DISTRIBUTION')] });
   await assert.rejects(submit({ key, bundleId: 'b', version: '0.1.0', fetchFn: sale.fetchFn, log: () => {} }), /version 0\.1\.0 is READY_FOR_DISTRIBUTION; submit a new version string/);
   const parked = fakeASC({ versions: [shipped, v('v2', '0.1.2', 'READY_FOR_REVIEW')] });
@@ -200,7 +218,7 @@ test('a version left READY_FOR_REVIEW by an earlier run is submitted as it stand
   const logs = [];
   const r = await submit({ key, bundleId: 'b', version: '0.1.1', notes: 'x', fetchFn: asc.fetchFn, log: (l) => logs.push(l) });
   assert.deepEqual(r, { app: 'app1', build: '36', version: '0.1.1', created: false, resumed: true, submission: 'subOpen' });
-  assert.deepEqual(asc.trail(), [...LOOKUP, 'GET /appStoreVersions/v1/build', 'GET /appStoreVersions/v1/appStoreVersionLocalizations', 'GET /apps/app1/reviewSubmissions', 'GET /reviewSubmissions/subOpen/items', 'PATCH /reviewSubmissions/subOpen']);
+  assert.deepEqual(asc.trail(), [...LOOKUP, 'GET /appStoreVersions/v1/build', 'GET /appStoreVersions/v1/appStoreVersionLocalizations', 'GET /apps/app1/reviewSubmissions', 'GET /reviewSubmissions/subOpen/items', 'GET /reviewSubmissions/subOpen/items', 'PATCH /reviewSubmissions/subOpen']);
   assert.match(logs[0], /READY_FOR_REVIEW with build 36 already .*What's New stays as it is: submitting/);
   // The same build may be named; another one is refused; a dry run does every check and stops before the PATCH.
   await submit({ key, bundleId: 'b', version: '0.1.1', build: '36', fetchFn: fakeASC(state).fetchFn, log: () => {} });
@@ -228,8 +246,8 @@ test("a READY_FOR_REVIEW update without What's New takes it from notes, or is re
   const asc = fakeASC(state);
   const logs = [];
   await submit({ key, bundleId: 'b', version: '0.1.1', notes: 'Now', fetchFn: asc.fetchFn, log: (l) => logs.push(l) });
-  assert.deepEqual(asc.trail().slice(-2), ['PATCH /appStoreVersionLocalizations/loc-en-v1', 'PATCH /reviewSubmissions/subOpen']);
-  assert.equal(asc.calls.at(-2).body.data.attributes.whatsNew, 'Now');
+  assert.deepEqual(asc.trail().slice(-3), ['PATCH /appStoreVersionLocalizations/loc-en-v1', 'GET /reviewSubmissions/subOpen/items', 'PATCH /reviewSubmissions/subOpen']);
+  assert.equal(asc.calls.at(-3).body.data.attributes.whatsNew, 'Now');
   assert.match(logs[0], /What's New from notes: submitting/);
   const refused = fakeASC({ ...state, fail: ['PATCH /appStoreVersionLocalizations/loc-en-v1'] });
   await assert.rejects(submit({ key, bundleId: 'b', version: '0.1.1', notes: 'Now', fetchFn: refused.fetchFn, log: () => {} }), /409[\s\S]*remove it from its review submission in App Store Connect, then run again/);

@@ -60,7 +60,7 @@ export async function submit({ key, bundleId, version, build, notes, release = '
   const state = ver?.attributes.appVersionState;
   const flight = await versionsWhere(`filter[appVersionState]=${IN_FLIGHT.join(',')}`);
   const inReview = flight.filter((v) => v.attributes.appVersionState !== 'READY_FOR_REVIEW').map((v) => `${v.attributes.versionString} (${v.attributes.appVersionState})`);
-  if (inReview.length) throw new Error(`version ${inReview.join(', ')} is already waiting for or in review; Apple takes one at a time${inReview.some((s) => s.includes('EXPORT_COMPLIANCE')) ? ' (complete its export compliance in App Store Connect, or remove it from review)' : ''}`);
+  if (inReview.length) throw new Error(`version ${inReview.join(', ')} is already waiting for or in review; Apple takes one at a time${inReview.some((s) => s.includes('EXPORT_COMPLIANCE')) ? " (wait for Apple's export-compliance review, or remove it from review)" : ''}`);
   const parked = flight.filter((v) => v.attributes.appVersionState === 'READY_FOR_REVIEW' && v.attributes.versionString !== version).map((v) => v.attributes.versionString);
   if (parked.length) throw new Error(`version ${parked.join(', ')} sits in a review submission that was never submitted; submit or remove it in App Store Connect first`);
   if (ver && state !== 'READY_FOR_REVIEW' && !EDITABLE.has(state)) throw new Error(`version ${version} is ${state}; submit a new version string`);
@@ -82,11 +82,13 @@ export async function submit({ key, bundleId, version, build, notes, release = '
   // The open review submission for the version: the one holding it (and nothing else), an empty one, or none. An open
   // submission holding other items (an in-app event, a product page) is somebody's draft: this run submits one version,
   // not that, and says so. The items name their version only when the relationship is asked for by name and included.
+  const itemsOf = async (sub) => (await call('GET', `/reviewSubmissions/${sub.id}/items?fields[reviewSubmissionItems]=state,appStoreVersion&include=appStoreVersion&limit=200`)).data ?? [];
+  const isVersion = (i, v) => i.relationships?.appStoreVersion?.data?.id === v.id;
   const findSubmission = async (v) => { // v: the version, or undefined when it does not exist yet
     const subs = (await call('GET', `/apps/${app.id}/reviewSubmissions?filter[platform]=IOS&filter[state]=${OPEN_SUBMISSION.join(',')}&limit=200&fields[reviewSubmissions]=state`)).data ?? [];
     const withItems = [];
-    for (const sub of subs) withItems.push({ sub, items: (await call('GET', `/reviewSubmissions/${sub.id}/items?fields[reviewSubmissionItems]=state,appStoreVersion&include=appStoreVersion&limit=200`)).data ?? [] });
-    const holder = v && withItems.find((s) => s.items.some((i) => i.relationships?.appStoreVersion?.data?.id === v.id));
+    for (const sub of subs) withItems.push({ sub, items: await itemsOf(sub) });
+    const holder = v && withItems.find((s) => s.items.some((i) => isVersion(i, v)));
     if (holder) {
       if (holder.items.length > 1) throw new Error(`the review submission holding version ${version} holds ${holder.items.length - 1} other item(s) too; submit it, or remove them, in App Store Connect`);
       return { sub: holder.sub, item: holder.items[0] };
@@ -96,11 +98,14 @@ export async function submit({ key, bundleId, version, build, notes, release = '
     return { sub: withItems[0]?.sub };
   };
   // Send the submission: created when there is none, the version added when it is not in it, a rejected item marked
-  // resolved (Apple's step before a resubmission), then submitted.
+  // resolved (Apple's step before a resubmission), then — after a last look at its items, since a submission goes
+  // whole and somebody may have added to it since the lookup — submitted.
   const send = async ({ sub, item }, v) => {
     if (!sub) sub = (await call('POST', '/reviewSubmissions', { data: { type: 'reviewSubmissions', attributes: { platform: 'IOS' }, relationships: { app: { data: { type: 'apps', id: app.id } } } } })).data;
     if (!item) await call('POST', '/reviewSubmissionItems', { data: { type: 'reviewSubmissionItems', relationships: { reviewSubmission: { data: { type: 'reviewSubmissions', id: sub.id } }, appStoreVersion: { data: { type: 'appStoreVersions', id: v.id } } } } });
     else if (item.attributes?.state === 'REJECTED') await call('PATCH', `/reviewSubmissionItems/${item.id}`, { data: { type: 'reviewSubmissionItems', id: item.id, attributes: { resolved: true } } });
+    const items = await itemsOf(sub);
+    if (items.length !== 1 || !isVersion(items[0], v)) throw new Error(`the review submission holds ${items.length} item(s) now, not version ${version} alone; nothing was submitted — check it in App Store Connect and run again`);
     const done = await call('PATCH', `/reviewSubmissions/${sub.id}`, { data: { type: 'reviewSubmissions', id: sub.id, attributes: { submitted: true } } });
     return { id: sub.id, state: done.data?.attributes?.state ?? 'submitted' };
   };

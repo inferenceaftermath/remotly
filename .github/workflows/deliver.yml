@@ -37,7 +37,7 @@ on:
 # from what it last delivered (refs/delivered/<lane>, ci/plan.sh), not from the push's parent. Runs are not started in
 # push order: only main's tip delivers (ci/lane-guard.sh), the others do nothing.
 concurrency:
-  group: deliver-main
+  group: deliver-main # shared with promote.yml: one Play edit open at a time (a new one by the same account invalidates it)
   cancel-in-progress: false
   queue: max
 

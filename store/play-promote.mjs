@@ -84,6 +84,9 @@ export async function promote({ sa, pkg, fraction, versionCode, notes, dryRun, f
     const { tracks = [] } = await call('GET', `/edits/${edit.id}/tracks`);
     const p = plan({ tracks, fraction, versionCode, notes });
     log(`production ← ${p.code} as ${p.release.status}${p.release.userFraction ? ` (${pct(p.release.userFraction)} of users${p.raised ? ', raised' : ''})` : ''}${p.replaces.length ? `, replacing ${p.replaces.join(', ')}` : ''}`);
+    // Play sends a commit for review together with whatever the Publishing overview holds ready to send (console
+    // changes not sent yet) — as the console's own button does, and as every deliver.yml upload does. Said each time.
+    log('the commit sends every change waiting in the Play Console\'s Publishing overview along with it');
     if (dryRun) { log('dry run: the edit is discarded'); return p; }
     await call('PUT', `/edits/${edit.id}/tracks/production`, { track: 'production', releases: p.releases });
     await call('POST', `/edits/${edit.id}:validate`);

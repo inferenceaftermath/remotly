@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       play_rollout:
-        description: "Play: roll the newest internal-testing build out to production for this share of users (100 completes the rollout)"
+        description: "Play: roll the newest internal-testing build out to production for this share of users (100 completes the rollout; Play sends the changes waiting in the Publishing overview along with it)"
         type: choice
         options: [none, '5', '10', '25', '50', '100']
         default: none
@@ -48,10 +48,12 @@ on:
 permissions:
   contents: read
 
+# One queue with deliver.yml: a Play edit opened by the service account invalidates the one a delivery has open (even a
+# dry run opens one), so nothing here runs beside an upload; and every dispatch runs, one at a time.
 concurrency:
-  group: promote
+  group: deliver-main
   cancel-in-progress: false
-  queue: max # every dispatch runs, one at a time
+  queue: max
 
 env:
   REMOTLY_PACKAGE: com.inferenceaftermath.remotly

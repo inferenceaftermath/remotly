@@ -74,8 +74,12 @@ nothing to do at all fails the run); dispatches queue and run one at a time.
   completing it supersedes the previous completed release (Play allows one); a run with a newer code replaces a
   staged or halted rollout. Refused: a code at or below production's completed release, lowering a rollout, a halted
   release (both are Play Console matters), and `notes` over Play's 500 characters. The commit fails rather than
-  cancel changes the console has in review. Play's rule: the API can only write production once a production release
-  was made through the console (done for 0.1.0).
+  cancel changes the console has in review. Two Play facts to know: a commit is sent for review together with every
+  change waiting in the Play Console's Publishing overview (as the console's own button sends them all, and as every
+  `deliver.yml` upload does) — the log says so each time, so keep that page empty or expect its changes to go too;
+  and a new edit by the service account invalidates the edit a delivery has open, so `promote.yml` queues in
+  `deliver.yml`'s concurrency group and never runs beside an upload. Play's rule: the API can only write production
+  once a production release was made through the console (done for 0.1.0).
 - **iOS** (`store/asc-submit.mjs`): `ios_submit` with `ios_version` (the App Store version string) attaches the newest
   processed TestFlight build whose marketing version is that string (`MARKETING_VERSION` in `ios/project.yml`, so bump
   it before the lane uploads the build to submit) — or `ios_build`, which must be one of them — to that version
@@ -88,9 +92,10 @@ nothing to do at all fails the run); dispatches queue and run one at a time.
   one is approved but not out yet (release it in App Store Connect first). The review submission is exactly the one
   for the version: the open one holding it (a rejected item is marked resolved, Apple's step before a resubmission),
   an empty open one, or a new one; an open submission holding anything else (an in-app event, a product page) is
-  left alone and named — and, like every other check, before the run changes anything, so a dry run reports it too.
-  A version an earlier run left `READY_FOR_REVIEW` (in a submission that was never sent) is submitted as it stands,
-  with the build it has and, when its What's New is missing, the `notes` of this run.
+  left alone and named — and, like every other check, before the run changes anything, so a dry run reports it too;
+  the items are read once more right before the submission goes (a submission goes whole), and anything added to it
+  meanwhile stops the run. A version an earlier run left `READY_FOR_REVIEW` (in a submission that was never sent) is
+  submitted as it stands, with the build it has and, when its What's New is missing, the `notes` of this run.
 - `notes` is What's New on both platforms; `dry_run` stops after the checks and the choice of build and changes
   nothing — the log shows what a real run would do.
   `gh workflow run promote.yml -f play_rollout=10 -f ios_submit=true -f ios_version=0.1.1 -f notes='…'`.
