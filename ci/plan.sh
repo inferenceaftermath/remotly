@@ -35,10 +35,11 @@ classify() {
       ios/Remotly/*|ios/FlowActivity/*|ios/Shared/*|ios/FlowKit/Sources/*) c_ios=true ;;  # (an asset .md, a fixture .json)
       docs/*|*.md|.gitignore|.gitattributes|.editorconfig|scratchpad/*) ;;  # never triggers a delivery
       LICENSE|NOTICE|.github/CODEOWNERS|.github/ISSUE_TEMPLATE/*|.github/dependabot.yml) ;;  # paperwork (templates in .md: above)
-      install.sh|.github/workflows/release.yml|bridge/scripts/package.sh) ;; # the release path: release.yml on a bridge-v* tag, never deliver.yml
+      install.sh|.github/workflows/release.yml|bridge/scripts/package.sh) ;; # the release path (release.yml, on a bridge version bump), never deliver.yml
       .github/workflows/ci.yml|ci/test/*|bridge/test/*|relay/test/*|ios/FlowKit/Tests/*|android/*/src/test/*) ;;  # PR checks and tests: in no build, not run by the host
       relay/*) c_relay=true ;;                                              # the push relay: its Worker is deployed (relay/README.md "Deploy")
-      bridge/*) ;;                                                          # the bridge is released by a tag (release.yml), never delivered from main
+      bridge/*) ;;                                                          # the bridge is released (release.yml, on a version bump), never delivered from main
+      store/*|.github/workflows/promote.yml) ;;                              # store promotion by hand (promote.yml): nothing to build
       .github/*|ci/*) c_android=true c_ios=true c_relay=true ;;             # the pipeline itself changed → deliver all
       shared/*) c_android=true c_ios=true ;;                                # protocol and fixtures shared by the apps (the relay uses none)
       android/*) c_android=true ;;

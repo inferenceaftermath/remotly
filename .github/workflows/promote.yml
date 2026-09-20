@@ -1,0 +1,113 @@
+# Store promotion, by hand: the builds deliver.yml put on Play internal testing and TestFlight go to production. Play:
+# the newest internal build (or a given version code) rolls out to a share of users, raised on later runs until 100 %
+# completes it (store/play-promote.mjs). iOS: the newest processed TestFlight build (or a given one) is attached to an
+# App Store version and submitted to review (store/asc-submit.mjs). Nothing is built or uploaded here. Runs only in
+# the upstream repository, with the Play service account and the App Store Connect API key from its secrets
+# (docs/DELIVERY.md, "Promotion"). `dry_run` shows what a run would do and changes nothing.
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      play_rollout:
+        description: "Play: roll the newest internal-testing build out to production for this share of users (100 completes the rollout)"
+        type: choice
+        options: [none, '5', '10', '25', '50', '100']
+        default: none
+      play_version_code:
+        description: "Play: a version code instead of the newest internal one (optional)"
+        type: string
+        default: ''
+      ios_submit:
+        description: "iOS: submit the newest processed TestFlight build to App Store review"
+        type: boolean
+        default: false
+      ios_version:
+        description: "iOS: the App Store version string to submit (X.Y.Z; required with ios_submit)"
+        type: string
+        default: ''
+      ios_build:
+        description: "iOS: a build number instead of the newest processed one (optional)"
+        type: string
+        default: ''
+      ios_release:
+        description: "iOS: release when Apple approves, or wait for a manual release"
+        type: choice
+        options: [after-approval, manual]
+        default: after-approval
+      notes:
+        description: "What's New shown in the stores (optional; both platforms)"
+        type: string
+        default: ''
+      dry_run:
+        description: Show what would happen and change nothing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+env:
+  REMOTLY_PACKAGE: com.inferenceaftermath.remotly
+  ASC_BUNDLE_ID: com.inferenceaftermath.remotly
+
+jobs:
+  play:
+    name: Play → production
+    if: github.repository == 'inferenceaftermath/remotly' && inputs.play_rollout != 'none'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Roll out
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          PLAY_PACKAGE: ${{ env.REMOTLY_PACKAGE }}
+          ROLLOUT: ${{ inputs.play_rollout }}
+          VERSION_CODE: ${{ inputs.play_version_code }}
+          NOTES: ${{ inputs.notes }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          [ -n "$PLAY_SERVICE_ACCOUNT_JSON" ] || { echo "the repository secret PLAY_SERVICE_ACCOUNT_JSON is not set (docs/DELIVERY.md, \"Secrets\")" >&2; exit 1; }
+          set -- --fraction "$(awk -v p="$ROLLOUT" 'BEGIN { printf "%g", p / 100 }')"
+          [ -z "$VERSION_CODE" ] || set -- "$@" --version-code "$VERSION_CODE"
+          [ -z "$NOTES" ] || set -- "$@" --notes "$NOTES"
+          [ "$DRY_RUN" != true ] || set -- "$@" --dry-run
+          node store/play-promote.mjs "$@"
+
+  ios:
+    name: iOS → App Store review
+    if: github.repository == 'inferenceaftermath/remotly' && inputs.ios_submit
+    runs-on: ubuntu-latest # the App Store Connect API is plain HTTPS; no Xcode involved
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Submit
+        env:
+          ASC_KEY_ID: ${{ vars.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ vars.ASC_ISSUER_ID }}
+          ASC_API_KEY_P8_CONTENT: ${{ secrets.ASC_API_KEY_P8 }}
+          VERSION: ${{ inputs.ios_version }}
+          BUILD: ${{ inputs.ios_build }}
+          RELEASE: ${{ inputs.ios_release }}
+          NOTES: ${{ inputs.notes }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ]; then
+            echo "set the repository variables ASC_KEY_ID and ASC_ISSUER_ID (Settings → Secrets and variables → Actions → Variables)" >&2; exit 1
+          fi
+          [ -n "$ASC_API_KEY_P8_CONTENT" ] || { echo "the repository secret ASC_API_KEY_P8 is not set (docs/DELIVERY.md, \"Secrets\")" >&2; exit 1; }
+          [ -n "$VERSION" ] || { echo "ios_version is required with ios_submit (the App Store version string, e.g. 0.1.1)" >&2; exit 1; }
+          set -- --version "$VERSION" --release "$RELEASE"
+          [ -z "$BUILD" ] || set -- "$@" --build "$BUILD"
+          [ -z "$NOTES" ] || set -- "$@" --notes "$NOTES"
+          [ "$DRY_RUN" != true ] || set -- "$@" --dry-run
+          node store/asc-submit.mjs "$@"

@@ -38,6 +38,8 @@ jobs:
           bash ci/test/mark-delivered.test.sh
           bash ci/test/release-plan.test.sh
           bash ci/test/release-notes.test.sh
+      - name: The store promotion scripts' tests (promote.yml)
+        run: node --test store/test/*.test.mjs
 
   relay:
     name: Relay (tsc, tests)
