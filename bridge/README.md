@@ -44,7 +44,10 @@ REMOTLY_CONFIG_DIR=~/.config/remotly-dev node src/main.ts status
 
 Releases: tag `bridge-vX.Y.Z` (matching `package.json`) → `.github/workflows/release.yml` builds
 `remotly-bridge-X.Y.Z.tar.gz` (sources + production dependencies, `scripts/package.sh`), `SHA256SUMS` and `install.sh`
-into a GitHub Release; `install.sh` resolves `/releases/latest`, so only bridge releases may be GitHub Releases.
+into a GitHub Release; `install.sh` resolves `/releases/latest`, so only bridge releases may be GitHub Releases. The
+tagged commit's message must not carry `[skip ci]`: GitHub skips the workflows for the tag push as well, and no release
+is made. The tag ruleset forbids moving the tag afterwards, so either bump `package.json` and tag a later commit with the
+new version, or re-tag with the ruleset disabled for the moment.
 
 ## CLI
 
