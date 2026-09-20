@@ -1,11 +1,11 @@
-# Push to main → tests → Android AAB to Play internal testing, iOS build to TestFlight, bridge redeployed on the
-# host. Runs only in the upstream repository (job-level guard) and only on its two self-hosted runners (label
-# `remotly`): the Linux runner on the herdr host and the Mac runner (ci/setup-*-runner.sh). Secrets never enter
-# GitHub: each runner reads them from ~/.config/remotly on its own machine (docs/DELIVERY.md); logs mask each runner's
-# home directory and, on the bridge lane, the host's Tailscale identity (ci/mask-host.sh); the bridge tooling's own
-# output stays in a log file on the host. The App Store Connect key id and issuer id are repository variables. Build number / versionCode = the run number, monotonic
-# (a store lane whose upload succeeded is not re-run — the stores refuse a build number twice; the next push delivers
-# it). Pull requests are checked by ci.yml on GitHub-hosted runners.
+# Push to main → tests → Android AAB to Play internal testing, iOS build to TestFlight. Runs only in the upstream
+# repository (job-level guard) and only on its two self-hosted runners (label `remotly`): a Linux runner and a Mac runner
+# (ci/setup-*-runner.sh). Secrets never enter GitHub: each runner reads them from ~/.config/remotly on its own machine
+# (docs/DELIVERY.md); logs mask each runner's home directory. The App Store Connect key id and issuer id are repository
+# variables. Build number / versionCode = the run number, monotonic (a store lane whose upload succeeded is not re-run —
+# the stores refuse a build number twice; the next push delivers it). Pull requests are checked by ci.yml on GitHub-hosted
+# runners. The bridge is not delivered from main: a `bridge-vX.Y.Z` tag releases it (release.yml) and hosts install
+# releases (install.sh, then `remotly-bridge update` and its timer).
 name: deliver
 
 on:
@@ -21,10 +21,6 @@ on:
         description: Deliver iOS to TestFlight
         type: boolean
         default: true
-      bridge:
-        description: Redeploy the bridge on the herdr host
-        type: boolean
-        default: false
       play_status:
         description: Play release status (draft for a brand-new app that has never been rolled out)
         type: choice
@@ -57,7 +53,6 @@ jobs:
     outputs:
       android: ${{ steps.plan.outputs.android }}
       ios: ${{ steps.plan.outputs.ios }}
-      bridge: ${{ steps.plan.outputs.bridge }}
       build_number: ${{ steps.plan.outputs.build_number }}
     steps:
       - name: Mask the runner's home directory in the public log
@@ -70,7 +65,6 @@ jobs:
           EVENT: ${{ github.event_name }}
           IN_ANDROID: ${{ inputs.android }}
           IN_IOS: ${{ inputs.ios }}
-          IN_BRIDGE: ${{ inputs.bridge }}
         # Each lane is diffed from the commit it last delivered (its marker on origin), not from this push's parent: a
         # lane that failed last time is retried by the next push, and a run that is no longer main's tip does nothing.
         run: ci/plan.sh
@@ -78,7 +72,7 @@ jobs:
   bridge-test:
     name: Bridge tests
     needs: plan
-    if: github.repository == 'inferenceaftermath/remotly' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && (needs.plan.outputs.bridge == 'true' || needs.plan.outputs.android == 'true' || needs.plan.outputs.ios == 'true')
+    if: github.repository == 'inferenceaftermath/remotly' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && (needs.plan.outputs.android == 'true' || needs.plan.outputs.ios == 'true')
     runs-on: [self-hosted, linux, remotly]
     steps:
       - name: Mask the runner's home directory in the public log
@@ -181,34 +175,3 @@ jobs:
       - name: Record the delivery
         if: steps.guard.outputs.deliver == 'true'
         run: ci/mark-delivered.sh record ios
-
-  bridge-deploy:
-    name: Bridge → the herdr host
-    needs: [plan, bridge-test]
-    if: github.repository == 'inferenceaftermath/remotly' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && needs.plan.outputs.bridge == 'true'
-    runs-on: [self-hosted, linux, remotly]
-    permissions:
-      contents: write # ci/mark-delivered.sh moves refs/delivered/bridge
-    steps:
-      - name: Mask the runner's home directory in the public log
-        run: echo "::add-mask::$HOME"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - id: guard
-        name: Still main's tip?
-        env:
-          EVENT: ${{ github.event_name }}
-        run: ci/lane-guard.sh bridge
-      - name: Forget the last bridge delivery until this one is done
-        if: steps.guard.outputs.deliver == 'true'
-        run: ci/mark-delivered.sh forget bridge
-      - name: Mask the host's tailnet identity in the public log
-        if: steps.guard.outputs.deliver == 'true'
-        run: ci/mask-host.sh
-      - name: Fast-forward the deployed checkout and restart the unit
-        if: steps.guard.outputs.deliver == 'true'
-        env:
-          TARGET_SHA: ${{ github.sha }}
-        run: ci/deploy-bridge.sh
-      - name: Record the delivery
-        if: steps.guard.outputs.deliver == 'true'
-        run: ci/mark-delivered.sh record bridge

@@ -1,6 +1,7 @@
 # Tag bridge-vX.Y.Z (matching bridge/package.json) → tests on a GitHub-hosted runner → tarball, SHA256SUMS and
 # install.sh attached to a GitHub Release. install.sh resolves /releases/latest, so only bridge releases may be GitHub
-# Releases. Nothing here touches the owner's host: deliver.yml (push to main) does that.
+# Releases. Nothing here touches any host: hosts install a release with install.sh, then `remotly-bridge update` and its
+# timer pull the next ones.
 name: release
 
 on:

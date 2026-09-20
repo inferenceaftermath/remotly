@@ -23,7 +23,7 @@ them (`ci/plan.sh` picks the lanes; `docs/DELIVERY.md`).
   current androidx.core, coroutines, serialization, Google Services and ZXing releases. Nothing changes for users; the
   FCM registration token that Firebase now deprecates stays in use until the installation-id move (`docs/BACKLOG.md`).
 
-### Bridge — next release
+### Bridge 0.2.0
 
 - `remotly-bridge update` and a daily `remotly-bridge-update.timer` (installed by `setup`; `--no-auto-update` or
   `systemctl --user disable --now` turns it off): the host installs each new release by itself — nothing when current,
@@ -33,6 +33,9 @@ them (`ci/plan.sh` picks the lanes; `docs/DELIVERY.md`).
   run at a time; a run stopped half-way is finished by the next; a stopped bridge is left stopped (`setup
   --keep-stopped`, which the update passes), a failed one (crash loop) is updated; both units repair a missing `app/`
   (or `node/`) before they start. `status` shows the daemon's version.
+- The bridge is no longer delivered from `main`: the reference host installs releases like every other host (the
+  installer over its repository deploy once, then the timer), and the CI lane that rsynced the checkout onto it is gone
+  with its scripts. A `bridge-vX.Y.Z` tag releases (`release.yml`); a push touching only `bridge/` delivers nothing.
 
 ### Bridge 0.1.0 — first public release
 

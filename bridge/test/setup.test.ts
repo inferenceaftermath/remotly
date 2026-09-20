@@ -393,7 +393,7 @@ test('an ordinary setup after --lan removes the LAN keys again', async () => {
   assert.deepEqual(JSON.parse(fs.readFileSync(deps.configPath, 'utf8')), { listen: { port: 7461 } });
 });
 
-test('--keep-mode (the CI deploy, upgrade scripts): a LAN host stays LAN without Tailscale checks; a Tailscale host stays as it is', async () => {
+test('--keep-mode (update, upgrade scripts): a LAN host stays LAN without Tailscale checks; a Tailscale host stays as it is', async () => {
   // LAN host, Tailscale not installed: an ordinary setup would drop the triple and then fail on Tailscale; --keep-mode does neither
   const lan = makeDeps({ script: { ...lingerYes, 'tailscale status --json': missing(), 'tailscale ip -4': missing() }, status: async () => ({ ...STATUS, tls: { mode: 'selfsigned' as const, not_after: 'x', fingerprint: 'f' } }) });
   lan.touchSocket();

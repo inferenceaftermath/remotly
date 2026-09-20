@@ -229,10 +229,10 @@ installed_version() {
 }
 
 install_app() {
-    # A repository checkout deployed by ci/deploy-bridge.sh has the bridge under app/bridge/; replacing it here would
-    # leave that pipeline and this installer fighting over the directory and the launcher.
+    # A repository checkout deployed into REMOTLY_HOME (a developer's own script) has the bridge under app/bridge/;
+    # replacing it here would leave that deploy and this installer fighting over the directory and the launcher.
     if [ -f "$APP/bridge/src/main.ts" ] && [ "${REMOTLY_FORCE:-0}" != 1 ]; then
-        err "$APP holds a repository deploy (bridge/ inside it), not an installed release; stop that pipeline and set REMOTLY_FORCE=1 to replace it"
+        err "$APP holds a repository deploy (bridge/ inside it), not an installed release; stop whatever deploys it and set REMOTLY_FORCE=1 to replace it"
     fi
     if [ "$(installed_version)" = "$VERSION" ] && [ -f "$APP/src/main.ts" ] && [ "${REMOTLY_FORCE:-0}" != 1 ]; then
         log "remotly-bridge $VERSION is already installed in $APP"

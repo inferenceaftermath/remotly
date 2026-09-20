@@ -30,15 +30,13 @@ jobs:
           npm ci
           npx tsc --noEmit
           npm test
-      - name: Shell syntax and the ci/ scripts' tests (delivery plan, deploy rollback, log mask)
+      - name: Shell syntax and the ci/ scripts' tests (delivery plan, lane guard, markers)
         run: |
           sh -n install.sh
           bash -n bridge/scripts/package.sh ci/*.sh ci/test/*.sh scripts/*.sh
           bash ci/test/plan.test.sh
           bash ci/test/lane-guard.test.sh
           bash ci/test/mark-delivered.test.sh
-          bash ci/test/deploy-bridge.test.sh
-          bash ci/test/mask-host.test.sh
 
   relay:
     name: Relay (tsc, tests)
