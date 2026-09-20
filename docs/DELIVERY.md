@@ -88,8 +88,9 @@ nothing to do at all fails the run); dispatches queue and run one at a time.
   one is approved but not out yet (release it in App Store Connect first). The review submission is exactly the one
   for the version: the open one holding it (a rejected item is marked resolved, Apple's step before a resubmission),
   an empty open one, or a new one; an open submission holding anything else (an in-app event, a product page) is
-  left alone and named. A version an earlier run left `READY_FOR_REVIEW` (in a submission that was never sent) is
-  submitted as it stands, with the build it has and, when its What's New is missing, the `notes` of this run.
+  left alone and named — and, like every other check, before the run changes anything, so a dry run reports it too.
+  A version an earlier run left `READY_FOR_REVIEW` (in a submission that was never sent) is submitted as it stands,
+  with the build it has and, when its What's New is missing, the `notes` of this run.
 - `notes` is What's New on both platforms; `dry_run` stops after the checks and the choice of build and changes
   nothing — the log shows what a real run would do.
   `gh workflow run promote.yml -f play_rollout=10 -f ios_submit=true -f ios_version=0.1.1 -f notes='…'`.

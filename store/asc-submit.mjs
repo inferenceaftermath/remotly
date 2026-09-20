@@ -28,7 +28,7 @@ export function ascToken({ keyId, issuerId, p8 }, now = Math.floor(Date.now() / 
 const EDITABLE = new Set(['PREPARE_FOR_SUBMISSION', 'DEVELOPER_REJECTED', 'REJECTED', 'METADATA_REJECTED', 'INVALID_BINARY']);
 // Versions Apple has in hand, or had: while one is in flight nothing else is submitted; once one passed review, the
 // app is past its first version, every later one is an update, and Apple requires "What's New" on it.
-const IN_FLIGHT = ['WAITING_FOR_REVIEW', 'IN_REVIEW', 'READY_FOR_REVIEW'];
+const IN_FLIGHT = ['WAITING_FOR_REVIEW', 'WAITING_FOR_EXPORT_COMPLIANCE', 'IN_REVIEW', 'READY_FOR_REVIEW'];
 const PAST_REVIEW = ['ACCEPTED', 'PENDING_APPLE_RELEASE', 'PENDING_DEVELOPER_RELEASE', 'PROCESSING_FOR_DISTRIBUTION', 'READY_FOR_DISTRIBUTION', 'REPLACED_WITH_NEW_VERSION'];
 // Past review but not out yet: Apple lets a new version be created only once the current one is ready for distribution.
 const NOT_OUT_YET = ['ACCEPTED', 'PENDING_APPLE_RELEASE', 'PENDING_DEVELOPER_RELEASE', 'PROCESSING_FOR_DISTRIBUTION'];
@@ -59,8 +59,8 @@ export async function submit({ key, bundleId, version, build, notes, release = '
   const ver = (await versionsWhere(`filter[versionString]=${encodeURIComponent(version)}`))[0];
   const state = ver?.attributes.appVersionState;
   const flight = await versionsWhere(`filter[appVersionState]=${IN_FLIGHT.join(',')}`);
-  const inReview = flight.filter((v) => v.attributes.appVersionState !== 'READY_FOR_REVIEW').map((v) => v.attributes.versionString);
-  if (inReview.length) throw new Error(`version ${inReview.join(', ')} is already waiting for or in review; Apple takes one at a time`);
+  const inReview = flight.filter((v) => v.attributes.appVersionState !== 'READY_FOR_REVIEW').map((v) => `${v.attributes.versionString} (${v.attributes.appVersionState})`);
+  if (inReview.length) throw new Error(`version ${inReview.join(', ')} is already waiting for or in review; Apple takes one at a time${inReview.some((s) => s.includes('EXPORT_COMPLIANCE')) ? ' (complete its export compliance in App Store Connect, or remove it from review)' : ''}`);
   const parked = flight.filter((v) => v.attributes.appVersionState === 'READY_FOR_REVIEW' && v.attributes.versionString !== version).map((v) => v.attributes.versionString);
   if (parked.length) throw new Error(`version ${parked.join(', ')} sits in a review submission that was never submitted; submit or remove it in App Store Connect first`);
   if (ver && state !== 'READY_FOR_REVIEW' && !EDITABLE.has(state)) throw new Error(`version ${version} is ${state}; submit a new version string`);
@@ -82,11 +82,11 @@ export async function submit({ key, bundleId, version, build, notes, release = '
   // The open review submission for the version: the one holding it (and nothing else), an empty one, or none. An open
   // submission holding other items (an in-app event, a product page) is somebody's draft: this run submits one version,
   // not that, and says so. The items name their version only when the relationship is asked for by name and included.
-  const findSubmission = async (v) => {
+  const findSubmission = async (v) => { // v: the version, or undefined when it does not exist yet
     const subs = (await call('GET', `/apps/${app.id}/reviewSubmissions?filter[platform]=IOS&filter[state]=${OPEN_SUBMISSION.join(',')}&limit=200&fields[reviewSubmissions]=state`)).data ?? [];
     const withItems = [];
     for (const sub of subs) withItems.push({ sub, items: (await call('GET', `/reviewSubmissions/${sub.id}/items?fields[reviewSubmissionItems]=state,appStoreVersion&include=appStoreVersion&limit=200`)).data ?? [] });
-    const holder = withItems.find((s) => s.items.some((i) => i.relationships?.appStoreVersion?.data?.id === v.id));
+    const holder = v && withItems.find((s) => s.items.some((i) => i.relationships?.appStoreVersion?.data?.id === v.id));
     if (holder) {
       if (holder.items.length > 1) throw new Error(`the review submission holding version ${version} holds ${holder.items.length - 1} other item(s) too; submit it, or remove them, in App Store Connect`);
       return { sub: holder.sub, item: holder.items[0] };
@@ -148,6 +148,8 @@ export async function submit({ key, bundleId, version, build, notes, release = '
   } else if (notes) {
     log(`What's New not set: ${version} is the app's first version, which has no What's New`);
   }
+  // The review submission is settled now too, before anything changes: somebody's open draft stops the run here.
+  const found = await findSubmission(ver);
   log(`${name}: ${ver ? `version ${version} (${state})` : `new version ${version}`} ← build ${chosen.attributes.version} (${chosen.attributes.uploadedDate}), release ${releaseType}, What's New ${whatsNew}`);
   if (dryRun) { log('dry run: nothing changed'); return { app: app.id, build: chosen.attributes.version, version, created: !ver }; }
   let v = ver;
@@ -160,7 +162,7 @@ export async function submit({ key, bundleId, version, build, notes, release = '
   if (whatsNew === 'from notes') await setWhatsNew(loc ?? await primaryLocalization(v));
   // One review submission for the platform with the version as its item: the open one holding it (a rejected item is
   // marked resolved), an empty open one, or a new one.
-  const sent = await send(await findSubmission(v), v);
+  const sent = await send(found, v);
   log(`submitted: version ${version} with build ${chosen.attributes.version} — review submission ${sent.id} is ${sent.state}`);
   return { app: app.id, build: chosen.attributes.version, version, created: !ver, submission: sent.id };
 }
