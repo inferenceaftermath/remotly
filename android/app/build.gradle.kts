@@ -8,8 +8,8 @@ plugins {
 
 // Firebase is optional at build time: the Google Services plugin (which needs google-services.json,
 // see docs/DELIVERY.md) is applied only once the file has been dropped into app/.
-// CI keeps the file outside the checkout (~/.config/remotly/secrets/google-services.json, named by
-// REMOTLY_GOOGLE_SERVICES_JSON from ci/android-env.sh); it is copied into app/ here before the plugin looks for it.
+// CI keeps the file outside the checkout (written from a repository secret by deliver.yml, its path in
+// REMOTLY_GOOGLE_SERVICES_JSON); it is copied into app/ here before the plugin looks for it.
 System.getenv("REMOTLY_GOOGLE_SERVICES_JSON")?.takeIf { it.isNotBlank() }?.let { File(expandHome(it)) }?.takeIf { it.isFile }?.let { src ->
     val dst = file("google-services.json")
     if (!dst.exists() || dst.readText() != src.readText()) src.copyTo(dst, overwrite = true)
@@ -25,7 +25,7 @@ if (hasGoogleServices) {
 // the repo. Each value is looked up first in the properties file named by the REMOTLY_KEYSTORE_PROPERTIES
 // environment variable (e.g. ~/.config/remotly/secrets/keystore.properties — an explicit pointer wins so
 // several checkouts on one machine cannot pick up each other's key), then in an environment variable of
-// the same name, then as a Gradle property (-P / ~/.gradle/gradle.properties).
+// the same name (what deliver.yml sets from its secrets), then as a Gradle property (-P / ~/.gradle/gradle.properties).
 // Without a complete set the release build type stays unsigned (CI compile checks still work).
 val keystoreProps = Properties().apply {
     System.getenv("REMOTLY_KEYSTORE_PROPERTIES")?.takeIf { it.isNotBlank() }?.let { path ->

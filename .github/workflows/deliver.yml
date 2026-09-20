@@ -1,11 +1,10 @@
-# Push to main → tests → Android AAB to Play internal testing, iOS build to TestFlight. Runs only in the upstream
-# repository (job-level guard) and only on its two self-hosted runners (label `remotly`): a Linux runner and a Mac runner
-# (ci/setup-*-runner.sh). Secrets never enter GitHub: each runner reads them from ~/.config/remotly on its own machine
-# (docs/DELIVERY.md); logs mask each runner's home directory. The App Store Connect key id and issuer id are repository
-# variables. Build number / versionCode = the run number, monotonic (a store lane whose upload succeeded is not re-run —
-# the stores refuse a build number twice; the next push delivers it). Pull requests are checked by ci.yml on GitHub-hosted
-# runners. The bridge is not delivered from main: a `bridge-vX.Y.Z` tag releases it (release.yml) and hosts install
-# releases (install.sh, then `remotly-bridge update` and its timer).
+# Push to main → tests → Android AAB to Play internal testing, iOS build to TestFlight, on GitHub-hosted runners. Runs
+# only in the upstream repository (job-level guard): the upload key, the Firebase configuration, the Play service
+# account and the App Store Connect API key are its repository secrets (docs/DELIVERY.md, "Secrets"); the App Store
+# Connect key id and issuer id are repository variables. Build number / versionCode = the run number, monotonic (a store
+# lane whose upload succeeded is not re-run — the stores refuse a build number twice; the next push delivers it). Pull
+# requests are checked by ci.yml. The bridge is not delivered from main: a `bridge-vX.Y.Z` tag releases it (release.yml)
+# and hosts install releases (install.sh, then `remotly-bridge update` and its timer).
 name: deliver
 
 on:
@@ -49,14 +48,12 @@ jobs:
   plan:
     name: What changed
     if: github.repository == 'inferenceaftermath/remotly' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
-    runs-on: [self-hosted, linux, remotly]
+    runs-on: ubuntu-latest
     outputs:
       android: ${{ steps.plan.outputs.android }}
       ios: ${{ steps.plan.outputs.ios }}
       build_number: ${{ steps.plan.outputs.build_number }}
     steps:
-      - name: Mask the runner's home directory in the public log
-        run: echo "::add-mask::$HOME"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -73,16 +70,17 @@ jobs:
     name: Bridge tests
     needs: plan
     if: github.repository == 'inferenceaftermath/remotly' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && (needs.plan.outputs.android == 'true' || needs.plan.outputs.ios == 'true')
-    runs-on: [self-hosted, linux, remotly]
+    runs-on: ubuntu-latest
     steps:
-      - name: Mask the runner's home directory in the public log
-        run: echo "::add-mask::$HOME"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
       - name: tsc + unit tests
         working-directory: bridge
         run: |
-          export PATH="${REMOTLY_NODE_BIN:-$HOME/.local/share/fnm/aliases/default/bin}:$PATH"
-          node --version
           npm ci
           npx tsc --noEmit
           npm test
@@ -91,12 +89,10 @@ jobs:
     name: Android → Play internal testing
     needs: [plan, bridge-test]
     if: github.repository == 'inferenceaftermath/remotly' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && needs.plan.outputs.android == 'true'
-    runs-on: [self-hosted, linux, remotly]
+    runs-on: ubuntu-latest
     permissions:
       contents: write # ci/mark-delivered.sh moves refs/delivered/android
     steps:
-      - name: Mask the runner's home directory in the public log
-        run: echo "::add-mask::$HOME"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: guard
         name: Still main's tip?
@@ -106,22 +102,51 @@ jobs:
       - name: Forget the last android delivery until this one is done
         if: steps.guard.outputs.deliver == 'true'
         run: ci/mark-delivered.sh forget android
-      - name: Locate host-side secrets
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         if: steps.guard.outputs.deliver == 'true'
-        run: ci/android-env.sh >> "$GITHUB_ENV"
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        if: steps.guard.outputs.deliver == 'true'
+        with:
+          validate-wrappers: true
+      - name: Upload key and Firebase configuration from the repository secrets
+        if: steps.guard.outputs.deliver == 'true'
+        env:
+          ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          ANDROID_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
+          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+          ANDROID_GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        # Every secret the lane needs is checked here, by its name; the files go to the runner's temp dir, and
+        # android/app/build.gradle.kts reads REMOTLY_STORE_FILE and REMOTLY_GOOGLE_SERVICES_JSON (paths) plus the
+        # passwords from the build step's own environment.
+        run: |
+          for v in ANDROID_UPLOAD_KEYSTORE_BASE64 ANDROID_UPLOAD_STORE_PASSWORD ANDROID_UPLOAD_KEY_ALIAS ANDROID_UPLOAD_KEY_PASSWORD ANDROID_GOOGLE_SERVICES_JSON PLAY_SERVICE_ACCOUNT_JSON; do
+            [ -n "${!v}" ] || { echo "the repository secret $v is not set (docs/DELIVERY.md, \"Secrets\")" >&2; exit 1; }
+          done
+          dir="$RUNNER_TEMP/remotly-secrets"; mkdir -p "$dir"; chmod 700 "$dir"
+          printf '%s' "$ANDROID_UPLOAD_KEYSTORE_BASE64" | base64 -d > "$dir/upload.jks"
+          printf '%s' "$ANDROID_GOOGLE_SERVICES_JSON" > "$dir/google-services.json"
+          { echo "REMOTLY_STORE_FILE=$dir/upload.jks"; echo "REMOTLY_GOOGLE_SERVICES_JSON=$dir/google-services.json"; } >> "$GITHUB_ENV"
       - name: Test, lint, signed bundle
         if: steps.guard.outputs.deliver == 'true'
         working-directory: android
         env:
           REMOTLY_VERSION_CODE: ${{ needs.plan.outputs.build_number }}
+          REMOTLY_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
+          REMOTLY_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          REMOTLY_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
         run: |
-          ./gradlew -q :core:test :app:lintRelease :app:bundleRelease
+          ./gradlew --no-daemon -q :core:test :app:lintRelease :app:bundleRelease
           test -s app/build/outputs/bundle/release/app-release.aab
       - name: Upload to Play internal testing
         if: steps.guard.outputs.deliver == 'true'
         uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
         with:
-          serviceAccountJson: ${{ env.PLAY_SERVICE_ACCOUNT_JSON }}
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: ${{ env.REMOTLY_PACKAGE }}
           releaseFiles: android/app/build/outputs/bundle/release/app-release.aab
           releaseName: ${{ needs.plan.outputs.build_number }} (${{ github.sha }})
@@ -135,12 +160,10 @@ jobs:
     name: iOS → TestFlight
     needs: [plan, bridge-test]
     if: github.repository == 'inferenceaftermath/remotly' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && needs.plan.outputs.ios == 'true'
-    runs-on: [self-hosted, macos, remotly]
+    runs-on: macos-26 # Xcode 26, as the app is built; the image moves only with a commit here
     permissions:
       contents: write # ci/mark-delivered.sh moves refs/delivered/ios
     steps:
-      - name: Mask the runner's home directory in the public log
-        run: echo "::add-mask::$HOME"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: guard
         name: Still main's tip?
@@ -154,18 +177,26 @@ jobs:
         if: steps.guard.outputs.deliver == 'true'
         working-directory: ios/FlowKit
         run: swift test
+      - name: xcodegen
+        if: steps.guard.outputs.deliver == 'true'
+        run: brew install --quiet xcodegen
       - name: Archive and upload
         if: steps.guard.outputs.deliver == 'true'
         env:
           REMOTLY_BUILD_NUMBER: ${{ needs.plan.outputs.build_number }}
           REMOTLY_WORK_DIR: ${{ runner.temp }}/remotly-out
+          ASC_API_KEY_P8_CONTENT: ${{ secrets.ASC_API_KEY_P8 }}
+        # Signing from the App Store Connect API key alone (-allowProvisioningUpdates): the archive is signed with an
+        # Apple Development certificate Xcode creates for this runner (one per run: revoke the stale ones in the
+        # developer portal now and then), the export with the team's cloud-managed distribution certificate. Nothing
+        # is imported into a keychain here; the key needs the cloud-managed distribution permission (docs/DELIVERY.md).
         run: |
-          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
           if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ]; then
             echo "set the repository variables ASC_KEY_ID and ASC_ISSUER_ID (Settings → Secrets and variables → Actions → Variables)" >&2; exit 1
           fi
-          export ASC_API_KEY_P8="$HOME/.config/remotly/asc-api-key.p8"
-          test -r "$ASC_API_KEY_P8" || { echo "missing ~/.config/remotly/asc-api-key.p8 on the Mac runner" >&2; exit 1; }
+          [ -n "$ASC_API_KEY_P8_CONTENT" ] || { echo "the repository secret ASC_API_KEY_P8 is not set (docs/DELIVERY.md, \"Secrets\")" >&2; exit 1; }
+          export ASC_API_KEY_P8="$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          (umask 077; printf '%s\n' "$ASC_API_KEY_P8_CONTENT" > "$ASC_API_KEY_P8")
           rm -rf "$REMOTLY_WORK_DIR"
           if ! ios/scripts/testflight.sh; then
             echo "::group::archive.log (tail)"; tail -n 80 "$REMOTLY_WORK_DIR/archive.log" 2>/dev/null; echo "::endgroup::"

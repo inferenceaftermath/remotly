@@ -15,8 +15,8 @@ Remotly is three code bases and a Worker that must agree on one wire protocol, s
 - **Fixtures come from scratch sessions.** Capture screens (`bridge/scripts/capture.ts`) only in a throwaway directory
   and herdr session, never in your own work, and keep everything personal (paths, host names, account labels) out of
   `shared/fixtures/` (`shared/fixtures/frames/README.md`).
-- **No secrets in the tree.** `.gitignore` covers keys, keystores and service accounts; the delivery runners read their
-  credentials from `~/.config/remotly` on their own machines (`docs/DELIVERY.md`).
+- **No secrets in the tree.** `.gitignore` covers keys, keystores and service accounts; the delivery workflow reads its
+  credentials from the repository's Actions secrets (`docs/DELIVERY.md`).
 - **herdr behaviour** the code relies on is recorded in `docs/herdr-findings.md` with how it was measured. The bridge
   types only the parts of herdr's socket API it uses (`bridge/src/herdr/types.ts`); the full schema comes from
   `herdr api schema --output herdr-schema.json` and is not redistributed here.
@@ -30,9 +30,9 @@ Remotly is three code bases and a Worker that must agree on one wire protocol, s
 | `android/` | JDK 17, Android SDK platform 37 | `./gradlew :core:test :app:assembleDebug :app:lintDebug` (`android/README.md`) |
 | `ios/` | macOS, Xcode 26, xcodegen | `cd ios/FlowKit && swift test`; the app: `xcodegen generate`, then build (`ios/README.md`) |
 
-`.github/workflows/ci.yml` runs the same checks on GitHub-hosted runners for every pull request. `deliver.yml`
-(TestFlight, Play) runs only in the upstream repository on its own runners; bridge releases come from `release.yml` on a
-`bridge-vX.Y.Z` tag.
+`.github/workflows/ci.yml` runs the same checks for every pull request. `deliver.yml` (TestFlight, Play) runs only in
+the upstream repository, which holds the store credentials; bridge releases come from `release.yml` on a `bridge-vX.Y.Z`
+tag.
 
 ## Pull requests
 
