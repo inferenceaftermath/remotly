@@ -60,20 +60,23 @@ does not know delivers everything. Build number and `versionCode` are the run nu
 
 ## Promotion
 
-`.github/workflows/promote.yml` (`workflow_dispatch` only) takes a build the lanes put on Play internal testing and
+`.github/workflows/promote.yml` (`workflow_dispatch` only) takes builds the lanes put on Play internal testing and
 TestFlight to production; nothing is built or uploaded by it, and it runs only in the upstream repository, from `main`.
-A first job checks the inputs (`build` missing, an input for a platform whose action is off, `ios_submit` without
-`ios_version`, or nothing to do at all fails the run); dispatches queue with the deliveries and run one at a time.
+A first job checks the inputs (a platform's build missing, an input for a platform whose action is off, `ios_submit`
+without `ios_version`, or nothing to do at all fails the run); dispatches queue with the deliveries and run one at a
+time.
 
-- **`build`** (required): the delivery's build number — `deliver.yml` gives both apps one, so it is the Play version
-  code and the TestFlight build number alike (the delivery run's summary and the stores show it). It is required, not
-  "the newest": a dispatch queues behind the deliveries, and by the time it runs a later merge may have uploaded a
-  newer build; a promotion takes the build that was tested.
-- **Play** (`store/play-promote.mjs`): `play_rollout` = the share of users (5, 10, 25, 50 or 100 %) `build` is rolled
-  out to on the production track, in one edit of the Android Publisher API (insert, read the tracks, write production,
-  validate, commit). Below 100 the release is `inProgress` with that `userFraction` beside the completed release, which
-  stays as Play's fallback; a later run with a higher share, or 100 (`completed`), raises the same release in place (its
-  retained version codes, notes, country targeting and update priority kept; new `notes` replace the old), and
+- **`play_build`, `ios_build`**: the build the action is for, as its delivery's build number — the Play version code
+  and the TestFlight build number are that number (the delivery run's summary and the stores show it; one number for
+  both when a delivery ran both lanes, different ones when a change touched one app only, since the lanes deliver
+  independently). Required with the platform's action, never "the newest": a dispatch queues behind the deliveries,
+  and by the time it runs a later merge may have uploaded a newer build; a promotion takes the build that was tested.
+- **Play** (`store/play-promote.mjs`): `play_rollout` = the share of users (5, 10, 25, 50 or 100 %) `play_build` is
+  rolled out to on the production track, in one edit of the Android Publisher API (insert, read the tracks, write
+  production, validate, commit). Below 100 the release is `inProgress` with that `userFraction` beside the completed
+  release, which stays as Play's fallback; a later run with a higher share, or 100 (`completed`), raises the same
+  release in place (its retained version codes, notes, country targeting and update priority kept; new `notes` replace
+  the old), and
   completing it supersedes the previous completed release (Play allows one); a run with a newer code replaces a
   staged or halted rollout. Refused: a code at or below production's completed release, a code below a rollout under
   way (only a newer build replaces one), lowering a rollout, a halted release (both are Play Console matters), and
@@ -85,7 +88,7 @@ A first job checks the inputs (`build` missing, an input for a platform whose ac
   `deliver.yml`'s concurrency group and never runs beside an upload. Play's rule: the API can only write production
   once a production release was made through the console (done for 0.1.0).
 - **iOS** (`store/asc-submit.mjs`): `ios_submit` with `ios_version` (the App Store version string) attaches TestFlight
-  build `build` — processed, and of that marketing version (`MARKETING_VERSION` in `ios/project.yml`, so bump it
+  build `ios_build` — processed, and of that marketing version (`MARKETING_VERSION` in `ios/project.yml`, so bump it
   before the lane uploads the build to submit; a build of another version is refused) — to that version (reused when
   it exists and is still editable, created otherwise), sets `ios_release` (release when approved, or
   manual), puts `notes` into What's New of the primary locale, and submits one review submission with the version.
@@ -102,7 +105,7 @@ A first job checks the inputs (`build` missing, an input for a platform whose ac
   submitted as it stands, with the build it has and, when its What's New is missing, the `notes` of this run.
 - `notes` is What's New on both platforms; `dry_run` stops after the checks and changes nothing — the log shows what
   a real run would do.
-  `gh workflow run promote.yml -f build=37 -f play_rollout=10 -f ios_submit=true -f ios_version=0.1.1 -f notes='…'`.
+  `gh workflow run promote.yml -f play_rollout=10 -f play_build=37 -f ios_submit=true -f ios_version=0.1.1 -f ios_build=37 -f notes='…'`.
 - Tests: `store/test/*.test.mjs` against a fake API (run by `ci.yml`). The two scripts have no dependencies; both
   sign their own API tokens (Google RS256 from the service account, Apple ES256 from the App Store Connect key).
 

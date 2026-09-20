@@ -32,10 +32,10 @@ ship through TestFlight and Play internal testing from pushes to `main` that tou
 - Pull requests compile the iOS app on the lane's Xcode (26.6, signing disabled) besides the FlowKit tests: the first
   hosted iOS delivery failed on a Swift concurrency diagnostic the Mac's Xcode 26.3 had not raised (`AppModel`
   ending Live Activities from a task).
-- `promote.yml` takes a delivered build to production by hand (`workflow_dispatch`, from `main` only, the build number
-  named and the inputs checked first): Play internal testing → production as a staged rollout raised in place on later
-  runs (`store/play-promote.mjs`, the Android Publisher API in one edit that keeps the completed release and never
-  cancels a review), and the TestFlight build → an App Store version submitted to review with What's New
+- `promote.yml` takes delivered builds to production by hand (`workflow_dispatch`, from `main` only, each build named
+  by number and the inputs checked first): Play internal testing → production as a staged rollout raised in place on
+  later runs (`store/play-promote.mjs`, the Android Publisher API in one edit that keeps the completed release and
+  never cancels a review), and the TestFlight build → an App Store version submitted to review with What's New
   (`store/asc-submit.mjs`, the App Store Connect API); both scripts have a dry run and tests against a fake API
   (`docs/DELIVERY.md`, "Promotion").
 - The push relay is a third lane of `deliver.yml`: a push to `main` that changes `relay/` runs its typecheck and
