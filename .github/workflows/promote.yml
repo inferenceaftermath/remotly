@@ -75,19 +75,25 @@ jobs:
       IOS_VERSION: ${{ inputs.ios_version }}
       IOS_BUILD: ${{ inputs.ios_build }}
       IOS_RELEASE: ${{ inputs.ios_release }}
+      NOTES: ${{ inputs.notes }}
+      LC_ALL: C.UTF-8 # ${#NOTES} counts characters, as the stores do
     steps:
       # Each build is named, never "the newest": this run may start after a later delivery. An input for a platform whose
-      # action is off would be ignored silently; a run with nothing to do would be green.
+      # action is off would be ignored silently; a run with nothing to do would be green. And what the scripts would
+      # refuse on sight (the version string's shape, the notes' length) is refused here, before either store is touched:
+      # the two platforms are independent jobs, and one is not undone when the other fails.
       - run: |
           bad=0
           if [ "$ROLLOUT" != none ]; then
             case "$PLAY_BUILD" in *[!0-9]*|'') echo "play_rollout needs play_build: the version code, i.e. its delivery's build number (e.g. 37)" >&2; bad=1 ;; esac
+            [ "${#NOTES}" -le 500 ] || { echo "notes is ${#NOTES} characters; Play allows 500" >&2; bad=1; }
           else
             [ -z "$PLAY_BUILD" ] || { echo "play_build was given without a play_rollout" >&2; bad=1; }
           fi
           if [ "$IOS_SUBMIT" = true ]; then
-            [ -n "$IOS_VERSION" ] || { echo "ios_submit needs ios_version (the App Store version string, e.g. 0.1.1)" >&2; bad=1; }
+            [[ "$IOS_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo "ios_submit needs ios_version, the App Store version string X.Y or X.Y.Z (e.g. 0.1.1), got '$IOS_VERSION'" >&2; bad=1; }
             case "$IOS_BUILD" in *[!0-9]*|'') echo "ios_submit needs ios_build: the TestFlight build number, i.e. its delivery's build number (e.g. 37)" >&2; bad=1 ;; esac
+            [ "${#NOTES}" -le 4000 ] || { echo "notes is ${#NOTES} characters; Apple allows 4000 for What's New" >&2; bad=1; }
           else
             [ -z "$IOS_VERSION$IOS_BUILD" ] || { echo "ios_version / ios_build were given without ios_submit" >&2; bad=1; }
             [ "$IOS_RELEASE" = after-approval ] || { echo "ios_release was chosen without ios_submit" >&2; bad=1; }

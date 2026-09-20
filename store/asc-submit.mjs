@@ -115,6 +115,8 @@ export async function submit({ key, bundleId, version, build, notes, release = '
     const has = attached?.attributes.version;
     if (!has) throw new Error(`version ${version} is READY_FOR_REVIEW without a build; remove it from its review submission in App Store Connect and run again`);
     if (build !== undefined && has !== String(build)) throw new Error(`version ${version} is READY_FOR_REVIEW with build ${has}, not ${build}; remove it from its review submission in App Store Connect first`);
+    const set = ver.attributes.releaseType;
+    if (set !== releaseType) throw new Error(`version ${version} is READY_FOR_REVIEW with release type ${set}, not ${releaseType}; run again with --release ${set === 'MANUAL' ? 'manual' : 'after-approval'}, or remove it from its review submission in App Store Connect first`);
     const loc = update ? await primaryLocalization(ver) : undefined;
     const missing = update && !loc.attributes.whatsNew?.trim();
     if (missing && !notes) throw new Error(`version ${version} is READY_FOR_REVIEW without What's New, which Apple requires for an update; run again with notes`);

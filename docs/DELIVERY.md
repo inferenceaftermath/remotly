@@ -63,8 +63,10 @@ does not know delivers everything. Build number and `versionCode` are the run nu
 `.github/workflows/promote.yml` (`workflow_dispatch` only) takes builds the lanes put on Play internal testing and
 TestFlight to production; nothing is built or uploaded by it, and it runs only in the upstream repository, from `main`.
 A first job checks the inputs (a platform's build missing, an input for a platform whose action is off, `ios_submit`
-without `ios_version`, or nothing to do at all fails the run); dispatches queue with the deliveries and run one at a
-time.
+without a well-formed `ios_version`, `notes` over a store's limit, or nothing to do at all fails the run) — everything
+the scripts would refuse on sight, checked before either store is touched, because the two platforms are independent
+jobs and what one store refuses at run time does not undo the other (run the refused platform again on its own).
+Dispatches queue with the deliveries and run one at a time.
 
 - **`play_build`, `ios_build`**: the build the action is for, as its delivery's build number — the Play version code
   and the TestFlight build number are that number (the delivery run's summary and the stores show it; one number for
@@ -79,8 +81,8 @@ time.
   the old), and
   completing it supersedes the previous completed release (Play allows one); a run with a newer code replaces a
   staged or halted rollout. Refused: a code at or below production's completed release, a code below a rollout under
-  way (only a newer build replaces one), lowering a rollout, a halted release (both are Play Console matters), and
-  `notes` over Play's 500 characters. The commit fails rather than
+  way (a rollout is raised by its newest code and replaced only by a newer build), lowering a rollout, a halted
+  release (both are Play Console matters), and `notes` over Play's 500 characters. The commit fails rather than
   cancel changes the console has in review. Two Play facts to know: a commit is sent for review together with every
   change waiting in the Play Console's Publishing overview (as the console's own button sends them all, and as every
   `deliver.yml` upload does) — the log says so each time, so keep that page empty or expect its changes to go too;
@@ -102,7 +104,8 @@ time.
   left alone and named — and, like every other check, before the run changes anything, so a dry run reports it too;
   the items are read once more right before the submission goes (a submission goes whole), and anything added to it
   meanwhile stops the run. A version an earlier run left `READY_FOR_REVIEW` (in a submission that was never sent) is
-  submitted as it stands, with the build it has and, when its What's New is missing, the `notes` of this run.
+  submitted as it stands — with the build it has, its release type (which must be this run's `ios_release`; refused
+  otherwise) and, when its What's New is missing, the `notes` of this run.
 - `notes` is What's New on both platforms; `dry_run` stops after the checks and changes nothing — the log shows what
   a real run would do.
   `gh workflow run promote.yml -f play_rollout=10 -f play_build=37 -f ios_submit=true -f ios_version=0.1.1 -f ios_build=37 -f notes='…'`.

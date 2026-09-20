@@ -225,6 +225,14 @@ test('a version left READY_FOR_REVIEW by an earlier run is submitted as it stand
   const other = fakeASC(state);
   await assert.rejects(submit({ key, bundleId: 'b', version: '0.1.1', build: '35', fetchFn: other.fetchFn, log: () => {} }), /READY_FOR_REVIEW with build 36, not 35/);
   assert.ok(!other.calls.some((c) => c.method !== 'GET'));
+  // Its release type is what it is; this run's must match (it is not changed here), in a dry run too.
+  const manual = { ...state, versions: [shipped, v('v1', '0.1.1', 'READY_FOR_REVIEW', 'MANUAL')] };
+  for (const [fixture, release, dryRun] of [[state, 'manual', false], [manual, 'after-approval', false], [manual, undefined, true]]) {
+    const f = fakeASC(fixture);
+    await assert.rejects(submit({ key, bundleId: 'b', version: '0.1.1', release, dryRun, fetchFn: f.fetchFn, log: () => {} }), release === 'manual' ? /READY_FOR_REVIEW with release type AFTER_APPROVAL, not MANUAL; run again with --release after-approval/ : /with release type MANUAL, not AFTER_APPROVAL; run again with --release manual/);
+    assert.ok(!f.calls.some((c) => c.method !== 'GET'));
+  }
+  assert.equal((await submit({ key, bundleId: 'b', version: '0.1.1', release: 'manual', fetchFn: fakeASC(manual).fetchFn, log: () => {} })).resumed, true);
   const dry = fakeASC(state);
   assert.deepEqual(await submit({ key, bundleId: 'b', version: '0.1.1', dryRun: true, fetchFn: dry.fetchFn, log: () => {} }), { app: 'app1', build: '36', version: '0.1.1', created: false, resumed: true });
   assert.deepEqual(dry.trail(), [...LOOKUP, 'GET /appStoreVersions/v1/build', 'GET /appStoreVersions/v1/appStoreVersionLocalizations', 'GET /apps/app1/reviewSubmissions', 'GET /reviewSubmissions/subOpen/items']);

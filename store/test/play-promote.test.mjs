@@ -82,7 +82,9 @@ test('plan: a rollout is never lowered here, and a halted release is left to the
   assert.throws(() => plan({ tracks: withStaged, fraction: 0.1, versionCode: 35 }), /rolled out to 10% of users already; a rollout is only raised here/);
   assert.throws(() => plan({ tracks: withStaged, fraction: 0.05, versionCode: 35 }), /only raised here/);
   // A code between the completed release and the rollout under way: not a raise, not newer — refused, not a downgrade.
-  assert.throws(() => plan({ tracks: withStaged, fraction: 0.5, versionCode: 31 }), /version code 31 is below 35, which production is rolling out already; only a newer build replaces a rollout/);
+  assert.throws(() => plan({ tracks: withStaged, fraction: 0.5, versionCode: 31 }), /version code 31 is below 35, which production is rolling out already; a rollout is raised by its newest code and replaced only by a newer build/);
+  // A retained older code of the rollout under way names nothing: the rollout is raised by 35, not by 34.
+  assert.throws(() => plan({ tracks: withStaged, fraction: 0.5, versionCode: 34 }), /version code 34 is below 35/);
   assert.throws(() => plan({ tracks: [{ track: 'production', releases: [live, { ...staged, status: 'halted' }] }], fraction: 0.5, versionCode: 33 }), /below 35/);
   const halted = [{ track: 'production', releases: [live, { ...staged, status: 'halted' }] }, { track: 'internal', releases: [{ status: 'completed', versionCodes: ['36'] }] }];
   assert.throws(() => plan({ tracks: halted, fraction: 0.5, versionCode: 35 }), /version code 35 is halted on production; resume it in the Play Console/);
