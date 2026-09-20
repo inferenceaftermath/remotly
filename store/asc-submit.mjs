@@ -5,6 +5,7 @@
 // lane does). No dependencies: the App Store Connect API key signs a JWT (ES256), then the App Store Connect API v1.
 //   env: ASC_KEY_ID, ASC_ISSUER_ID, ASC_API_KEY_P8_CONTENT (the .p8 text), ASC_BUNDLE_ID
 //   args: --version 0.1.1 [--build 36] [--notes "text"] [--release after-approval|manual] [--dry-run]
+//   (notes = What's New: required for an update unless the version already has it, absent on the app's first version)
 // Test: store/test/asc-submit.test.mjs (the API is a fake fetch).
 import { createPrivateKey, sign } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -26,7 +27,7 @@ export function ascToken({ keyId, issuerId, p8 }, now = Math.floor(Date.now() / 
 // which this one finishes.
 const EDITABLE = new Set(['PREPARE_FOR_SUBMISSION', 'DEVELOPER_REJECTED', 'REJECTED', 'METADATA_REJECTED', 'INVALID_BINARY']);
 // Versions Apple has in hand, or had: while one is in flight nothing else is submitted; once one passed review, the
-// app is past its first version and "What's New" exists.
+// app is past its first version, every later one is an update, and Apple requires "What's New" on it.
 const IN_FLIGHT = ['WAITING_FOR_REVIEW', 'IN_REVIEW', 'READY_FOR_REVIEW'];
 const PAST_REVIEW = ['ACCEPTED', 'PENDING_APPLE_RELEASE', 'PENDING_DEVELOPER_RELEASE', 'PROCESSING_FOR_DISTRIBUTION', 'READY_FOR_DISTRIBUTION', 'REPLACED_WITH_NEW_VERSION'];
 // Review submissions that can still take an item; a submission already sent needs a new one after it completes.
@@ -61,8 +62,19 @@ export async function submit({ key, bundleId, version, build, notes, release = '
   const parked = flight.filter((v) => v.attributes.appVersionState === 'READY_FOR_REVIEW' && v.attributes.versionString !== version).map((v) => v.attributes.versionString);
   if (parked.length) throw new Error(`version ${parked.join(', ')} sits in a review submission that was never submitted; submit or remove it in App Store Connect first`);
   if (ver && state !== 'READY_FOR_REVIEW' && !EDITABLE.has(state)) throw new Error(`version ${version} is ${state}; submit a new version string`);
+  // An update (a version passed review before) must carry What's New; the app's first version has no such field.
+  const update = (await versionsWhere(`filter[appVersionState]=${PAST_REVIEW.join(',')}`)).length > 0;
   const releaseType = release === 'manual' ? 'MANUAL' : 'AFTER_APPROVAL';
+  const primaryLocalization = async (v) => {
+    const locs = await call('GET', `/appStoreVersions/${v.id}/appStoreVersionLocalizations?filter[locale]=${encodeURIComponent(app.attributes.primaryLocale)}&limit=200&fields[appStoreVersionLocalizations]=locale,whatsNew`);
+    const loc = locs.data?.[0];
+    if (!loc) throw new Error(`version ${version} has no ${app.attributes.primaryLocale} localization to put What's New on`);
+    return loc;
+  };
+  const setWhatsNew = (loc) => call('PATCH', `/appStoreVersionLocalizations/${loc.id}`, { data: { type: 'appStoreVersionLocalizations', id: loc.id, attributes: { whatsNew: notes } } });
   const openSubmission = async () => (await call('GET', `/apps/${app.id}/reviewSubmissions?filter[platform]=IOS&filter[state]=${OPEN_SUBMISSION.join(',')}&limit=5&fields[reviewSubmissions]=state`)).data?.[0];
+  // The items name their version only when the relationship is asked for by name and included.
+  const holds = async (sub, v) => ((await call('GET', `/reviewSubmissions/${sub.id}/items?fields[reviewSubmissionItems]=state,appStoreVersion&include=appStoreVersion&limit=200`)).data ?? []).some((i) => i.relationships?.appStoreVersion?.data?.id === v.id);
   const send = async (sub) => {
     const done = await call('PATCH', `/reviewSubmissions/${sub.id}`, { data: { type: 'reviewSubmissions', id: sub.id, attributes: { submitted: true } } });
     return done.data?.attributes?.state ?? 'submitted';
@@ -73,11 +85,16 @@ export async function submit({ key, bundleId, version, build, notes, release = '
     const has = attached?.attributes.version;
     if (!has) throw new Error(`version ${version} is READY_FOR_REVIEW without a build; remove it from its review submission in App Store Connect and run again`);
     if (build !== undefined && has !== String(build)) throw new Error(`version ${version} is READY_FOR_REVIEW with build ${has}, not ${build}; remove it from its review submission in App Store Connect first`);
-    log(`${name}: version ${version} is READY_FOR_REVIEW with build ${has} already (an earlier run stopped before submitting)${notes ? '; What\'s New stays as it is' : ''}: submitting`);
-    if (dryRun) { log('dry run: nothing changed'); return { app: app.id, build: has, version, created: false, resumed: true }; }
+    const loc = update ? await primaryLocalization(ver) : undefined;
+    const missing = update && !loc.attributes.whatsNew?.trim();
+    if (missing && !notes) throw new Error(`version ${version} is READY_FOR_REVIEW without What's New, which Apple requires for an update; run again with notes`);
     const sub = await openSubmission();
-    const items = sub ? (await call('GET', `/reviewSubmissions/${sub.id}/items?fields[reviewSubmissionItems]=state&include=appStoreVersion`)).data ?? [] : [];
-    if (!items.some((i) => i.relationships?.appStoreVersion?.data?.id === ver.id)) throw new Error(`no open review submission holds version ${version}; remove the version from review in App Store Connect and run again`);
+    if (!sub || !(await holds(sub, ver))) throw new Error(`no open review submission holds version ${version}; remove the version from review in App Store Connect and run again`);
+    log(`${name}: version ${version} is READY_FOR_REVIEW with build ${has} already (an earlier run stopped before submitting)${missing ? '; What\'s New from notes' : notes ? '; What\'s New stays as it is' : ''}: submitting`);
+    if (dryRun) { log('dry run: nothing changed'); return { app: app.id, build: has, version, created: false, resumed: true }; }
+    if (missing) {
+      await setWhatsNew(loc).catch((err) => { throw new Error(`${err.message}\nWhat's New could not be set on the version as it stands; remove it from its review submission in App Store Connect, then run again`); });
+    }
     const st = await send(sub);
     log(`submitted: version ${version} with build ${has} — review submission ${sub.id} is ${st}`);
     return { app: app.id, build: has, version, created: false, resumed: true, submission: sub.id };
@@ -91,7 +108,16 @@ export async function submit({ key, bundleId, version, build, notes, release = '
       ? `no processed, unexpired TestFlight build carries version ${version}: bump MARKETING_VERSION in ios/project.yml to ${version} and let deliver.yml upload one`
       : `build ${build} is not a processed, unexpired TestFlight build of version ${version}`);
   }
-  log(`${name}: ${ver ? `version ${version} (${state})` : `new version ${version}`} ← build ${chosen.attributes.version} (${chosen.attributes.uploadedDate}), release ${releaseType}${notes ? ', with What\'s New' : ''}`);
+  // What's New: required for an update — from notes, or already on the version being reused; absent on the first version.
+  let whatsNew = 'none';
+  if (update) {
+    if (notes) whatsNew = 'from notes';
+    else if (ver && (await primaryLocalization(ver)).attributes.whatsNew?.trim()) whatsNew = 'as it is';
+    else throw new Error(`notes are required: Apple wants What's New for an update, and version ${version} has none`);
+  } else if (notes) {
+    log(`What's New not set: ${version} is the app's first version, which has no What's New`);
+  }
+  log(`${name}: ${ver ? `version ${version} (${state})` : `new version ${version}`} ← build ${chosen.attributes.version} (${chosen.attributes.uploadedDate}), release ${releaseType}, What's New ${whatsNew}`);
   if (dryRun) { log('dry run: nothing changed'); return { app: app.id, build: chosen.attributes.version, version, created: !ver }; }
   let v = ver;
   if (!v) {
@@ -100,23 +126,11 @@ export async function submit({ key, bundleId, version, build, notes, release = '
     await call('PATCH', `/appStoreVersions/${v.id}`, { data: { type: 'appStoreVersions', id: v.id, attributes: { releaseType } } });
   }
   await call('PATCH', `/appStoreVersions/${v.id}/relationships/build`, { data: { type: 'builds', id: chosen.id } });
-  if (notes) {
-    // Apple has no "What's New" on an app's first version: it exists once a version passed review.
-    const past = await versionsWhere(`filter[appVersionState]=${PAST_REVIEW.join(',')}`);
-    if (past.length === 0) {
-      log(`What's New not set: ${version} is the app's first version, which has no What's New`);
-    } else {
-      const locs = await call('GET', `/appStoreVersions/${v.id}/appStoreVersionLocalizations?fields[appStoreVersionLocalizations]=locale,whatsNew`);
-      const loc = (locs.data ?? []).find((l) => l.attributes.locale === app.attributes.primaryLocale) ?? locs.data?.[0];
-      if (!loc) throw new Error('the version has no localization to put What\'s New on');
-      await call('PATCH', `/appStoreVersionLocalizations/${loc.id}`, { data: { type: 'appStoreVersionLocalizations', id: loc.id, attributes: { whatsNew: notes } } });
-    }
-  }
+  if (whatsNew === 'from notes') await setWhatsNew(await primaryLocalization(v));
   // One review submission for the platform: an open one is reused, otherwise created; the version is its item.
   let sub = await openSubmission();
   if (!sub) sub = (await call('POST', '/reviewSubmissions', { data: { type: 'reviewSubmissions', attributes: { platform: 'IOS' }, relationships: { app: { data: { type: 'apps', id: app.id } } } } })).data;
-  const items = (await call('GET', `/reviewSubmissions/${sub.id}/items?fields[reviewSubmissionItems]=state&include=appStoreVersion`)).data ?? [];
-  if (!items.some((i) => i.relationships?.appStoreVersion?.data?.id === v.id)) {
+  if (!(await holds(sub, v))) {
     await call('POST', '/reviewSubmissionItems', { data: { type: 'reviewSubmissionItems', relationships: { reviewSubmission: { data: { type: 'reviewSubmissions', id: sub.id } }, appStoreVersion: { data: { type: 'appStoreVersions', id: v.id } } } } });
   }
   const st = await send(sub);

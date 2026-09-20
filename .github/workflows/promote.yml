@@ -37,7 +37,7 @@ on:
         options: [after-approval, manual]
         default: after-approval
       notes:
-        description: "What's New shown in the stores (optional; both platforms)"
+        description: "What's New shown in the stores (both platforms; Apple requires it for an app update; Play allows 500 characters)"
         type: string
         default: ''
       dry_run:

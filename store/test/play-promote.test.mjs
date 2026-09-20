@@ -9,7 +9,7 @@ const live = { name: '0.1.0 (30)', status: 'completed', versionCodes: ['30'], re
 const tracks = [
   { track: 'production', releases: [live] },
   { track: 'beta' }, { track: 'alpha' },
-  { track: 'internal', releases: [{ name: '36', status: 'completed', versionCodes: ['36'] }, { name: '35', status: 'completed', versionCodes: ['35'] }] },
+  { track: 'internal', releases: [{ name: '37', status: 'draft', versionCodes: ['37'] }, { name: '36', status: 'completed', versionCodes: ['36'] }, { name: '35', status: 'completed', versionCodes: ['35'] }] },
 ];
 const staged = { name: '35', status: 'inProgress', versionCodes: ['34', '35'], userFraction: 0.1, releaseNotes: [{ language: 'en-US', text: 'Old notes' }], countryTargeting: { countries: ['DE'] }, inAppUpdatePriority: 2 };
 const withStaged = [{ track: 'production', releases: [live, staged] }, { track: 'internal', releases: [{ status: 'completed', versionCodes: ['36'] }] }];
@@ -35,7 +35,7 @@ function fakePlay({ tracks: t = tracks, fail = [] } = {}) {
   return { fetchFn, calls, trail: () => calls.map((c) => `${c.method} ${c.path}`) };
 }
 
-test('plan: the newest internal release goes to production as a staged rollout; the completed release is kept', () => {
+test('plan: the newest completed internal release (never a draft) goes to production as a staged rollout beside the completed release', () => {
   const p = plan({ tracks, fraction: 0.1, notes: 'Fixes' });
   assert.equal(p.code, 36);
   assert.deepEqual(p.release, { versionCodes: ['36'], status: 'inProgress', userFraction: 0.1, releaseNotes: [{ language: 'en-US', text: 'Fixes' }] });
@@ -44,8 +44,10 @@ test('plan: the newest internal release goes to production as a staged rollout; 
   assert.equal(p.raised, false);
 });
 
-test('plan: fraction 1 completes the rollout, no userFraction, no notes when none given', () => {
-  assert.deepEqual(plan({ tracks, fraction: 1 }).release, { versionCodes: ['36'], status: 'completed' });
+test('plan: fraction 1 completes the rollout — the release alone, Play allows one completed release', () => {
+  const p = plan({ tracks, fraction: 1 });
+  assert.deepEqual(p.release, { versionCodes: ['36'], status: 'completed' });
+  assert.deepEqual(p.releases, [p.release]);
 });
 
 test('plan: an explicit version code; older than, or equal to, the completed production release is refused', () => {
@@ -70,9 +72,10 @@ test('plan: raising the rollout of the same code keeps its retained codes, notes
   // New notes replace the old ones; nothing else changes.
   assert.deepEqual(plan({ tracks: withStaged, fraction: 0.5, versionCode: 35, notes: 'New' }).release.releaseNotes, [{ language: 'en-US', text: 'New' }]);
   // Completing it drops the fraction and the country targeting (Play allows that on staged rollouts only).
-  const done = plan({ tracks: withStaged, fraction: 1, versionCode: 35 }).release;
-  assert.deepEqual(done, { name: '35', status: 'completed', versionCodes: ['34', '35'], releaseNotes: staged.releaseNotes, inAppUpdatePriority: 2 });
-  assert.ok(!('userFraction' in done) && !('countryTargeting' in done));
+  const finished = plan({ tracks: withStaged, fraction: 1, versionCode: 35 });
+  assert.deepEqual(finished.release, { name: '35', status: 'completed', versionCodes: ['34', '35'], releaseNotes: staged.releaseNotes, inAppUpdatePriority: 2 });
+  assert.ok(!('userFraction' in finished.release) && !('countryTargeting' in finished.release));
+  assert.deepEqual(finished.releases, [finished.release]);
 });
 
 test('plan: a rollout is never lowered here, and a halted release is left to the console', () => {
@@ -84,8 +87,10 @@ test('plan: a rollout is never lowered here, and a halted release is left to the
   assert.deepEqual(plan({ tracks: halted, fraction: 0.5 }).replaces, ['34+35 (halted)']);
 });
 
-test('plan: no internal release is an error', () => {
-  assert.throws(() => plan({ tracks: [{ track: 'internal' }, { track: 'production' }], fraction: 1 }), /no release to promote/);
+test('plan: no completed internal release is an error; a draft may still be named explicitly', () => {
+  assert.throws(() => plan({ tracks: [{ track: 'internal' }, { track: 'production' }], fraction: 1 }), /no completed release to promote/);
+  assert.throws(() => plan({ tracks: [{ track: 'internal', releases: [{ status: 'draft', versionCodes: ['37'] }] }, { track: 'production' }], fraction: 1 }), /no completed release to promote/);
+  assert.equal(plan({ tracks, fraction: 0.1, versionCode: 37 }).code, 37);
 });
 
 test('promote: one edit — insert, tracks, put production (completed release kept), validate, commit without cancelling a review', async () => {
@@ -106,6 +111,13 @@ test('promote: the log names a raised rollout and what is replaced', async () =>
   logs.length = 0;
   await promote({ sa, pkg: 'p', fraction: 1, dryRun: true, fetchFn: fakePlay({ tracks: withStaged }).fetchFn, log: (l) => logs.push(l) });
   assert.match(logs[0], /^production ← 36 as completed, replacing 34\+35 \(inProgress\)$/);
+});
+
+test('promote: notes beyond Play\'s 500 characters are refused before any call', async () => {
+  const play = fakePlay();
+  await assert.rejects(promote({ sa, pkg: 'p', fraction: 1, notes: '€'.repeat(501), fetchFn: play.fetchFn }), /--notes is 501 characters; Play allows 500 per language/);
+  assert.equal(play.calls.length, 0);
+  await promote({ sa, pkg: 'p', fraction: 1, notes: '€'.repeat(500), dryRun: true, fetchFn: play.fetchFn, log: () => {} });
 });
 
 test('promote: a dry run reads the tracks, writes nothing and discards the edit', async () => {

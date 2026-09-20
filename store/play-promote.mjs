@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 const b64 = (o) => Buffer.from(typeof o === 'string' ? o : JSON.stringify(o)).toString('base64url');
 const pct = (f) => `${Math.round(f * 100)}%`;
+const NOTES_MAX = 500; // Play's limit per language for release notes
 
 /** An OAuth access token for the Android Publisher scope from a service-account key. */
 export async function accessToken(sa, fetchFn, now = Math.floor(Date.now() / 1000)) {
@@ -30,9 +31,11 @@ export async function accessToken(sa, fetchFn, now = Math.floor(Date.now() / 100
 
 /**
  * The plan: which version code, and the production track's releases to write. Pure, so the test pins it.
- * The track update names the desired state, so the completed release(s) are sent back unchanged (Play keeps them as
- * the fallback), the rollout of `code` is raised in place when one is under way (its retained version codes, notes and
- * targeting kept), and any other staged, halted or draft release is replaced — Play serves one rollout at a time.
+ * The track update names the desired state (releases left out are dropped from the track). A staged rollout goes
+ * beside the completed release, which is sent back unchanged as Play's fallback; the rollout of `code` is raised in
+ * place when one is under way (its retained version codes, notes and targeting kept); completing sends that release
+ * alone, since Play allows one completed release and the new one supersedes the old; any other staged, halted or draft
+ * release is left out, i.e. replaced — Play serves one rollout at a time.
  */
 export function plan({ tracks, fraction, versionCode, notes }) {
   const internal = tracks.find((t) => t.track === 'internal');
@@ -41,8 +44,9 @@ export function plan({ tracks, fraction, versionCode, notes }) {
   const codesOf = (r) => (r.versionCodes ?? []).map(Number);
   let code = versionCode;
   if (code === undefined) {
-    const candidates = (internal?.releases ?? []).flatMap(codesOf);
-    if (candidates.length === 0) throw new Error('the internal track has no release to promote');
+    // Only what testers actually got: a draft on the internal track is served to nobody.
+    const candidates = (internal?.releases ?? []).filter((r) => r.status === 'completed').flatMap(codesOf);
+    if (candidates.length === 0) throw new Error('the internal track has no completed release to promote');
     code = Math.max(...candidates);
   }
   const completed = releases.filter((r) => r.status === 'completed');
@@ -61,11 +65,12 @@ export function plan({ tracks, fraction, versionCode, notes }) {
   else delete release.countryTargeting; // Play allows it on staged rollouts only
   if (notes) release.releaseNotes = [{ language: 'en-US', text: notes }];
   const replaces = releases.filter((r) => r !== current && r.status !== 'completed').map((r) => `${(r.versionCodes ?? []).join('+')} (${r.status})`);
-  return { code, release, releases: [...completed, release], replaces, raised: Boolean(current) };
+  return { code, release, releases: status === 'completed' ? [release] : [...completed, release], replaces, raised: Boolean(current) };
 }
 
 export async function promote({ sa, pkg, fraction, versionCode, notes, dryRun, fetchFn = fetch, log = console.log }) {
   if (!(fraction > 0 && fraction <= 1)) throw new Error(`--fraction must be in (0, 1], got ${fraction}`);
+  if (notes && [...notes].length > NOTES_MAX) throw new Error(`--notes is ${[...notes].length} characters; Play allows ${NOTES_MAX} per language`);
   const token = await accessToken(sa, fetchFn);
   const base = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${encodeURIComponent(pkg)}`;
   const call = async (method, path, body) => {
