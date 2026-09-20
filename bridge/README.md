@@ -42,12 +42,20 @@ node src/main.ts setup --unit remotly-dev --config-dir ~/.config/remotly-dev
 REMOTLY_CONFIG_DIR=~/.config/remotly-dev node src/main.ts status
 ```
 
-Releases: tag `bridge-vX.Y.Z` (matching `package.json`) → `.github/workflows/release.yml` builds
-`remotly-bridge-X.Y.Z.tar.gz` (sources + production dependencies, `scripts/package.sh`), `SHA256SUMS` and `install.sh`
-into a GitHub Release; `install.sh` resolves `/releases/latest`, so only bridge releases may be GitHub Releases. The
-tagged commit's message must not carry `[skip ci]`: GitHub skips the workflows for the tag push as well, and no release
-is made. The tag ruleset forbids moving the tag afterwards, so either bump `package.json` and tag a later commit with the
-new version, or re-tag with the ruleset disabled for the moment.
+Releases: `bridge/scripts/release-prep.sh X.Y.Z` (from anywhere in a checkout of `main`, clean apart from
+`CHANGELOG.md`) moves `package.json` and the lock to the version, checks that `CHANGELOG.md` holds the notes under
+`### Bridge X.Y.Z` (it adds the heading when missing and stops for you to write them; run it again) and opens the
+pull request. Merging it releases: `.github/workflows/release.yml` (`scripts/release-plan.sh`) sees a version without
+a GitHub Release and finds the commit that introduced it on `main`, checks that commit out, runs the tests, builds
+`remotly-bridge-X.Y.Z.tar.gz` (sources + production dependencies, `scripts/package.sh`), `SHA256SUMS` and
+`install.sh`, checks the installer against them, creates the tag `bridge-vX.Y.Z` at that commit, publishes the GitHub
+Release with the notes (`scripts/release-notes.sh`), and installs the published release once like a user would.
+`install.sh` resolves `/releases/latest`, so only bridge releases may be GitHub Releases; a version released after a
+higher one (runs can finish out of order) is not marked latest. Never push a tag by hand: the tag ruleset pins it for
+good, and one on a commit whose message skips CI gets no run. A version still missing — its merge skipped that way,
+or its release failed after the tag was created — is released at its own commit by the next run on `main`, by
+`gh workflow run release.yml`, or by `gh run rerun` of the failed run; a tag that sits at another commit without a
+release blocks the workflow until `package.json` is bumped past it.
 
 ## CLI
 

@@ -1,8 +1,9 @@
 # Changelog
 
-Bridge releases are tagged `bridge-vX.Y.Z` (matching `bridge/package.json`) and published as GitHub Releases, which is
-what `install.sh` installs. The apps ship through TestFlight and Play internal testing from pushes to `main` that touch
-them (`ci/plan.sh` picks the lanes; `docs/DELIVERY.md`).
+Bridge releases are GitHub Releases tagged `bridge-vX.Y.Z`, made when a bump of `bridge/package.json` reaches `main`
+(`release.yml`; the notes are this file's `### Bridge X.Y.Z` section), which is what `install.sh` installs. The apps
+ship through TestFlight and Play internal testing from pushes to `main` that touch them (`ci/plan.sh` picks the lanes;
+`docs/DELIVERY.md`).
 
 ## Unreleased
 
@@ -36,6 +37,12 @@ them (`ci/plan.sh` picks the lanes; `docs/DELIVERY.md`).
   deployed `/health` for `ok`, `apns` and `fcm` (marker `refs/delivered/relay`); the Worker's four secrets are
   declared `secrets.required` in `relay/wrangler.jsonc`, so a deploy fails when one is missing instead of the relay
   answering 503 `not_configured`. `npm run deploy` by hand remains (`relay/README.md`).
+- Bridge releases on merge: `release.yml` runs on every push to `main` (and on `gh workflow run release.yml`) and
+  releases when `bridge/package.json` names a version without a GitHub Release, from the commit that introduced the
+  version — it creates the tag there itself, so nothing is tagged by hand any more, and a merge whose message skips CI
+  is released by the next run. A version released after a higher one is not marked latest.
+  `bridge/scripts/release-prep.sh X.Y.Z` prepares the bump pull request and checks the notes under `### Bridge X.Y.Z`
+  here, which become the release notes.
 
 ### Bridge 0.2.0
 
