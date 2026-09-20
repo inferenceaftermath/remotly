@@ -1,34 +1,33 @@
-# Store promotion, by hand: the builds deliver.yml put on Play internal testing and TestFlight go to production. Play:
-# the newest internal build (or a given version code) rolls out to a share of users, raised on later runs until 100 %
-# completes it (store/play-promote.mjs). iOS: the newest processed TestFlight build (or a given one) is attached to an
-# App Store version and submitted to review (store/asc-submit.mjs). Nothing is built or uploaded here. Runs only in
-# the upstream repository and from main (the scripts of another ref never see the store credentials), with the Play
-# service account and the App Store Connect API key from its secrets (docs/DELIVERY.md, "Promotion"). `dry_run` shows
-# what a run would do and changes nothing.
+# Store promotion, by hand: a build deliver.yml put on Play internal testing and TestFlight goes to production. `build`
+# is the delivery's build number (deliver.yml gives both apps one: the Play version code and the TestFlight build
+# number) and is required — dispatches queue behind deliveries, so a run picking "the newest" could take a later
+# delivery's build. Play: it rolls out to a share of users, raised on later runs until 100 % completes it
+# (store/play-promote.mjs); Play sends the commit for review together with every change waiting in the Play Console's
+# Publishing overview (as the console's own button does). iOS: it is attached to an App Store version and submitted to
+# review (store/asc-submit.mjs). Nothing is built or uploaded here. Runs only in the upstream repository and from main
+# (the scripts of another ref never see the store credentials), with the Play service account and the App Store
+# Connect API key from its secrets (docs/DELIVERY.md, "Promotion"). `dry_run` shows what a run would do and changes
+# nothing.
 name: promote
 
 on:
   workflow_dispatch:
     inputs:
+      build:
+        description: "The delivery's build number (the Play version code and the TestFlight build number; required — a queued run must not pick up a later delivery's build)"
+        type: string
+        default: ''
       play_rollout:
-        description: "Play: roll the newest internal-testing build out to production for this share of users (100 completes the rollout; Play sends the changes waiting in the Publishing overview along with it)"
+        description: "Play: roll the build out to production for this share of users (100 completes the rollout; Play sends the changes waiting in the Publishing overview along with it)"
         type: choice
         options: [none, '5', '10', '25', '50', '100']
         default: none
-      play_version_code:
-        description: "Play: a version code instead of the newest internal one (optional)"
-        type: string
-        default: ''
       ios_submit:
-        description: "iOS: submit the newest processed TestFlight build to App Store review"
+        description: "iOS: submit the build to App Store review"
         type: boolean
         default: false
       ios_version:
         description: "iOS: the App Store version string to submit (X.Y.Z; required with ios_submit)"
-        type: string
-        default: ''
-      ios_build:
-        description: "iOS: a build number instead of the newest processed one (optional)"
         type: string
         default: ''
       ios_release:
@@ -65,21 +64,19 @@ jobs:
     if: github.repository == 'inferenceaftermath/remotly' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
+      BUILD: ${{ inputs.build }}
       ROLLOUT: ${{ inputs.play_rollout }}
-      VERSION_CODE: ${{ inputs.play_version_code }}
       IOS_SUBMIT: ${{ inputs.ios_submit }}
       IOS_VERSION: ${{ inputs.ios_version }}
-      IOS_BUILD: ${{ inputs.ios_build }}
     steps:
-      # An input for a platform whose action is off would be ignored silently; a run with nothing to do would be green.
+      # The build is named, never "the newest": this run may start after a later delivery. An input for a platform whose
+      # action is off would be ignored silently; a run with nothing to do would be green.
       - run: |
           bad=0
-          [ "$ROLLOUT" != none ] || [ -z "$VERSION_CODE" ] || { echo "play_version_code was given without a play_rollout" >&2; bad=1; }
-          [ "$IOS_SUBMIT" = true ] || [ -z "$IOS_VERSION$IOS_BUILD" ] || { echo "ios_version / ios_build were given without ios_submit" >&2; bad=1; }
+          case "$BUILD" in *[!0-9]*|'') echo "build is required: the delivery's build number (the Play version code and the TestFlight build number), e.g. 37" >&2; bad=1 ;; esac
+          [ "$IOS_SUBMIT" = true ] || [ -z "$IOS_VERSION" ] || { echo "ios_version was given without ios_submit" >&2; bad=1; }
           [ "$IOS_SUBMIT" != true ] || [ -n "$IOS_VERSION" ] || { echo "ios_submit needs ios_version (the App Store version string, e.g. 0.1.1)" >&2; bad=1; }
           [ "$ROLLOUT" != none ] || [ "$IOS_SUBMIT" = true ] || { echo "nothing to do: choose a play_rollout, ios_submit, or both" >&2; bad=1; }
-          [ -z "$VERSION_CODE" ] || case "$VERSION_CODE" in *[!0-9]*|'') echo "play_version_code must be a number" >&2; bad=1 ;; esac
-          [ -z "$IOS_BUILD" ] || case "$IOS_BUILD" in *[!0-9]*|'') echo "ios_build must be a build number" >&2; bad=1 ;; esac
           exit $bad
 
   play:
@@ -97,13 +94,12 @@ jobs:
           PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           PLAY_PACKAGE: ${{ env.REMOTLY_PACKAGE }}
           ROLLOUT: ${{ inputs.play_rollout }}
-          VERSION_CODE: ${{ inputs.play_version_code }}
+          BUILD: ${{ inputs.build }}
           NOTES: ${{ inputs.notes }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           [ -n "$PLAY_SERVICE_ACCOUNT_JSON" ] || { echo "the repository secret PLAY_SERVICE_ACCOUNT_JSON is not set (docs/DELIVERY.md, \"Secrets\")" >&2; exit 1; }
-          set -- --fraction "$(awk -v p="$ROLLOUT" 'BEGIN { printf "%g", p / 100 }')"
-          [ -z "$VERSION_CODE" ] || set -- "$@" --version-code "$VERSION_CODE"
+          set -- --fraction "$(awk -v p="$ROLLOUT" 'BEGIN { printf "%g", p / 100 }')" --version-code "$BUILD"
           [ -z "$NOTES" ] || set -- "$@" --notes "$NOTES"
           [ "$DRY_RUN" != true ] || set -- "$@" --dry-run
           node store/play-promote.mjs "$@"
@@ -124,7 +120,7 @@ jobs:
           ASC_ISSUER_ID: ${{ vars.ASC_ISSUER_ID }}
           ASC_API_KEY_P8_CONTENT: ${{ secrets.ASC_API_KEY_P8 }}
           VERSION: ${{ inputs.ios_version }}
-          BUILD: ${{ inputs.ios_build }}
+          BUILD: ${{ inputs.build }}
           RELEASE: ${{ inputs.ios_release }}
           NOTES: ${{ inputs.notes }}
           DRY_RUN: ${{ inputs.dry_run }}
@@ -134,8 +130,7 @@ jobs:
           fi
           [ -n "$ASC_API_KEY_P8_CONTENT" ] || { echo "the repository secret ASC_API_KEY_P8 is not set (docs/DELIVERY.md, \"Secrets\")" >&2; exit 1; }
           [ -n "$VERSION" ] || { echo "ios_version is required with ios_submit (the App Store version string, e.g. 0.1.1)" >&2; exit 1; }
-          set -- --version "$VERSION" --release "$RELEASE"
-          [ -z "$BUILD" ] || set -- "$@" --build "$BUILD"
+          set -- --version "$VERSION" --build "$BUILD" --release "$RELEASE"
           [ -z "$NOTES" ] || set -- "$@" --notes "$NOTES"
           [ "$DRY_RUN" != true ] || set -- "$@" --dry-run
           node store/asc-submit.mjs "$@"

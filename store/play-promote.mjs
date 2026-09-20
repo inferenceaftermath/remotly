@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Promote the newest internal-testing release (or a given version code) to Play's production track: a staged rollout
-// to a fraction of users (status inProgress), raised on later runs until 1 (status completed). Run by promote.yml;
-// nothing is built or uploaded here. The bundle must already be on Play (deliver.yml's android lane), and the app
+// Promote a version code (or, without one, the newest completed internal-testing release) to Play's production track:
+// a staged rollout to a fraction of users (status inProgress), raised on later runs until 1 (status completed). Run by
+// promote.yml, which always names the code (a dispatch may start after a later delivery); nothing is built or uploaded
+// here. The bundle must already be on Play (deliver.yml's android lane), and the app
 // must have had one production release through the console (Play's rule for the API). No dependencies: the service
 // account signs a JWT (RS256) for an OAuth token, then the Android Publisher API v3 in one edit (insert → tracks →
 // update production → validate → commit).
@@ -54,6 +55,8 @@ export function plan({ tracks, fraction, versionCode, notes }) {
   if (completed.some((r) => codesOf(r).includes(code))) throw new Error(`version code ${code} is production's completed release already`);
   if (code < live) throw new Error(`version code ${code} is older than production's completed release ${live}`);
   const current = releases.find((r) => r.status !== 'completed' && codesOf(r).includes(code));
+  const ahead = releases.filter((r) => r !== current && ['inProgress', 'halted'].includes(r.status)).flatMap(codesOf).filter((c) => c > code);
+  if (ahead.length) throw new Error(`version code ${code} is below ${Math.max(...ahead)}, which production is rolling out already; only a newer build replaces a rollout`);
   if (current?.status === 'halted') throw new Error(`version code ${code} is halted on production; resume it in the Play Console`);
   if (current?.status === 'inProgress' && current.userFraction !== undefined && fraction <= current.userFraction) {
     throw new Error(`version code ${code} is rolled out to ${pct(current.userFraction)} of users already; a rollout is only raised here (halt it in the Play Console)`);
