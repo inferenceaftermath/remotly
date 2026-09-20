@@ -69,9 +69,16 @@ jobs:
         run: ./gradlew --no-daemon :core:test :app:assembleDebug :app:lintDebug
 
   ios:
-    name: iOS (FlowKit tests)
-    runs-on: macos-latest
+    name: iOS (FlowKit tests) # the name is a required check of the main ruleset; the app compile step is inside
+    runs-on: macos-26 # the delivery lane's image and Xcode (deliver.yml)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - working-directory: ios/FlowKit
         run: swift test
+      - name: The app compiles with the lane's Xcode (no signing)
+        working-directory: ios
+        run: |
+          brew install --quiet xcodegen
+          xcodegen generate --quiet
+          xcodebuild build -quiet -project Remotly.xcodeproj -scheme Remotly -configuration Release \
+            -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO

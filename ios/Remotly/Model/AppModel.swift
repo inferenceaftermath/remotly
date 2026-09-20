@@ -862,8 +862,13 @@ final class AppModel {
             }
         }
         guard !doomed.isEmpty else { return }
+        // Ended from inside the task, found again by id: an `Activity` is not Sendable, so handing the collected ones
+        // over to the task is a data race to the compiler (Xcode 26.6); the ids are plain strings.
+        let doomedIDs = Set(doomed.map(\.id))
         Task {
-            for activity in doomed { await activity.end(nil, dismissalPolicy: .immediate) }
+            for activity in Activity<FlowActivityAttributes>.activities where doomedIDs.contains(activity.id) {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
         }
     }
 

@@ -28,6 +28,9 @@ them (`ci/plan.sh` picks the lanes; `docs/DELIVERY.md`).
 - Store builds come from GitHub-hosted runners (`ubuntu-latest`, `macos-26`) with the credentials in the
   repository's Actions secrets (`docs/DELIVERY.md`, "Secrets"); the two self-hosted runners and their installers
   (`ci/setup-*-runner.sh`, `ci/android-env.sh`) are retired.
+- Pull requests compile the iOS app on the lane's Xcode (26.6, signing disabled) besides the FlowKit tests: the first
+  hosted iOS delivery failed on a Swift concurrency diagnostic the Mac's Xcode 26.3 had not raised (`AppModel`
+  ending Live Activities from a task).
 
 ### Bridge 0.2.0
 
