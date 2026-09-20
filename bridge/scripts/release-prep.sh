@@ -9,7 +9,7 @@ ver=${1:?usage: bridge/scripts/release-prep.sh X.Y.Z[-rc.1]}
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$root"
 case "$ver" in [0-9]*.[0-9]*.[0-9]*) ;; *) echo "not a version: $ver (X.Y.Z, optionally -rc.1)" >&2; exit 2 ;; esac
 # CHANGELOG.md may be modified (the notes this script asks for); nothing else may be.
-other=$(git status --porcelain | grep -v -E '^ ?M  ?CHANGELOG\.md$' || true)
+other=$(git status --porcelain | grep -v -E '^( M|M |MM) CHANGELOG\.md$' || true)
 [ -z "$other" ] || { printf 'the checkout has changes besides CHANGELOG.md; commit or stash them first:\n%s\n' "$other" >&2; exit 1; }
 current=$(node -p "require('./bridge/package.json').version")
 [ "$current" != "$ver" ] || { echo "bridge/package.json is $ver already" >&2; exit 1; }

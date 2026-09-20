@@ -38,8 +38,9 @@ ship through TestFlight and Play internal testing from pushes to `main` that tou
   declared `secrets.required` in `relay/wrangler.jsonc`, so a deploy fails when one is missing instead of the relay
   answering 503 `not_configured`. `npm run deploy` by hand remains (`relay/README.md`).
 - Bridge releases on merge: `release.yml` runs on every push to `main` (and on `gh workflow run release.yml`) and
-  releases when `bridge/package.json` names a version without a GitHub Release — it creates the tag at that commit
-  itself, so nothing is tagged by hand any more, and a merge whose message skips CI is released by the next run.
+  releases when `bridge/package.json` names a version without a GitHub Release, from the commit that introduced the
+  version — it creates the tag there itself, so nothing is tagged by hand any more, and a merge whose message skips CI
+  is released by the next run. A version released after a higher one is not marked latest.
   `bridge/scripts/release-prep.sh X.Y.Z` prepares the bump pull request and checks the notes under `### Bridge X.Y.Z`
   here, which become the release notes.
 
