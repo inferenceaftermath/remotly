@@ -254,22 +254,25 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
         # `wrangler deploy`, as `npm run deploy` by hand (relay/README.md "Deploy"). The Worker's own secrets (APNs key,
         # Firebase service account) live on Cloudflare and survive a deploy; the token only needs to edit Workers in the
-        # account the variable names.
+        # account named by CLOUDFLARE_ACCOUNT_ID.
         run: |
           [ -n "$CLOUDFLARE_API_TOKEN" ] || { echo "the repository secret CLOUDFLARE_API_TOKEN is not set (docs/DELIVERY.md, \"Secrets\")" >&2; exit 1; }
           [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || { echo "set the repository variable CLOUDFLARE_ACCOUNT_ID (Settings → Secrets and variables → Actions → Variables)" >&2; exit 1; }
           npm run deploy
-      - name: The deployed relay answers
+      - name: The deployed relay answers, with both platforms configured
         if: steps.guard.outputs.deliver == 'true'
-        # /health from the edge, with the user agent the WAF rule lets through; a fresh version can take a moment to
-        # reach every location. A failure here leaves no marker, so the next push deploys again and checks again.
+        # GET /health from the edge, with the user agent the WAF rule lets through, for up to two minutes (a fresh version
+        # can take a moment to reach every location). `ok` alone is not enough: the relay answers ok without its Worker
+        # secrets and then refuses every push with 503 not_configured, so `apns` and `fcm` must be true as well. A
+        # failure here leaves no marker, so the next push deploys again and checks again.
         run: |
-          for _ in 1 2 3 4 5 6; do
-            body=$(curl -sS --max-time 15 -A 'remotly-bridge/deliver' "https://$REMOTLY_RELAY_HOST/health") || body=""
-            case "$body" in *'"ok":true'*) echo "$body"; exit 0 ;; esac
-            sleep 10
+          url="https://$REMOTLY_RELAY_HOST/health"
+          for attempt in 1 2 3 4 5 6; do
+            [ "$attempt" -eq 1 ] || sleep 10
+            body=$(curl -fsS --max-time 10 -A 'remotly-bridge/deliver' "$url") || { body=""; continue; }
+            if jq -e '.ok == true and .apns == true and .fcm == true' <<< "$body" > /dev/null 2>&1; then echo "$body"; exit 0; fi
           done
-          echo "https://$REMOTLY_RELAY_HOST/health did not answer ok: ${body:-no response}" >&2; exit 1
+          echo "$url did not answer with ok, apns and fcm all true: ${body:-no response}" >&2; exit 1
       - name: Record the delivery
         if: steps.guard.outputs.deliver == 'true'
         run: ci/mark-delivered.sh record relay

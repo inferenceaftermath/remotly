@@ -25,7 +25,7 @@ workflow run --ref`) runs that ref's own deliver.yml — dispatch from `main` on
 these markers existed replays its old workflow; push instead. A lane whose upload succeeded but whose marker push
 failed is not re-run either (Play and TestFlight refuse the same build number twice): the marker is gone, so the next
 push delivers it. The relay lane has no such constraint: a deploy is repeatable, and the lane ends by asking the deployed
-Worker's `/health`. Every run waits its turn (`concurrency.queue: max`, up to
+Worker's `/health` for `ok`, `apns` and `fcm`. Every run waits its turn (`concurrency.queue: max`, up to
 GitHub's 100 waiting runs; the next accepted push delivers everything pending), so a manual dispatch never displaces a
 waiting push. `ci/test/plan.test.sh`, `ci/test/lane-guard.test.sh` and `ci/test/mark-delivered.test.sh` pin that;
 `gh workflow run deliver.yml -f ios=true …` forces a lane. It runs only in the upstream repository (a
@@ -56,7 +56,7 @@ does not know delivers everything. Build number and `versionCode` are the run nu
 | `bridge-test` | `ubuntu-latest` | `npm ci`, `tsc --noEmit`, `npm test`; gates the two app lanes (the apps speak the protocol the bridge tests pin), not the relay |
 | `android` | `ubuntu-latest` (JDK 17 from `setup-java`, the image's Android SDK) | the upload key and `google-services.json` written from the secrets into the runner's temp dir, `:core:test :app:lintRelease :app:bundleRelease` signed with the upload key, then `r0adkll/upload-google-play` to track `internal` |
 | `ios` | `macos-26` (Xcode 26; `brew install xcodegen`) | `swift test` in `ios/FlowKit`, then `ios/scripts/testflight.sh`: from the App Store Connect API key alone, the archive signed with an Apple Development certificate Xcode creates for the runner, the export signed with the team's cloud-managed distribution certificate and uploaded (`destination=upload`); nothing is imported into a keychain |
-| `relay` | `ubuntu-latest` | in `relay/`: `npm ci`, `npm run typecheck`, `npm test`, then `npm run deploy` (`wrangler deploy` with the Cloudflare API token and account id), then `GET /health` on `REMOTLY_RELAY_HOST` until it answers `"ok":true` (up to a minute) |
+| `relay` | `ubuntu-latest` | in `relay/`: `npm ci`, `npm run typecheck`, `npm test`, then `npm run deploy` (`wrangler deploy` with the Cloudflare API token and account id), then `GET /health` on `REMOTLY_RELAY_HOST` until it answers with `ok`, `apns` and `fcm` all true (up to two minutes; `ok` alone would pass a Worker without its secrets) |
 
 ## Secrets
 
@@ -90,8 +90,10 @@ Three repository variables go with them (Settings → Secrets and variables → 
    `deliver.yml` `REMOTLY_PACKAGE`, `bridge/scripts/firebase-android-app.ts`, the Kotlin package directories); iOS
    bundle ids (`ios/project.yml`, `HostStore.swift`, `AppInfo.swift`); Apple team id (`ios/project.yml`
    `DEVELOPMENT_TEAM`, `ios/ExportOptions-testflight.plist`, `APPLE_TEAM_ID` in `ios/scripts/testflight.sh`); the
-   relay's name, route and vars (`relay/wrangler.jsonc`) and its host in `deliver.yml` (`REMOTLY_RELAY_HOST`); the
-   repository name in the guard of `deliver.yml`.
+   relay's name, route and vars (`relay/wrangler.jsonc`), its host in `deliver.yml` (`REMOTLY_RELAY_HOST`) and the
+   bridge's default for it (`DEFAULT_RELAY_URL` in `bridge/src/config.ts`, `bridge/test/config/config.test.ts`,
+   `bridge/README.md` `push.relay_url`; a bridge already installed keeps sending to the upstream relay until its
+   `push.relay_url` is set); the repository name in the guard of `deliver.yml`.
 3. **Secrets and variables** as in "Secrets" above, in your repository's settings.
 4. **Workflow hygiene.** The secrets are only as safe as the workflows that can read them: keep `deliver.yml` on `push`
    to `main` and `workflow_dispatch` only, never on `pull_request`; require approval for outside collaborators'
@@ -109,8 +111,9 @@ Three repository variables go with them (Settings → Secrets and variables → 
   an Apple Development certificate for "this machine" or a certificate limit → each hosted run creates one, revoke the
   stale ones under Certificates in the developer portal; `wrangler deploy` refused (authentication, "unable to select an
   account") → `CLOUDFLARE_API_TOKEN` is missing, expired or not scoped to the account `CLOUDFLARE_ACCOUNT_ID` names, or that
-  variable is unset; a custom-domain error → the token lacks the relay's zone; "did not answer ok" after a deploy → the
-  Worker is up but failing, read its logs (Workers & Pages → remotly-relay → Logs, or `npx wrangler tail` in `relay/`).
+  variable is unset; a custom-domain error → the token lacks the relay's zone; "did not answer with ok, apns and fcm all
+  true" after a deploy → the Worker is up but a platform's secrets are unusable (`relay/README.md` "Deploy") or it is
+  failing, read its logs (Workers & Pages → remotly-relay → Logs, or `npx wrangler tail` in `relay/`).
 - Apple Developer membership renews yearly; if it lapses, TestFlight installs and APNs pushes stop. TestFlight builds
   expire after 90 days: a push to `main` that `ci/plan.sh` classifies for iOS (see above: `ios/` or `shared/` code, `deliver.yml`, a `ci/` script) uploads a fresh one, or
   dispatch the iOS lane by hand.

@@ -63,8 +63,9 @@ Logs (Workers observability) carry platform, upstream status, reason and duratio
 ## Deploy (app owner)
 
 The Worker is deployed by `.github/workflows/deliver.yml` (`docs/DELIVERY.md`): a push to `main` that changes `relay/`
-(this file and `relay/test/` excepted) runs `npm run typecheck`, `npm test` and `npm run deploy` with the repository's
-`CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable, then asks the deployed `/health`. The Worker's own
+(Markdown files and `relay/test/` excepted) runs `npm run typecheck`, `npm test` and `npm run deploy` with the repository's
+`CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable, then asks the deployed `/health` for `ok`, `apns` and
+`fcm`. The Worker's own
 secrets are set once, by hand, from a machine logged into the Cloudflare account that owns `remotly.dev`; a deploy never
 touches them. The same lines deploy by hand when needed:
 
@@ -123,7 +124,7 @@ npm run typecheck   # Worker sources against the generated runtime types, then s
 npx wrangler deploy --dry-run --outdir /tmp/relay-dist
 ```
 
-`wrangler types` regenerates `worker-configuration.d.ts` from `wrangler.jsonc` and `.dev.vars` (copy
-`.dev.vars.example`; the file is gitignored). Layout: `src/jwt.ts` (ES256/RS256 with WebCrypto), `src/upstream.ts`
+`wrangler types` regenerates `worker-configuration.d.ts` from `wrangler.jsonc` (the secrets are its `secrets.required`
+list; `.dev.vars`, copied from `.dev.vars.example` and gitignored, is for `wrangler dev`). Layout: `src/jwt.ts` (ES256/RS256 with WebCrypto), `src/upstream.ts`
 (APNs and FCM senders with cached credentials, the bridge's status → result mapping), `src/relay.ts` (routing,
 validation, rate limits), `src/index.ts` (entry; one relay per isolate).
