@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ci/mark-delivered.sh against a throwaway origin with both markers seeded: `record` moves one lane's marker to HEAD
+# ci/mark-delivered.sh against a throwaway origin with the markers seeded: `record` moves one lane's marker to HEAD
 # (forward, and back over a rewritten history) and leaves the others; `forget` removes one marker (and is fine without
 # one); bad arguments are errors. Run: bash ci/test/mark-delivered.test.sh
 set -euo pipefail
@@ -15,27 +15,31 @@ git commit -q --allow-empty -m two && two="$(git rev-parse HEAD)"
 git commit -q --allow-empty -m three && three="$(git rev-parse HEAD)"
 git push -q origin HEAD:refs/heads/main
 marker() { git ls-remote origin "refs/delivered/$1" | cut -f1; }
-markers() { echo "android=$(marker android) ios=$(marker ios)"; }
+markers() { echo "android=$(marker android) ios=$(marker ios) relay=$(marker relay)"; }
 mark() { bash "$here/ci/mark-delivered.sh" "$@"; }
-git push -q origin "$one:refs/delivered/android" "$two:refs/delivered/ios"
+git push -q origin "$one:refs/delivered/android" "$two:refs/delivered/ios" "$one:refs/delivered/relay"
 mark record android > "$tmp/log"
-check "record: android at HEAD, the other as it was" "android=$three ios=$two" "$(markers)"
+check "record: android at HEAD, the others as they were" "android=$three ios=$two relay=$one" "$(markers)"
 grep -q "refs/delivered/android → $three" "$tmp/log" || fail "no confirmation: $(cat "$tmp/log")"
 git checkout -q "$one"
 mark record android > /dev/null
-check "record moves backwards too (it states what was delivered)" "android=$one ios=$two" "$(markers)"
+check "record moves backwards too (it states what was delivered)" "android=$one ios=$two relay=$one" "$(markers)"
 git checkout -q --orphan other && git commit -q --allow-empty -m other && other="$(git rev-parse HEAD)"
 mark record ios > /dev/null
-check "record onto a rewritten history" "android=$one ios=$other" "$(markers)"
+check "record onto a rewritten history" "android=$one ios=$other relay=$one" "$(markers)"
 mark forget ios > "$tmp/log"
-check "forget: the ios marker is gone, the other stays" "android=$one ios=" "$(markers)"
+check "forget: the ios marker is gone, the others stay" "android=$one ios= relay=$one" "$(markers)"
 grep -q "refs/delivered/ios forgotten" "$tmp/log" || fail "no confirmation: $(cat "$tmp/log")"
 mark forget ios > "$tmp/log"
-check "forget without a marker is fine" "android=$one ios=" "$(markers)"
+check "forget without a marker is fine" "android=$one ios= relay=$one" "$(markers)"
 grep -q "no marker yet" "$tmp/log" || fail "no note: $(cat "$tmp/log")"
 mark record ios > /dev/null
-check "record after forget" "android=$one ios=$other" "$(markers)"
-for bad in "record relay" "record bridge" "start ios" "record" "ios" ""; do
+check "record after forget" "android=$one ios=$other relay=$one" "$(markers)"
+mark record relay > /dev/null
+check "record relay" "android=$one ios=$other relay=$other" "$(markers)"
+mark forget relay > /dev/null
+check "forget relay" "android=$one ios=$other relay=" "$(markers)"
+for bad in "record bridge" "record web" "start ios" "record" "ios" ""; do
   # shellcheck disable=SC2086
   if mark $bad 2>/dev/null; then fail "[$bad] must be an error"; fi
 done

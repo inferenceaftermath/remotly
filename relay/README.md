@@ -62,6 +62,13 @@ Logs (Workers observability) carry platform, upstream status, reason and duratio
 
 ## Deploy (app owner)
 
+The Worker is deployed by `.github/workflows/deliver.yml` (`docs/DELIVERY.md`): a push to `main` that changes `relay/`
+(Markdown files and `relay/test/` excepted) runs `npm run typecheck`, `npm test` and `npm run deploy` with the repository's
+`CLOUDFLARE_API_TOKEN` secret and `CLOUDFLARE_ACCOUNT_ID` variable, then asks the deployed `/health` for `ok`, `apns` and
+`fcm`. The Worker's own
+secrets are set once, by hand, from a machine logged into the Cloudflare account that owns `remotly.dev`; a deploy never
+touches them. The same lines deploy by hand when needed:
+
 ```sh
 cd relay && npm ci
 npx wrangler login                                   # once, opens the browser on the Cloudflare account that owns remotly.dev
@@ -69,7 +76,7 @@ npx wrangler secret put APNS_TEAM_ID                 # Apple developer team id
 npx wrangler secret put APNS_KEY_ID                  # APNs auth key id
 npx wrangler secret put APNS_P8 < ~/.config/remotly/secrets/AuthKey.p8
 npx wrangler secret put FCM_SERVICE_ACCOUNT < ~/.config/remotly/secrets/fcm-service-account.json
-npm run deploy                                       # binds relay.remotly.dev (the zone is on Cloudflare; DNS is created for you)
+npm run deploy                                       # what the lane runs; binds relay.remotly.dev (the zone is on Cloudflare; DNS is created for you)
 curl -sA 'remotly-bridge/manual' https://relay.remotly.dev/health   # {"ok":true,"version":"0.1.0","apns":true,"fcm":true}
                                                      # (the user agent matters once the WAF rule below is in place)
 ```
@@ -117,7 +124,7 @@ npm run typecheck   # Worker sources against the generated runtime types, then s
 npx wrangler deploy --dry-run --outdir /tmp/relay-dist
 ```
 
-`wrangler types` regenerates `worker-configuration.d.ts` from `wrangler.jsonc` and `.dev.vars` (copy
-`.dev.vars.example`; the file is gitignored). Layout: `src/jwt.ts` (ES256/RS256 with WebCrypto), `src/upstream.ts`
+`wrangler types` regenerates `worker-configuration.d.ts` from `wrangler.jsonc` (the secrets are its `secrets.required`
+list; `.dev.vars`, copied from `.dev.vars.example` and gitignored, is for `wrangler dev`). Layout: `src/jwt.ts` (ES256/RS256 with WebCrypto), `src/upstream.ts`
 (APNs and FCM senders with cached credentials, the bridge's status → result mapping), `src/relay.ts` (routing,
 validation, rate limits), `src/index.ts` (entry; one relay per isolate).

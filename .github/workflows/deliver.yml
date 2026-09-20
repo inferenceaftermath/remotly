@@ -1,10 +1,11 @@
-# Push to main → tests → Android AAB to Play internal testing, iOS build to TestFlight, on GitHub-hosted runners. Runs
-# only in the upstream repository (job-level guard): the upload key, the Firebase configuration, the Play service
-# account and the App Store Connect API key are its repository secrets (docs/DELIVERY.md, "Secrets"); the App Store
-# Connect key id and issuer id are repository variables. Build number / versionCode = the run number, monotonic (a store
-# lane whose upload succeeded is not re-run — the stores refuse a build number twice; the next push delivers it). Pull
-# requests are checked by ci.yml. The bridge is not delivered from main: a `bridge-vX.Y.Z` tag releases it (release.yml)
-# and hosts install releases (install.sh, then `remotly-bridge update` and its timer).
+# Push to main → tests → Android AAB to Play internal testing, iOS build to TestFlight, the push relay's Worker to
+# Cloudflare, on GitHub-hosted runners. Runs only in the upstream repository (job-level guard): the upload key, the
+# Firebase configuration, the Play service account, the App Store Connect API key and the Cloudflare API token are its
+# repository secrets (docs/DELIVERY.md, "Secrets"); the App Store Connect key id and issuer id and the Cloudflare account
+# id are repository variables. Build number / versionCode = the run number, monotonic (a store lane whose upload
+# succeeded is not re-run — the stores refuse a build number twice; the next push delivers it). Pull requests are
+# checked by ci.yml. The bridge is not delivered from main: a `bridge-vX.Y.Z` tag releases it (release.yml) and hosts
+# install releases (install.sh, then `remotly-bridge update` and its timer).
 name: deliver
 
 on:
@@ -18,6 +19,10 @@ on:
         default: true
       ios:
         description: Deliver iOS to TestFlight
+        type: boolean
+        default: true
+      relay:
+        description: Deploy the push relay (Cloudflare Worker)
         type: boolean
         default: true
       play_status:
@@ -41,6 +46,7 @@ permissions:
 
 env:
   REMOTLY_PACKAGE: com.inferenceaftermath.remotly
+  REMOTLY_RELAY_HOST: relay.remotly.dev # the route in relay/wrangler.jsonc; the relay lane checks /health there
   ASC_KEY_ID: ${{ vars.ASC_KEY_ID }}
   ASC_ISSUER_ID: ${{ vars.ASC_ISSUER_ID }}
 
@@ -52,6 +58,7 @@ jobs:
     outputs:
       android: ${{ steps.plan.outputs.android }}
       ios: ${{ steps.plan.outputs.ios }}
+      relay: ${{ steps.plan.outputs.relay }}
       build_number: ${{ steps.plan.outputs.build_number }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,12 +69,13 @@ jobs:
           EVENT: ${{ github.event_name }}
           IN_ANDROID: ${{ inputs.android }}
           IN_IOS: ${{ inputs.ios }}
+          IN_RELAY: ${{ inputs.relay }}
         # Each lane is diffed from the commit it last delivered (its marker on origin), not from this push's parent: a
         # lane that failed last time is retried by the next push, and a run that is no longer main's tip does nothing.
         run: ci/plan.sh
 
   bridge-test:
-    name: Bridge tests
+    name: Bridge tests # gates the app lanes (the apps speak the protocol these tests pin), not the relay
     needs: plan
     if: github.repository == 'inferenceaftermath/remotly' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && (needs.plan.outputs.android == 'true' || needs.plan.outputs.ios == 'true')
     runs-on: ubuntu-latest
@@ -206,3 +214,65 @@ jobs:
       - name: Record the delivery
         if: steps.guard.outputs.deliver == 'true'
         run: ci/mark-delivered.sh record ios
+
+  relay:
+    name: Relay → Cloudflare
+    needs: plan
+    if: github.repository == 'inferenceaftermath/remotly' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && needs.plan.outputs.relay == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # ci/mark-delivered.sh moves refs/delivered/relay
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: guard
+        name: Still main's tip?
+        env:
+          EVENT: ${{ github.event_name }}
+        run: ci/lane-guard.sh relay
+      - name: Forget the last relay delivery until this one is done
+        if: steps.guard.outputs.deliver == 'true'
+        run: ci/mark-delivered.sh forget relay
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.guard.outputs.deliver == 'true'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: relay/package-lock.json
+      - name: tsc + unit tests
+        if: steps.guard.outputs.deliver == 'true'
+        working-directory: relay
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+      - name: Deploy the Worker
+        if: steps.guard.outputs.deliver == 'true'
+        working-directory: relay
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        # `wrangler deploy`, as `npm run deploy` by hand (relay/README.md "Deploy"). The Worker's own secrets (APNs key,
+        # Firebase service account) live on Cloudflare and survive a deploy; the token only needs to edit Workers in the
+        # account named by CLOUDFLARE_ACCOUNT_ID.
+        run: |
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || { echo "the repository secret CLOUDFLARE_API_TOKEN is not set (docs/DELIVERY.md, \"Secrets\")" >&2; exit 1; }
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || { echo "set the repository variable CLOUDFLARE_ACCOUNT_ID (Settings → Secrets and variables → Actions → Variables)" >&2; exit 1; }
+          npm run deploy
+      - name: The deployed relay answers, with both platforms configured
+        if: steps.guard.outputs.deliver == 'true'
+        # GET /health from the edge, with the user agent the WAF rule lets through, for up to two minutes (a fresh version
+        # can take a moment to reach every location). `ok` alone is not enough: the relay answers ok without its Worker
+        # secrets and then refuses every push with 503 not_configured, so `apns` and `fcm` must be true as well. A
+        # failure here leaves no marker, so the next push deploys again and checks again.
+        run: |
+          url="https://$REMOTLY_RELAY_HOST/health"
+          for attempt in 1 2 3 4 5 6; do
+            [ "$attempt" -eq 1 ] || sleep 10
+            body=$(curl -fsS --max-time 10 -A 'remotly-bridge/deliver' "$url") || { body=""; continue; }
+            if jq -e '.ok == true and .apns == true and .fcm == true' <<< "$body" > /dev/null 2>&1; then echo "$body"; exit 0; fi
+          done
+          echo "$url did not answer with ok, apns and fcm all true: ${body:-no response}" >&2; exit 1
+      - name: Record the delivery
+        if: steps.guard.outputs.deliver == 'true'
+        run: ci/mark-delivered.sh record relay

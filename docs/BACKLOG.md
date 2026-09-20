@@ -132,7 +132,7 @@ sessions together with the tests that use them; GitHub Releases only (no npm). T
 
 - Apple Developer membership renews yearly; if it lapses, TestFlight installs and APNs pushes stop.
 - TestFlight builds expire 90 days after upload; a fresh one is uploaded by a push to `main` that touches `ios/`, `shared/`
-  or the pipeline (`ci/plan.sh`), or on demand by `gh workflow run deliver.yml -f ios=true -f android=false`.
+  or the pipeline (`ci/plan.sh`), or on demand by `gh workflow run deliver.yml -f ios=true -f android=false -f relay=false`.
   Play internal testing does not expire.
 
 ## Design notes parked on 2026-09-06 (user's dump; to be taken one at a time after the scrolling work)

@@ -30,9 +30,9 @@ Remotly is three code bases and a Worker that must agree on one wire protocol, s
 | `android/` | JDK 17, Android SDK platform 37 | `./gradlew :core:test :app:assembleDebug :app:lintDebug` (`android/README.md`) |
 | `ios/` | macOS, Xcode 26, xcodegen | `cd ios/FlowKit && swift test`; the app: `xcodegen generate`, then build (`ios/README.md`) |
 
-`.github/workflows/ci.yml` runs the same checks for every pull request. `deliver.yml` (TestFlight, Play) runs only in
-the upstream repository, which holds the store credentials; bridge releases come from `release.yml` on a `bridge-vX.Y.Z`
-tag.
+`.github/workflows/ci.yml` runs the same checks for every pull request. `deliver.yml` (TestFlight, Play, the push
+relay's Worker) runs only in the upstream repository, which holds the store and Cloudflare credentials; bridge releases
+come from `release.yml` on a `bridge-vX.Y.Z` tag.
 
 ## Pull requests
 

@@ -1,6 +1,7 @@
 {
-  // Remotly push relay (README.md). Deployed by the app owner with `npm run deploy`; every other bridge
-  // posts its notifications here instead of holding the APNs key and the Firebase service account.
+  // Remotly push relay (README.md). Deployed by .github/workflows/deliver.yml when a push to main changes relay/ (or by
+  // the app owner with `npm run deploy`); every other bridge posts its notifications here instead of holding the APNs
+  // key and the Firebase service account.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "remotly-relay",
   "main": "src/index.ts",
@@ -9,8 +10,10 @@
   "workers_dev": false,
   "routes": [{ "pattern": "relay.remotly.dev", "custom_domain": true }],
   "observability": { "enabled": true, "head_sampling_rate": 1 },
-  // Public identifiers (they ship inside the apps). Everything sensitive is a secret: APNS_TEAM_ID, APNS_KEY_ID,
-  // APNS_P8 (the .p8 file), FCM_SERVICE_ACCOUNT (the service-account JSON) — see README.md "Deploy".
+  // Public identifiers (they ship inside the apps). Everything sensitive is a secret, set once with `wrangler secret
+  // put` (README.md "Deploy") and listed here so that a deploy fails when one is missing on the Worker, instead of
+  // serving 503 not_configured; `wrangler types` takes the Env type of the secrets from this list.
+  "secrets": { "required": ["APNS_TEAM_ID", "APNS_KEY_ID", "APNS_P8", "FCM_SERVICE_ACCOUNT"] },
   "vars": {
     "APNS_BUNDLE_ID": "com.inferenceaftermath.remotly",
     "FCM_PROJECT_ID": "flow-a014e",
