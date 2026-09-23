@@ -30,9 +30,9 @@ curl -fsSL https://remotly.dev/install.sh | sh
 ```
 
 Then scan the QR it prints from the app. Every step, including LAN mode for a host without Tailscale (Android only), is in
-[ONBOARDING.md](ONBOARDING.md). The apps are in internal testing on TestFlight and Google Play; request access on
-[remotly.dev](https://remotly.dev), or build them yourself with your own Apple and Google records (`ios/README.md`,
-`android/README.md`, `docs/DELIVERY.md`).
+[ONBOARDING.md](ONBOARDING.md). The apps are on the [App Store](https://apps.apple.com/app/id6809486596) and
+[Google Play](https://play.google.com/store/apps/details?id=com.inferenceaftermath.remotly), or build them yourself with
+your own Apple and Google records (`ios/README.md`, `android/README.md`, `docs/DELIVERY.md`).
 
 ## Documentation
 
@@ -53,5 +53,5 @@ which depends on the proprietary Google Play services. The fixtures under `share
 captures (Claude Code, Codex CLI, shell programs) used for interoperability tests. herdr is a separate product with its own licence; Remotly
 only talks to its socket API.
 
-Remotly is a project of [Inference Aftermath](https://inferenceaftermath.com). We're also building
-[Entwyn](https://entwyn.ai/): modern matchmaking for people tired of swiping and ready for something serious.
+Remotly.dev is developed and maintained by [Inference Aftermath](https://inferenceaftermath.com). We are building
+<a href="https://entwyn.ai/">Entwyn <img src="docs/assets/entwyn.svg" alt="" height="14"></a>.

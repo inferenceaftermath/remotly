@@ -2,13 +2,14 @@
 
 Remotly is personal infrastructure: **your** herdr host runs the bridge, **your** phones pair with it, and only devices
 on **your** Tailscale tailnet can reach it. There is no shared server, so nobody joins an existing bridge; you set up
-your own in about 30 minutes.
+your own.
 
 ## 1. Get the apps
 
-The Remotly apps for iPhone and Android are in internal testing (TestFlight and Play internal testing); request an
-invite on [remotly.dev](https://remotly.dev). You can also build them from source with your own Apple developer team and
-Firebase project: `ios/README.md`, `android/README.md`, and `docs/DELIVERY.md` for a delivery lane of your own.
+The Remotly apps are on the [App Store](https://apps.apple.com/app/id6809486596) for iPhone and iPad, and on
+[Google Play](https://play.google.com/store/apps/details?id=com.inferenceaftermath.remotly). You can also build them
+from source with your own Apple developer team and Firebase project: `ios/README.md`, `android/README.md`, and
+`docs/DELIVERY.md` for a delivery lane of your own.
 
 To explore before setting up a host, tap **Try demo** on the pairing screen. Local sample sessions demonstrate the
 terminal and approval controls without a login or network connection to a bridge; **Exit demo** returns to pairing.
