@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 111 61" width="111" height="61">
+  <defs>
+    <mask id="underMask">
+      <rect x="-55.5" y="-30.5" width="111" height="61" fill="white"/>
+      <path d="M -48 -23 C -15 -23 0 0 0 0 C 0 0 15 23 48 23" fill="none" stroke="black" stroke-width="17" stroke-linecap="square"/>
+    </mask>
+  </defs>
+  <g transform="translate(55.5, 30.5)">
+    <path d="M -48 23 C -15 23 0 0 0 0 C 0 0 15 -23 48 -23" fill="none" stroke="#F0A080" stroke-width="7" stroke-linecap="square" mask="url(#underMask)"/>
+    <path d="M -48 -23 C -15 -23 0 0 0 0 C 0 0 15 23 48 23" fill="none" stroke="#A78BCC" stroke-width="7" stroke-linecap="square"/>
+  </g>
+</svg>

@@ -2,8 +2,8 @@
 
 Bridge releases are GitHub Releases tagged `bridge-vX.Y.Z`, made when a bump of `bridge/package.json` reaches `main`
 (`release.yml`; the notes are this file's `### Bridge X.Y.Z` section), which is what `install.sh` installs. The apps
-ship through TestFlight and Play internal testing from pushes to `main` that touch them (`ci/plan.sh` picks the lanes;
-`docs/DELIVERY.md`).
+go to TestFlight and Play internal testing from pushes to `main` that touch them (`ci/plan.sh` picks the lanes) and from
+there to the App Store and Google Play by hand (`promote.yml`; `docs/DELIVERY.md`).
 
 ## Unreleased
 
@@ -26,6 +26,8 @@ ship through TestFlight and Play internal testing from pushes to `main` that tou
 
 ### Delivery
 
+- The apps are on the App Store and Google Play: `README.md` and `ONBOARDING.md` link to the stores instead of asking
+  for an internal-testing invite.
 - Store builds come from GitHub-hosted runners (`ubuntu-latest`, `macos-26`) with the credentials in the
   repository's Actions secrets (`docs/DELIVERY.md`, "Secrets"); the two self-hosted runners and their installers
   (`ci/setup-*-runner.sh`, `ci/android-env.sh`) are retired.
