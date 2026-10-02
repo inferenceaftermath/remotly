@@ -40,7 +40,7 @@ These findings amended the herdr section (§4) of the original build brief, whic
 - `session.snapshot.layouts[].panes[].rect {x,y,width,height}` and `pane.layout` report cell rectangles, **also for background tabs**, and `layout_updated` events carry the new layout after `pane.split` (e.g. 114 → 57 + 57).
 - `rect.height` == PTY rows == `scroll.viewport_rows` (41 for a 42-row client).
 - `rect.width` is **not** the PTY column count: a single 114-wide pane wrapped at 113 columns, a 57-wide split pane at 54; when zoomed the rects still show the unzoomed layout while the PTY grew to ≈ 111–113. Borders/gutters differ by layout, so no constant offset works.
-- **Decision:** exact columns come from the PTY itself: `pane.process_info` → `shell_pid` → `readlink /proc/<pid>/fd/0` → `stty -F <tty> size` (host-side, non-intrusive, Linux/macOS). Fallback when unavailable: `rect.width − 1` clamped by the widest line seen. Re-query on `layout_updated` for the pane's tab and after `pane.zoom`.
+- **Decision:** exact columns come from the PTY itself: `pane.process_info` → `shell_pid` → `readlink /proc/<pid>/fd/0` → `stty -F <tty> size` on Linux; `ps -o tty= -p <pid>` → `stty -f <tty> size` on macOS (host-side, non-intrusive). Fallback when unavailable: `rect.width − 1` clamped by the widest line seen. Re-query on `layout_updated` for the pane's tab and after `pane.zoom`.
 
 ## 4. Agent identifiers (§4.2 item 4)
 

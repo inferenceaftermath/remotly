@@ -32,14 +32,15 @@ Google. Nothing to copy. A host that has credentials of its own (you built the a
    from its menu bar icon. In the admin console → DNS, enable **MagicDNS** and **HTTPS Certificates** (iPhones refuse
    the self-signed fallback certificate). Step 3 checks all of this and waits for you when something is missing, so you
    can also start there.
-3. Install and set up:
+3. Install and set up — **Linux | macOS**, as the user who runs herdr:
    ```sh
    curl -fsSL https://remotly.dev/install.sh | sh
    ```
    This puts the bridge under `~/.local/share/remotly` (with its own Node 24 when the system has none), a
    `remotly-bridge` command in `~/.local/bin`, and runs `remotly-bridge setup`: it checks herdr and Tailscale (a failing
-   check prints its fix and the setup continues by itself once you have applied it — e.g. `sudo tailscale set
-   --operator=$USER` when Tailscale refuses certificate requests), requests the certificate, installs the
+   check prints its fix and the setup continues by itself once you have applied it — e.g. when Tailscale refuses
+   certificate requests: on Linux `sudo tailscale set --operator=$USER`, on macOS log in to the Tailscale app as the
+   user who runs the bridge), requests the certificate, installs the
    `remotly-bridge` user service — a systemd user unit with linger on Linux, so it survives logout and reboot; a
    launchd agent on macOS, which starts when you log in to the Mac — waits for it to come up, and prints one pairing QR.
    Upgrades arrive by themselves (a daily `remotly-bridge-update.timer` on Linux, the `dev.remotly.remotly-bridge-update`

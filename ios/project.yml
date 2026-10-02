@@ -54,7 +54,7 @@ targets:
       base:
         PRODUCT_NAME: Remotly
         PRODUCT_BUNDLE_IDENTIFIER: com.inferenceaftermath.remotly
-        MARKETING_VERSION: "0.1.0"
+        MARKETING_VERSION: "0.1.1"
         CURRENT_PROJECT_VERSION: 1
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: Remotly/Info.plist
@@ -88,7 +88,7 @@ targets:
       base:
         PRODUCT_NAME: FlowActivity
         PRODUCT_BUNDLE_IDENTIFIER: com.inferenceaftermath.remotly.activity
-        MARKETING_VERSION: "0.1.0"
+        MARKETING_VERSION: "0.1.1"
         CURRENT_PROJECT_VERSION: 1
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: FlowActivity/Info.plist

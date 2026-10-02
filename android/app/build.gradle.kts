@@ -50,7 +50,7 @@ val hasReleaseSigning = releaseStoreFile != null &&
 
 // Play requires a strictly increasing versionCode per upload; CI passes its run number.
 val flowVersionCode = signingValue("REMOTLY_VERSION_CODE")?.toIntOrNull() ?: 1
-val flowVersionName = signingValue("REMOTLY_VERSION_NAME") ?: "0.1.0"
+val flowVersionName = signingValue("REMOTLY_VERSION_NAME") ?: "0.1.1"
 
 android {
     namespace = "com.inferenceaftermath.remotly"

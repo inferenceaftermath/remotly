@@ -46,6 +46,9 @@ there to the App Store and Google Play by hand (`promote.yml`; `docs/DELIVERY.md
 
 ### Delivery
 
+- App version 0.1.1 on both platforms (`MARKETING_VERSION` in `ios/project.yml`, `versionName` in
+  `android/app/build.gradle.kts`): App Store Connect closes a version's train once that version is approved, so the
+  TestFlight lane refused every 0.1.0 build after the App Store release; `promote.yml` submits 0.1.1 from here on.
 - The apps are on the App Store and Google Play: `README.md` and `ONBOARDING.md` link to the stores instead of asking
   for an internal-testing invite.
 - Store builds come from GitHub-hosted runners (`ubuntu-latest`, `macos-26`) with the credentials in the
