@@ -22,7 +22,7 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@types/node": "^24.13.4",
+    "@types/node": "^24.13.6",
     "@types/qrcode": "^1.5.5",
     "@types/ws": "^8.5.13",
     "typescript": "^7.0.2"
