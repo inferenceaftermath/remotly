@@ -10,6 +10,8 @@ hosted relay, and by default they carry the text shown in the notification (belo
 
 <p>
   <a href="https://apps.apple.com/app/id6809486596"><img src="docs/assets/readme/badge-app-store.svg" alt="Download on the App Store" height="48"></a>
+  &nbsp;
+  <a href="https://play.google.com/store/apps/details?id=com.inferenceaftermath.remotly"><img src="docs/assets/readme/badge-google-play.png" alt="Get it on Google Play" height="48"></a>
 </p>
 
 **[Set up your host](#get-started)**: one installer line, then scan a QR from the app. Every step is in
@@ -108,10 +110,11 @@ Apache License 2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). The Android app bundl
 License 1.1 (`android/app/src/main/assets/JetBrainsMono-OFL.txt`) and receives push through Firebase Cloud Messaging,
 which depends on the proprietary Google Play services. The fixtures under `shared/fixtures/` are redacted terminal screen
 captures (Claude Code, Codex CLI, shell programs) used for interoperability tests. herdr is a separate product with its
-own licence; Remotly only talks to its socket API. Under `docs/assets/readme/`, the App Store badge is Apple's official
-artwork, used unaltered under Apple's badge guidelines and not covered by this repository's licence;
-`demo-approval-*.png` and `social-preview.png` are screenshots of the apps' demo mode with sample data;
-`demo-video-thumbnail.jpg` is the thumbnail of the illustrative animated walkthrough on YouTube, not an app screenshot.
+own licence; Remotly only talks to its socket API. Under `docs/assets/readme/`, the App Store and Google Play badges
+are Apple's and Google's official artwork, used unaltered under their badge guidelines and not covered by this
+repository's licence; `demo-approval-*.png` and `social-preview.png` are screenshots of the apps' demo mode with sample
+data; `demo-video-thumbnail.jpg` is the thumbnail of the illustrative animated walkthrough on YouTube, not an app
+screenshot.
 
 Remotly.dev is developed and maintained by [Inference Aftermath](https://inferenceaftermath.com). We are building
 <a href="https://entwyn.ai/">Entwyn <img src="docs/assets/entwyn.svg" alt="" height="14"></a>.
