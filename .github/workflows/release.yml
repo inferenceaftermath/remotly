@@ -61,6 +61,8 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: bridge/package-lock.json
+      - name: Loopback aliases for the connection-cap test (Linux has all of 127/8 on loopback; macOS only 127.0.0.1)
+        run: sudo ifconfig lo0 alias 127.0.0.2 up && sudo ifconfig lo0 alias 127.0.0.3 up
       - name: Typecheck and tests
         working-directory: bridge
         run: |

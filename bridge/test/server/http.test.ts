@@ -253,7 +253,16 @@ test('idle sockets are terminated; pings keep them alive', async () => {
   }
 });
 
-test('connection caps: a peer beyond its share gets 429, the bridge beyond its total 503; closing a socket frees the slot', async () => {
+/** Whether this host can bind `addr`: Linux has all of 127.0.0.0/8 on loopback; macOS only 127.0.0.1 until `ifconfig lo0 alias` adds more (ci.yml does). */
+const canBind = (addr: string): Promise<boolean> =>
+  new Promise((res) => {
+    const s = net.createServer();
+    s.once('error', () => res(false));
+    s.listen(0, addr, () => s.close(() => res(true)));
+  });
+
+test('connection caps: a peer beyond its share gets 429, the bridge beyond its total 503; closing a socket frees the slot', async (t) => {
+  if (!(await canBind('127.0.0.2')) || !(await canBind('127.0.0.3'))) return t.skip('needs 127.0.0.2 and 127.0.0.3 on loopback — all of 127/8 on Linux; on macOS:  sudo ifconfig lo0 alias 127.0.0.2 up; sudo ifconfig lo0 alias 127.0.0.3 up');
   const h = await start({ limits: { maxClientsPerIp: 2, maxClients: 3 } });
   try {
     const a1 = await openWs(h.wsUrl);
