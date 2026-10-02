@@ -23,13 +23,15 @@ Google. Nothing to copy. A host that has credentials of its own (you built the a
 `~/.config/remotly/secrets/` at mode `0600` with `push.apns.*` / `push.fcm.*` set in `config.json`, and sends directly
 (`bridge/README.md` "Configuration").
 
-## 3. Prepare your Linux host
+## 3. Prepare your host (Linux or macOS)
 
 1. **herdr ≥ 0.8.0** running as you: `curl -fsSL https://herdr.dev/install.sh | sh`, then `herdr`. Optional:
    `resume_agents_on_restore` in `~/.config/herdr/config.toml`, so a host reboot brings the agents back too.
-2. **Tailscale** on the host, logged in: `curl -fsSL https://tailscale.com/install.sh | sh`, `sudo tailscale up`. In the
-   admin console → DNS, enable **MagicDNS** and **HTTPS Certificates** (iPhones refuse the self-signed fallback
-   certificate). Step 3 checks all of this and waits for you when something is missing, so you can also start there.
+2. **Tailscale** on the host, logged in. Linux: `curl -fsSL https://tailscale.com/install.sh | sh`, `sudo tailscale up`.
+   macOS: the Tailscale app from <https://tailscale.com/download/mac> (or `brew install --cask tailscale`), logged in
+   from its menu bar icon. In the admin console → DNS, enable **MagicDNS** and **HTTPS Certificates** (iPhones refuse
+   the self-signed fallback certificate). Step 3 checks all of this and waits for you when something is missing, so you
+   can also start there.
 3. Install and set up:
    ```sh
    curl -fsSL https://remotly.dev/install.sh | sh
@@ -38,9 +40,11 @@ Google. Nothing to copy. A host that has credentials of its own (you built the a
    `remotly-bridge` command in `~/.local/bin`, and runs `remotly-bridge setup`: it checks herdr and Tailscale (a failing
    check prints its fix and the setup continues by itself once you have applied it — e.g. `sudo tailscale set
    --operator=$USER` when Tailscale refuses certificate requests), requests the certificate, installs the
-   `remotly-bridge` user service so it survives logout and reboot, waits for it to come up, and prints one pairing QR.
-   Upgrades arrive by themselves (a daily `remotly-bridge-update.timer` runs `remotly-bridge update`; run that yourself
-   for one now); `remotly-bridge doctor` prints a fix for every failing check. A host without
+   `remotly-bridge` user service — a systemd user unit with linger on Linux, so it survives logout and reboot; a
+   launchd agent on macOS, which starts when you log in to the Mac — waits for it to come up, and prints one pairing QR.
+   Upgrades arrive by themselves (a daily `remotly-bridge-update.timer` on Linux, the `dev.remotly.remotly-bridge-update`
+   agent on macOS, runs `remotly-bridge update`; run that yourself for one now); `remotly-bridge doctor` prints a fix
+   for every failing check. A host without
    Tailscale (Android phones on the same LAN only): `curl -fsSL https://remotly.dev/install.sh | sh -s -- --lan`.
    `~/.config/remotly/config.json` is written with defaults and needs no edits (every key in `bridge/README.md`).
    Photos sent from the phones' composers land under `~/.local/share/remotly/uploads/<date>/` (`uploads.dir`; day folders

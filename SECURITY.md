@@ -19,7 +19,7 @@ fixed in the next bridge release or app build; there is no bounty programme. Onl
   `/pair` and WebSocket upgrades are accepted only from peers that `tailscale whois` attributes to the same tailnet user,
   judged on the TCP peer address, never on headers, so do not put a reverse proxy in front of the bridge. The listener
   binds the Tailscale IPv4 by default. `/health` (ok, herdr up/down, version) is not gated. At start-up the bridge
-  waits for Tailscale when it is installed but not up yet (boot order) and exits for systemd to retry rather than
+  waits for Tailscale when it is installed but not up yet (boot order) and exits for the service manager to retry rather than
   starting with the gate off; once it has seen Tailscale up, the `auto` gate stays on for the life of the process and an
   `auto` listener without a Tailscale address is an error, so a Tailscale that stops later makes peers fail closed
   instead of opening the host up. Only a host with no Tailscale at all starts without it: `auto` settings fall back to
@@ -48,7 +48,8 @@ fixed in the next bridge release or app build; there is no bounty programme. Onl
   or a screen excerpt, the session title (pane title or directory name) and the one-line approval summary
   (`bridge/README.md` lists the fields). With it off, the host name stands in for the session title and no pane text is
   sent. Nothing else leaves the host; there is no telemetry.
-- **Logs.** One JSON line per event in the journal. `info` never contains tokens or pane text (screen contents, titles,
+- **Logs.** One JSON line per event in the journal (Linux) or in `~/Library/Logs/remotly/<label>.log` (macOS, mode
+  0700 on the directory). `info` never contains tokens or pane text (screen contents, titles,
   labels, typed text, error messages that quote the client); pane and device ids do appear at `info`. `debug` adds the
   text of error replies and per-connection TLS handshakes, never tokens.
 - **On the phones.** The token is stored in the iOS Keychain / Android app-private storage; the apps register no URL

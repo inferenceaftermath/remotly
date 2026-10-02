@@ -1,7 +1,16 @@
 # Remotly — operations runbook
 
-Everything here is user-scoped on the Linux host; no root is needed. Defaults: config dir `~/.config/remotly`, port
+Everything here is user-scoped on the host; no root is needed. Defaults: config dir `~/.config/remotly`, port
 `7460`, unit `remotly-bridge.service`, the bridge under `~/.local/share/remotly/app`, the CLI at `~/.local/bin/remotly-bridge`.
+The commands below are the Linux ones (systemd); on macOS the service is the launchd agent `dev.remotly.remotly-bridge`
+in `~/Library/LaunchAgents`, and every `systemctl --user …` has a `launchctl` counterpart that `setup` and `doctor` print
+in their messages: `launchctl print gui/$(id -u)/dev.remotly.remotly-bridge` (status), `launchctl kickstart -k …`
+(restart), `launchctl bootout …` (stop), `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<label>.plist` (start),
+and the log is the file `~/Library/Logs/remotly/<label>.log` instead of the journal. A crash loop shows as
+`state = spawn scheduled` with a `last exit code` in `launchctl print` (launchd respawns forever; it has no start-rate
+limit), and `setup` or `update` restarts it like a `failed` systemd unit. The daily update is the agent
+`dev.remotly.remotly-bridge-update`; `launchctl disable gui/$(id -u)/dev.remotly.remotly-bridge-update` (after a bootout)
+turns it off, and the lock is perl's `flock` instead of flock(1).
 Setting up a new host from scratch: `ONBOARDING.md` at the repo root. From a checkout, every `remotly-bridge <command>`
 below is `node src/main.ts <command>` in `bridge/`.
 

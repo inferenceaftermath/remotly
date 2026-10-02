@@ -7,6 +7,26 @@ there to the App Store and Google Play by hand (`promote.yml`; `docs/DELIVERY.md
 
 ## Unreleased
 
+### Bridge 0.3.0
+
+- macOS hosts. `install.sh` installs on a Mac (Darwin Node tarballs from nodejs.org when there is no node ≥ 24; a
+  Homebrew node is used by its link, which brew repoints on upgrade), and `setup` installs the bridge as a launchd user
+  agent — `dev.remotly.<unit>` under `~/Library/LaunchAgents`, `KeepAlive` so it comes back after a crash, started at
+  login, logging to `~/Library/Logs/remotly/` — with the daily update as the agent `dev.remotly.<unit>-update` (a minute
+  past midnight chosen per install). launchd never settles a crash loop (`spawn scheduled` after an exit, forever):
+  `setup` and `update` read that as `failed`, as a systemd unit past its start-rate limit, and restart it. `doctor`, `update`, every message and every fix line speak launchctl on a Mac and
+  systemctl on Linux (`bridge/src/platform/service.ts`); the Tailscale fixes name the Tailscale app, which is the
+  daemon there (no `--operator`), and the CLI is found inside the app bundle when it is not on PATH
+  (`REMOTLY_TAILSCALE` overrides, and `setup` carries it into the units). One update at a time stays a kernel lock: perl's `flock` stands in for flock(1) and
+  `/proc`, the descriptor's number travels in `REMOTLY_UPDATE_LOCK_FD` and is believed only when fstat says it is the
+  lock file. The PTY size probe uses BSD stty (`-f`) and `ps` for a pane's tty where there is no `/proc`. Nothing
+  changes on Linux: the same units, the same commands, the same messages — only the help text names both hosts now.
+- CI runs the bridge on both hosts (`ubuntu-latest`, `macos-26`): the unit tests, an install from the packaged tarball
+  the way a user does, and the service brought up under the host's own manager and checked end to end — status,
+  doctor, a second setup over a running service, and a restart after a kill (`ci/e2e/bridge-service.sh`, with a
+  stand-in for herdr's socket). The release waits for the macOS run before it tags; the delivery gate runs the bridge
+  tests on both hosts.
+
 ### Phone apps — local demo
 
 - Android, iPhone and iPad can explore sample terminal sessions without a bridge or Tailscale: **Try demo** on

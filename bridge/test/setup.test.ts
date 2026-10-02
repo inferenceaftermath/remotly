@@ -32,6 +32,8 @@ import {
   type SetupDeps,
   type SetupOptions,
 } from '../src/setup.ts';
+import { lockedCommand } from '../src/platform/lock.ts';
+import { launchdManager } from '../src/platform/service.ts';
 import { pairFallbackHost } from '../src/server/pairing.ts';
 import { lanIPv4Addresses } from '../src/server/tls.ts';
 import type { ExecResult, TailscaleStatus } from '../src/tailscale.ts';
@@ -210,10 +212,12 @@ test('renderUnit quotes paths, doubles % and only emits the environment lines it
   assert.match(unit, /^WantedBy=default.target$/m);
   assert.equal(unit.includes('REMOTLY_CONFIG_DIR'), false);
   assert.equal(unit.includes('HERDR_'), false);
-  const full = renderUnit({ nodePath: '/usr/bin/node', mainPath: '/x/main.ts', configDir: '/home/a/.config/remotly-2', herdrSession: 'main', herdrSocket: '/run/100%/herdr.sock' });
+  assert.equal(unit.includes('REMOTLY_TAILSCALE'), false);
+  const full = renderUnit({ nodePath: '/usr/bin/node', mainPath: '/x/main.ts', configDir: '/home/a/.config/remotly-2', herdrSession: 'main', herdrSocket: '/run/100%/herdr.sock', tailscale: '/opt/ts/tailscale' });
   assert.match(full, /^Environment="REMOTLY_CONFIG_DIR=\/home\/a\/.config\/remotly-2"$/m);
   assert.match(full, /^Environment="HERDR_SESSION=main"$/m);
   assert.match(full, /^Environment="HERDR_SOCKET_PATH=\/run\/100%%\/herdr.sock"$/m, 'a literal % is %% in a unit file');
+  assert.match(full, /^Environment="REMOTLY_TAILSCALE=\/opt\/ts\/tailscale"$/m, 'a tailscale CLI setup was pointed at stays known to the daemon');
   const repaired = renderUnit({ nodePath: '/usr/bin/node', mainPath: '/h/app/src/main.ts', repairScript: '/h o/repair-app.sh' });
   assert.match(repaired, /^ExecStartPre=-\/bin\/sh "\/h o\/repair-app\.sh"\nExecStart=/m, 'the repair runs first, and its failure does not stop the start');
   assert.equal(unit.includes('ExecStartPre'), false, 'no repair for a copy that is not an installed release');
@@ -770,13 +774,15 @@ test('a Tailscale certificate failure that falls back to self-signed also checks
 });
 
 test('unit options land in the unit file and env; linger is enabled when off', async () => {
-  const { deps, out, calls, touchSocket } = makeDeps({ script: { ...tsScript(), 'loginctl show-user': [okRun('no\n'), okRun('yes\n')] } });
+  const { deps, out, calls, touchSocket } = makeDeps({ script: { ...tsScript(), 'loginctl show-user': [okRun('no\n'), okRun('yes\n')] }, env: { REMOTLY_TAILSCALE: '/opt/ts/tailscale' } });
   touchSocket();
   const code = await runSetup(deps, { ...OPTS, unit: 'remotly-dev', configDir: '/home/alice/.config/remotly-dev', herdrSession: 'dev', pair: false });
   assert.equal(code, 0);
   const unit = fs.readFileSync(path.join(deps.unitDir, 'remotly-dev.service'), 'utf8');
   assert.match(unit, /^Environment="REMOTLY_CONFIG_DIR=\/home\/alice\/.config\/remotly-dev"$/m);
   assert.match(unit, /^Environment="HERDR_SESSION=dev"$/m);
+  assert.match(unit, /^Environment="REMOTLY_TAILSCALE=\/opt\/ts\/tailscale"$/m, 'REMOTLY_TAILSCALE as setup ran with it');
+  assert.equal(fs.statSync(path.join(deps.unitDir, 'remotly-dev.service')).mode & 0o777, 0o644);
   assert.ok(calls.includes('systemctl --user enable remotly-dev.service'));
   assert.ok(calls.includes('loginctl enable-linger'));
   assert.match(out.join('\n'), /linger enabled/);
@@ -1090,6 +1096,23 @@ test('renderRepairScript: puts app/ back from app.prev, else app.new, and a priv
     assert.equal(fs.existsSync(app), false, 'left to the run that holds the lock');
     assert.ok(fs.existsSync(path.join(home, 'app.prev')));
   }
+  // Without flock(1) (macOS) perl takes the locks: held by an install (platform/lock.ts's own perl lock) → nothing moves; free → the repair, in line on update.lock.repair.
+  const perlPath = spawnSync('sh', ['-c', 'command -v perl']).stdout.toString().trim();
+  if (perlPath) {
+    const noFlock = path.join(dir, 'bin-without-flock');
+    fs.mkdirSync(noFlock, { recursive: true });
+    for (const tool of ['sh', 'mv', 'perl']) fs.symlinkSync(spawnSync('sh', ['-c', `command -v ${tool}`]).stdout.toString().trim(), path.join(noFlock, tool));
+    const env = { PATH: noFlock };
+    const held = lockedCommand('darwin', path.join(home, 'update.lock'), ['sh', script]);
+    execFileSync(perlPath, held.args, { stdio: 'pipe', env }); // perl holds update.lock while the script runs
+    assert.equal(fs.existsSync(app), false, 'left to the run that holds the lock (perl)');
+    assert.ok(fs.existsSync(path.join(home, 'app.prev')));
+    fs.rmSync(path.join(home, 'update.lock.repair'), { force: true });
+    execFileSync(path.join(noFlock, 'sh'), [script], { stdio: 'pipe', env });
+    assert.equal(fs.readFileSync(path.join(app, 'src', 'main.ts'), 'utf8'), 'previous', 'the lock free: the previous copy comes back under perl');
+    assert.ok(fs.existsSync(path.join(home, 'update.lock.repair')), 'repairs queue on update.lock.repair under perl too');
+    fs.renameSync(app, path.join(home, 'app.prev')); // as before, for the run below
+  }
   // Nobody holds the lock: the previous copy comes back, never a failed one. Repairs queue on their own lock file.
   run();
   assert.equal(fs.readFileSync(path.join(app, 'src', 'main.ts'), 'utf8'), 'previous');
@@ -1226,4 +1249,181 @@ test('a timer that cannot be installed is a warning, not a failed setup; the uni
   assert.ok(fs.existsSync(path.join(enabledMarker.deps.unitDir, UPDATE_TIMER)), 'an enabled timer is never taken back');
   assert.ok(fs.existsSync(path.join(enabledMarker.deps.unitDir, 'remotly-bridge-update.service')));
   assert.ok(fs.existsSync(timerMarkerPath(emHome, 'remotly-bridge')), 'the marker stays for the next setup, which enables again');
+});
+
+// ---- macOS: launchd -----------------------------------------------------------------------------
+
+const MAC_PRINT_RUNNING = okRun('gui/1000/dev.remotly.remotly-bridge = {\n\tstate = running\n\tpid = 4242\n}\n');
+const MAC_NOT_LOADED: ExecResult = { code: 113, stdout: '', stderr: 'Could not find service "dev.remotly.remotly-bridge" in domain for user gui: 1000' };
+/** makeDeps for a Mac: the launchd manager over the same scripted exec, agents under <dir>/LaunchAgents, the home above app/. */
+function macDeps(over: Parameters<typeof makeDeps>[0] = {}, agents = 'LaunchAgents') {
+  const m = makeDeps({ platform: 'darwin', ...over });
+  const home = path.dirname(path.dirname(path.dirname(m.deps.mainPath)));
+  m.deps.unitDir = path.join(dir, agents);
+  m.deps.home = home;
+  m.deps.service = launchdManager({ exec: m.deps.exec, unitDir: m.deps.unitDir, user: 'alice', uid: 1000, home, updateMinute: 17, sleep: async () => undefined });
+  return { ...m, home, launchctl: () => m.calls.filter((c) => c.startsWith('launchctl')) };
+}
+
+test('macOS: the service is a launchd agent — plist written, enabled and bootstrapped, health read from launchctl print; the update agent is written and enabled; no systemctl anywhere', async () => {
+  // A first install: nobody answers on the socket before the bootstrap (both ownership looks pass); the agent's process does after.
+  let answered = 0;
+  // Both ownership looks and the "gone after bootout" check see no agent; afterwards it runs. The update agent is never loaded before.
+  const m = macDeps({
+    script: { ...tsScript(), 'launchctl print gui/1000/dev.remotly.remotly-bridge': [MAC_NOT_LOADED, MAC_NOT_LOADED, MAC_NOT_LOADED, MAC_PRINT_RUNNING], 'launchctl print gui/1000/dev.remotly.remotly-bridge-update': MAC_NOT_LOADED },
+    status: async () => {
+      if (answered++ < 2) throw new Error('ENOENT');
+      return STATUS;
+    },
+  });
+  asRelease(m.deps);
+  m.deps.env = { REMOTLY_TAILSCALE: '/Applications/Tailscale.app/Contents/MacOS/Tailscale' };
+  m.touchSocket();
+  const logs = path.join(m.home, 'Library', 'Logs', 'remotly');
+  assert.equal(fs.existsSync(logs), false, 'a clean account');
+  const umask = process.umask(0o002); // a permissive umask: the plists must still not be group-writable (launchd refuses those)
+  try {
+    assert.equal(await runSetup(m.deps, OPTS), 0);
+  } finally {
+    process.umask(umask);
+  }
+  const text = m.out.join('\n');
+  const plist = path.join(m.deps.unitDir, 'dev.remotly.remotly-bridge.plist');
+  const updatePlist = path.join(m.deps.unitDir, 'dev.remotly.remotly-bridge-update.plist');
+  assert.ok(fs.statSync(logs).isDirectory(), 'the log directory the agents write to is made by setup');
+  assert.equal(fs.statSync(logs).mode & 0o077, 0);
+  assert.equal(fs.statSync(plist).mode & 0o777, 0o644);
+  assert.equal(fs.statSync(updatePlist).mode & 0o777, 0o644);
+  assert.match(text, new RegExp(`✔ service remotly-bridge installed at ${plist} \\(node /opt/node/bin/node\\)`));
+  assert.match(text, /✔ starts when you log in to this Mac \(launchd user agent\)/);
+  assert.match(text, /✔ daily update dev\.remotly\.remotly-bridge-update \(runs `remotly-bridge update`; off:  launchctl bootout gui\/1000\/dev\.remotly\.remotly-bridge-update; launchctl disable gui\/1000\/dev\.remotly\.remotly-bridge-update\)/);
+  assert.match(text, /✔ bridge running: listening 100\.64\.0\.7:7460, certificate tailscale, herdr up/);
+  assert.match(text, /setup complete$/);
+  assert.equal(text.includes('✖'), false);
+  assert.equal(text.includes('⚠'), false);
+  assert.equal(text.includes('systemd'), false);
+  assert.equal(m.calls.some((c) => c.startsWith('systemctl') || c.startsWith('loginctl') || c.startsWith('journalctl')), false);
+
+  const agent = fs.readFileSync(plist, 'utf8');
+  const repair = repairScriptPath(m.home);
+  assert.ok(fs.existsSync(repair), 'repair-app.sh written beside app/');
+  assert.match(agent, new RegExp(`<string>/bin/sh "\\$0"; exec "\\$1" "\\$2" serve</string>\\n\\s*<string>${repair}</string>\\n\\s*<string>/opt/node/bin/node</string>\\n\\s*<string>${m.deps.mainPath}</string>`));
+  assert.match(agent, /<key>KeepAlive<\/key>\n\s*<true\/>/);
+  assert.match(agent, /<key>REMOTLY_TAILSCALE<\/key>\n\s*<string>\/Applications\/Tailscale\.app\/Contents\/MacOS\/Tailscale<\/string>/, 'the CLI setup ran with stays known to the agent');
+  const update = fs.readFileSync(updatePlist, 'utf8');
+  assert.match(update, /<key>REMOTLY_TAILSCALE<\/key>\n\s*<string>\/Applications\/Tailscale\.app\/Contents\/MacOS\/Tailscale<\/string>/, 'and to the updater');
+  assert.match(update, /exec "\$1" "\$2" update<\/string>/);
+  assert.match(update, /<key>Minute<\/key>\n\s*<integer>17<\/integer>/);
+  assert.match(update, /<key>REMOTLY_SYSTEMD_UNIT<\/key>\n\s*<string>remotly-bridge<\/string>/);
+  assert.match(update, /<key>REMOTLY_NODE<\/key>\n\s*<string>\/opt\/node\/bin\/node<\/string>/);
+  assert.equal(fs.existsSync(timerMarkerPath(m.home, 'remotly-bridge')), false);
+  assert.deepEqual(m.launchctl(), [
+    'launchctl print gui/1000/dev.remotly.remotly-bridge', // ownership, before the checks
+    'launchctl print gui/1000', // the session
+    'launchctl print gui/1000/dev.remotly.remotly-bridge', // ownership again, right before the write
+    'launchctl enable gui/1000/dev.remotly.remotly-bridge',
+    'launchctl bootout gui/1000/dev.remotly.remotly-bridge',
+    'launchctl print gui/1000/dev.remotly.remotly-bridge', // gone after the bootout?
+    `launchctl bootstrap gui/1000 ${plist}`,
+    'launchctl enable gui/1000/dev.remotly.remotly-bridge-update',
+    'launchctl bootout gui/1000/dev.remotly.remotly-bridge-update',
+    'launchctl print gui/1000/dev.remotly.remotly-bridge-update',
+    `launchctl bootstrap gui/1000 ${updatePlist}`,
+    'launchctl print gui/1000/dev.remotly.remotly-bridge', // health: the answering daemon is the agent's process
+  ]);
+});
+
+test('macOS: --keep-stopped leaves a booted-out agent alone with the bootstrap line; a disabled update agent stays disabled; no launchd session stops before anything is written', async () => {
+  const nobody = async (): Promise<ControlStatus> => Promise.reject(new Error('ENOENT')); // a stopped bridge answers nowhere
+  const stopped = macDeps({ status: nobody, script: { ...tsScript(), 'launchctl print gui/1000/dev.remotly.remotly-bridge': MAC_NOT_LOADED, 'launchctl print-disabled gui/1000': okRun('disabled services = {\n\t"dev.remotly.remotly-bridge-update" => disabled\n}\n') } });
+  asRelease(stopped.deps);
+  fs.mkdirSync(stopped.deps.unitDir, { recursive: true });
+  fs.writeFileSync(path.join(stopped.deps.unitDir, 'dev.remotly.remotly-bridge.plist'), 'old plist');
+  fs.writeFileSync(path.join(stopped.deps.unitDir, 'dev.remotly.remotly-bridge-update.plist'), 'old update plist');
+  stopped.touchSocket();
+  assert.equal(await runSetup(stopped.deps, { ...OPTS, keepStopped: true }), 0);
+  const text = stopped.out.join('\n');
+  assert.match(text, new RegExp(`· service remotly-bridge installed at .*dev\\.remotly\\.remotly-bridge\\.plist \\(node /opt/node/bin/node\\), but it is inactive: left stopped \\(--keep-stopped\\);  launchctl bootstrap gui/1000 ${stopped.deps.unitDir}/dev\\.remotly\\.remotly-bridge\\.plist`));
+  assert.match(text, /· auto-update off \(dev\.remotly\.remotly-bridge-update is disabled\); on:  launchctl enable gui\/1000\/dev\.remotly\.remotly-bridge-update && launchctl bootstrap gui\/1000 /);
+  assert.equal(stopped.launchctl().some((c) => c.startsWith('launchctl bootstrap')), false, 'nothing started');
+  assert.notEqual(fs.readFileSync(path.join(stopped.deps.unitDir, 'dev.remotly.remotly-bridge.plist'), 'utf8'), 'old plist', 'the agent plist is rewritten for this install');
+  assert.notEqual(fs.readFileSync(path.join(stopped.deps.unitDir, 'dev.remotly.remotly-bridge-update.plist'), 'utf8'), 'old update plist', 'and so is the update agent, still disabled');
+
+  const noSession = macDeps({ status: nobody, script: { ...tsScript(), 'launchctl print gui/1000/dev.remotly.remotly-bridge': MAC_NOT_LOADED, 'launchctl print gui/1000': failRun('Could not find domain for gui/1000', 125) } }, 'LaunchAgents-2');
+  noSession.touchSocket();
+  assert.equal(await runSetup(noSession.deps, OPTS), 1);
+  assert.match(noSession.out.join('\n'), /✖ no launchd session for alice \(gui\/1000\)/);
+  assert.equal(fs.existsSync(path.join(noSession.deps.unitDir, 'dev.remotly.remotly-bridge.plist')), false);
+});
+
+test('macOS: when the agent never comes up, the log file (not a journal) is shown and setup fails', async () => {
+  const m = macDeps({ script: { ...tsScript(), 'launchctl print gui/1000/dev.remotly.remotly-bridge': [MAC_NOT_LOADED, MAC_NOT_LOADED, okRun('gui/1000/dev.remotly.remotly-bridge = {\n\tstate = waiting\n}\n')] }, status: async () => Promise.reject(new Error('ECONNREFUSED')) });
+  fs.mkdirSync(path.join(m.home, 'Library', 'Logs', 'remotly'), { recursive: true });
+  fs.writeFileSync(path.join(m.home, 'Library', 'Logs', 'remotly', 'dev.remotly.remotly-bridge.log'), 'boom: port in use\n');
+  m.touchSocket();
+  assert.equal(await runSetup(m.deps, OPTS), 1);
+  const text = m.out.join('\n');
+  assert.match(text, /log of remotly-bridge:\n\s+boom: port in use/);
+  assert.equal(text.includes('journal'), false);
+});
+
+test('macOS: a crash-looping agent (spawn scheduled after an exit, which launchd never settles) is settled for setup, which replaces and restarts it; a first spawn on its way is left alone', async () => {
+  // A bad node path, say: launchd respawns every ThrottleInterval forever. Both ownership looks see that; the bootout
+  // takes it down, the bootstrap brings the new plist up, and the agent's process answers.
+  const crashing = okRun('gui/1000/dev.remotly.remotly-bridge = {\n\tstate = spawn scheduled\n\truns = 7\n\tlast exit code = 1\n}\n');
+  let answered = 0;
+  const m = macDeps(
+    {
+      script: { ...tsScript(), 'launchctl print gui/1000/dev.remotly.remotly-bridge': [crashing, crashing, MAC_NOT_LOADED, MAC_PRINT_RUNNING], 'launchctl print gui/1000/dev.remotly.remotly-bridge-update': MAC_NOT_LOADED },
+      status: async () => {
+        if (answered++ < 2) throw new Error('ECONNREFUSED');
+        return STATUS;
+      },
+    },
+    'LaunchAgents-3',
+  );
+  m.touchSocket();
+  assert.equal(await runSetup(m.deps, OPTS), 0);
+  const text = m.out.join('\n');
+  assert.equal(text.includes('not touching it until it has settled'), false);
+  assert.match(text, /✔ service remotly-bridge installed at/);
+  assert.ok(m.launchctl().includes('launchctl bootout gui/1000/dev.remotly.remotly-bridge'));
+  assert.match(text, /setup complete$/);
+  // The first spawn after a bootstrap, before any run: launchd is on it — setup lets it settle rather than tear it down.
+  const first = macDeps({ script: { ...tsScript(), 'launchctl print gui/1000/dev.remotly.remotly-bridge': okRun('gui/1000/dev.remotly.remotly-bridge = {\n\tstate = spawn scheduled\n\tlast exit code = (never exited)\n}\n') }, status: async () => Promise.reject(new Error('ECONNREFUSED')) }, 'LaunchAgents-4');
+  first.touchSocket();
+  assert.equal(await runSetup(first.deps, OPTS), 1);
+  assert.match(first.out.join('\n'), /unit remotly-bridge is activating \(spawn scheduled\) right now — it may be restarting; not touching it until it has settled/);
+});
+
+test('macOS wording: the Tailscale fixes name the app, not systemd or --operator', () => {
+  const fixOf = (s: ReturnType<typeof classifyTailnet>): string[] => (s.ok ? [] : s.fix);
+  assert.deepEqual(fixOf(classifyTailnet(null, false, { platform: 'darwin' })), ['install it:  https://tailscale.com/download/mac   (or:  brew install --cask tailscale)', 'then log in from the Tailscale menu bar icon']);
+  assert.deepEqual(fixOf(classifyTailnet(null, true, { platform: 'darwin' })), ['open the Tailscale app (tailscaled runs inside it) and connect']);
+  assert.deepEqual(fixOf(classifyTailnet({ BackendState: 'NeedsLogin' }, true, { platform: 'darwin' })), ['open the Tailscale app and log in (its menu bar icon)']);
+  assert.match(classifyCertFailure('access denied', 'alice', 'h.ts.net', 'auto', 'darwin').fix[0]!, /macOS has no --operator/);
+  // Linux is untouched.
+  assert.deepEqual(fixOf(classifyTailnet(null, true)), ['sudo systemctl enable --now tailscaled', 'then:  sudo tailscale up']);
+  assert.deepEqual(classifyCertFailure('access denied', 'alice', 'h.ts.net').fix, ['sudo tailscale set --operator=alice']);
+});
+
+test('stableNodePath: a Homebrew node is the link brew repoints (process.execPath is the Cellar path even when the link was run), unless the link leads elsewhere', () => {
+  const cellar = '/opt/homebrew/Cellar/node/24.1.0/bin/node';
+  const links: Record<string, string> = { '/opt/homebrew/bin/node': cellar };
+  const io = { exists: (p: string) => p in links || p === cellar, realpath: (p: string) => links[p] ?? p, major: () => 24 };
+  assert.equal(stableNodePath(cellar, '/Users/alice', io), '/opt/homebrew/bin/node');
+  assert.equal(stableNodePath('/opt/homebrew/bin/node', '/Users/alice', io), '/opt/homebrew/bin/node');
+  assert.equal(stableNodePath('/usr/local/Cellar/node@24/24.1.0/bin/node', '/Users/alice', { ...io, exists: (p) => p === '/usr/local/bin/node', realpath: (p) => (p === '/usr/local/bin/node' ? '/usr/local/Cellar/node@24/24.1.0/bin/node' : p) }), '/usr/local/bin/node', 'Intel prefix, a versioned formula');
+  links['/opt/homebrew/bin/node'] = '/opt/homebrew/Cellar/node/22.0.0/bin/node';
+  assert.equal(stableNodePath(cellar, '/Users/alice', io), cellar, 'the link points at another version: the real path, not a surprise downgrade');
+  assert.equal(stableNodePath(cellar, '/Users/alice', { ...io, exists: () => false }), cellar, 'no link at all');
+  // A keg-only formula (node@24) has no <prefix>/bin/node of its own: its <prefix>/opt/<formula> link, which brew keeps on the current version.
+  const keg = '/opt/homebrew/Cellar/node@24/24.1.0/bin/node';
+  const kegLinks: Record<string, string> = { '/opt/homebrew/opt/node@24/bin/node': keg, '/opt/homebrew/bin/node': '/opt/homebrew/Cellar/node/26.0.0/bin/node' };
+  const kegIo = { exists: (p: string) => p in kegLinks || p === keg, realpath: (p: string) => kegLinks[p] ?? p, major: () => 24 };
+  assert.equal(stableNodePath(keg, '/Users/alice', kegIo), '/opt/homebrew/opt/node@24/bin/node', 'bin/node is another formula: the keg\'s opt link');
+  assert.equal(stableNodePath('/opt/homebrew/opt/node@24/bin/node', '/Users/alice', kegIo), '/opt/homebrew/opt/node@24/bin/node');
+  kegLinks['/opt/homebrew/bin/node'] = keg; // `brew link node@24`: the shell's node is the keg — that link first
+  assert.equal(stableNodePath(keg, '/Users/alice', kegIo), '/opt/homebrew/bin/node');
+  assert.equal(stableNodePath(keg, '/Users/alice', { ...kegIo, exists: (p) => p === keg }), keg, 'no link leads to it: the real path');
 });

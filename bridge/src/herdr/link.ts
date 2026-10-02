@@ -1,7 +1,6 @@
 import { EventEmitter } from 'node:events';
-import { execFile } from 'node:child_process';
-import fs from 'node:fs';
 import { HerdrClient, HerdrError, type HerdrSubscription } from './client.ts';
+import { stty, ttyOfPid } from './tty.ts';
 import type { HerdrEvent, PaneAgentStatusChangedEvent, PaneInfo, PaneLayoutSnapshot, SessionSnapshot } from './types.ts';
 
 /**
@@ -125,15 +124,13 @@ export class HerdrLink extends EventEmitter {
 
   /**
    * Exact PTY size of a pane (rows, cols) read from the pane's shell tty (docs/herdr-findings.md §3):
-   * pane.process_info → shell_pid → /proc/<pid>/fd/0 → `stty size`. Returns null when unavailable.
+   * pane.process_info → shell_pid → the shell's tty → `stty size`. Returns null when unavailable.
    */
   async ptySize(paneId: string): Promise<{ rows: number; cols: number } | null> {
     try {
       const tty = await this.ttyOf(paneId);
       if (!tty) return null;
-      const out = await new Promise<string>((resolve, reject) =>
-        execFile('stty', ['-F', tty, 'size'], { timeout: 2000 }, (err, stdout) => (err ? reject(err) : resolve(stdout))),
-      );
+      const out = await stty(tty, ['size']);
       const [rows, cols] = out.trim().split(/\s+/).map(Number);
       if (!rows || !cols) return null;
       return { rows, cols };
@@ -142,12 +139,11 @@ export class HerdrLink extends EventEmitter {
     }
   }
 
-  /** The pane's tty (`/dev/pts/N`) via pane.process_info → shell_pid → /proc/<pid>/fd/0; null when unavailable. */
+  /** The pane's tty (`/dev/pts/N`, `/dev/ttys00N`) via pane.process_info → shell_pid → the shell's stdin (herdr/tty.ts); null when unavailable. */
   async ttyOf(paneId: string): Promise<string | null> {
     try {
       const { process_info } = await this.request<{ process_info: { shell_pid: number } }>('pane.process_info', { pane_id: paneId });
-      const tty = fs.readlinkSync(`/proc/${process_info.shell_pid}/fd/0`);
-      return tty.startsWith('/dev/') ? tty : null;
+      return await ttyOfPid(process_info.shell_pid);
     } catch {
       return null;
     }
