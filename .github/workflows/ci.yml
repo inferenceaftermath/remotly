@@ -29,10 +29,12 @@ jobs:
           npm ci
           npx tsc --noEmit
           npm test
-      - name: Shell syntax and the scripts' tests (delivery plan, lane guard, markers, release plan and notes)
+      - name: Shell syntax, shellcheck, and the scripts' tests (delivery plan, lane guard, markers, release plan and notes)
         run: |
           sh -n install.sh
-          bash -n bridge/scripts/*.sh ci/*.sh ci/test/*.sh scripts/*.sh
+          shellcheck -s sh install.sh
+          bash -n bridge/scripts/*.sh ci/*.sh ci/e2e/*.sh ci/test/*.sh scripts/*.sh
+          shellcheck bridge/scripts/*.sh ci/e2e/*.sh
           bash ci/test/plan.test.sh
           bash ci/test/lane-guard.test.sh
           bash ci/test/mark-delivered.test.sh
@@ -40,6 +42,37 @@ jobs:
           bash ci/test/release-notes.test.sh
       - name: The store promotion scripts' tests (promote.yml)
         run: node --test store/test/*.test.mjs
+
+  bridge-hosts:
+    name: Bridge on ${{ matrix.os }} (tests, install from the package, the service end to end)
+    # The bridge runs on Linux (systemd user unit) and macOS (launchd agent): both get the unit tests, an install from
+    # the packaged tarball the way a user does, and the service brought up and checked under the host's own manager
+    # (ci/e2e/bridge-service.sh). The Linux image is release.yml's; macos-26 is the delivery lane's (deliver.yml).
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+      - name: Typecheck and tests on this host (stty, ps, perl's flock and launchctl are the real ones here)
+        working-directory: bridge
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm test
+      - name: GNU tar for the package (macOS ships bsdtar)
+        if: runner.os == 'macOS'
+        run: brew install --quiet gnu-tar
+      - name: Package
+        run: bridge/scripts/package.sh
+      - name: Install from the package and run the service end to end
+        run: bash ci/e2e/bridge-service.sh
 
   relay:
     name: Relay (tsc, tests)

@@ -45,9 +45,37 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bridge/scripts/release-plan.sh
 
+  macos:
+    name: Bridge on macOS (tests, install from the package, the launchd agent end to end)
+    # The release's second host: the same tests and the same install-and-serve check as ci.yml's macOS job, at the
+    # planned commit, before anything is tagged. The package is built here too (the tarball is reproducible).
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+      - name: Typecheck and tests
+        working-directory: bridge
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm test
+      - name: Package (GNU tar) and install it like a user would, then the service end to end
+        run: |
+          brew install --quiet gnu-tar
+          bridge/scripts/package.sh
+          bash ci/e2e/bridge-service.sh
+
   release:
     name: Bridge release
-    needs: plan
+    needs: [plan, macos]
     if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -78,8 +106,8 @@ jobs:
         run: |
           sh -n install.sh
           shellcheck -s sh install.sh
-          bash -n bridge/scripts/*.sh
-          shellcheck bridge/scripts/*.sh
+          bash -n bridge/scripts/*.sh ci/e2e/*.sh
+          shellcheck bridge/scripts/*.sh ci/e2e/*.sh
       - name: Package
         run: bridge/scripts/package.sh
       - name: Install from the package like a user would
@@ -93,6 +121,8 @@ jobs:
           REMOTLY_VERSION="$VER" REMOTLY_RELEASE_URL="file://$RUNNER_TEMP/releases" sh install.sh
           test "$("$REMOTLY_BIN_DIR/remotly-bridge" --version)" = "$VER"
           "$REMOTLY_BIN_DIR/remotly-bridge" --help | grep -q '^  setup'
+      - name: The service end to end on Linux (systemd user unit)
+        run: bash ci/e2e/bridge-service.sh
       - name: Tag the commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -122,7 +152,7 @@ jobs:
             echo "::warning::CHANGELOG.md has no notes under '### Bridge $VER'; the release carries the install line only"
             : > "$notes"
           fi
-          printf '\nInstall or upgrade the bridge on a Linux host:\n\n    curl -fsSL https://remotly.dev/install.sh | sh\n\nAssets: `remotly-bridge-%s.tar.gz` (bridge with its production dependencies, any Linux architecture), `SHA256SUMS`, `install.sh`.\n' "$VER" >> "$notes"
+          printf '\nInstall or upgrade the bridge on a Linux or macOS host:\n\n    curl -fsSL https://remotly.dev/install.sh | sh\n\nAssets: `remotly-bridge-%s.tar.gz` (bridge with its production dependencies; any architecture, Linux or macOS), `SHA256SUMS`, `install.sh`.\n' "$VER" >> "$notes"
           # A prerelease is never /releases/latest; a version below one released already (runs finish out of order)
           # must not become it either.
           flag=""; case "$VER" in *-*) flag="--prerelease" ;; *) [ "$LATEST" = true ] || flag="--latest=false" ;; esac

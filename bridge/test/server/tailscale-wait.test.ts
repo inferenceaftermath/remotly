@@ -150,3 +150,12 @@ test('waitForTailscale: the deadline is wall-clock — a wedged tailscale CLI (e
   assert.equal(s.lines.at(-1)!['waited_ms'], 61_000);
   assert.deepEqual(slow.timeouts, [10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 6000]);
 });
+
+test('waitForTailscale on macOS: the same refusal, worded for the Tailscale app and launchd', async () => {
+  const c = clock();
+  const { log } = capture();
+  await assert.rejects(
+    waitForTailscale(defaultConfig(), log, { exec: c.probing(() => stopped), sleep: c.sleep, now: c.now, pollMs: 2000, timeoutMs: 4000, platform: 'darwin' }),
+    (err: unknown) => err instanceof TailscaleNotUp && /open the Tailscale app and log in/.test(err.message) && /Exiting so launchd retries/.test(err.message) && !/systemctl/.test(err.message),
+  );
+});

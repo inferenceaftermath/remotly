@@ -93,7 +93,7 @@ sessions together with the tests that use them; GitHub Releases only (no npm). T
    other host: once the release is published, the installer once, pinned (so `latest` cannot still be the previous
    release), forced over the repository deploy and keeping the mode (`curl -fsSL https://remotly.dev/install.sh |
    REMOTLY_VERSION=0.2.0 REMOTLY_FORCE=1 sh -s -- --keep-mode`; the checkout ends up in `app.prev`, `docs/OPERATIONS.md`
-   says how it goes back), then `remotly-bridge-update.timer`. The lane is gone: a push touching `bridge/` delivers nothing, a `bridge-vX.Y.Z` tag releases. macOS hosts (launchd) deferred.
+   says how it goes back), then `remotly-bridge-update.timer`. The lane is gone: a push touching `bridge/` delivers nothing, a `bridge-vX.Y.Z` tag releases. macOS hosts (launchd): bridge 0.3.0.
 3. **Open-source readiness** per the open-source audit of 2026-09-07 (owner's notes). **Done 2026-09-17 (scrub and public face):**
    Apache-2.0 `LICENSE`/`NOTICE`, identifiers replaced by documentation values in code, tests, protocol and app placeholders,
    owner documents and scripts moved to the private notes repository, fixtures from the owner's sessions deleted (tests use

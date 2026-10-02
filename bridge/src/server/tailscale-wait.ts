@@ -1,11 +1,13 @@
 // Start-up guard for `serve`. A systemd *user* unit cannot order itself after the system `tailscaled.service` (user
-// managers do not see system units), so at boot the bridge can start before Tailscale is up. Every `auto` setting would
-// then resolve as if Tailscale were absent — a listener on every interface, a self-signed certificate, the tailnet gate
-// OFF, and the gate's decision is memoised for the life of the process. Instead: when Tailscale is installed but not up
-// and a setting depends on it, wait (bounded) and then refuse to start, so systemd (`Restart=always`) tries again and the
-// journal says why. A host without the binary is left alone: that is the documented fallback (`setup` warns about it).
+// managers do not see system units; a launchd agent likewise starts before the Tailscale app has connected), so at boot
+// the bridge can start before Tailscale is up. Every `auto` setting would then resolve as if Tailscale were absent — a
+// listener on every interface, a self-signed certificate, the tailnet gate OFF, and the gate's decision is memoised for
+// the life of the process. Instead: when Tailscale is installed but not up and a setting depends on it, wait (bounded)
+// and then refuse to start, so the service manager (`Restart=always` / `KeepAlive`) tries again and the log says why.
+// A host without the binary is left alone: that is the documented fallback (`setup` warns about it).
 import type { FlowConfig } from '../config.ts';
 import type { Logger } from '../log.ts';
+import { tailscaleHints } from '../platform/hints.ts';
 import { execFile, selfIdentified, type ExecFn, type ExecResult, type TailscaleStatus } from '../tailscale.ts';
 
 /** `absent`: no `tailscale` binary. `down`: tailscaled not answering, or the node not `Running` with an identified `Self` (logging in, logged out). */
@@ -67,6 +69,8 @@ export interface TailscaleWaitOptions {
   now?: () => number;
   timeoutMs?: number;
   pollMs?: number;
+  /** `process.platform` of the host: the fix in the error is worded for it. Default `linux`. */
+  platform?: string;
 }
 
 /**
@@ -112,6 +116,6 @@ export async function waitForTailscale(config: FlowConfig, log: Logger, opts: Ta
   log.error('tailscale.not_up', { depends: dependents, waited_ms: waited });
   throw new TailscaleNotUp(
     `Tailscale is installed but not up after ${Math.round(waited / 1000)} s (tailscaled stopped, or the node not logged in), and ${dependents.join(', ')} depend on it. ` +
-      'Fix:  sudo systemctl enable --now tailscaled && sudo tailscale up   — or, for a LAN-only host:  remotly-bridge setup --lan. Exiting so systemd retries.',
+      tailscaleHints(opts.platform ?? 'linux').notUp,
   );
 }

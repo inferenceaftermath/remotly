@@ -75,10 +75,14 @@ jobs:
         run: ci/plan.sh
 
   bridge-test:
-    name: Bridge tests # gates the app lanes (the apps speak the protocol these tests pin), not the relay
+    name: Bridge tests (${{ matrix.os }}) # gates the app lanes (the apps speak the protocol these tests pin), not the relay
     needs: plan
     if: github.repository == 'inferenceaftermath/remotly' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && (needs.plan.outputs.android == 'true' || needs.plan.outputs.ios == 'true')
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26] # the two hosts the bridge runs on
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

@@ -1,7 +1,9 @@
 // Spawning helpers shared by tls.ts (tailscale cert / openssl), devices.ts (tailnet gate) and
 // http.ts (listen address). Everything takes an injectable `exec` so tests never spawn anything.
 import { execFile as cpExecFile } from 'node:child_process';
+import fs from 'node:fs';
 import net from 'node:net';
+import path from 'node:path';
 
 export interface ExecResult {
   /** Exit code; `null` when the binary is missing, the spawn failed, or the timeout killed it. */
@@ -12,11 +14,60 @@ export interface ExecResult {
 
 export type ExecFn = (cmd: string, args: string[], opts?: { timeoutMs?: number }) => Promise<ExecResult>;
 
-/** No shell, never rejects: a missing binary or a timeout is an ordinary failed result. */
+/** Where the Tailscale CLI lives when it is not on PATH: the Mac app ships it inside the bundle; Homebrew links it under its prefix. */
+export const TAILSCALE_CANDIDATES: Record<string, string[]> = {
+  darwin: ['/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale'],
+};
+
+const executable = (p: string): boolean => {
+  try {
+    fs.accessSync(p, fs.constants.X_OK);
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The `tailscale` command to spawn: REMOTLY_TAILSCALE when set, `tailscale` when PATH has one (so a missing binary still
+ * fails as `spawn tailscale ENOENT`, the reading every caller knows), else the first platform candidate that exists —
+ * on macOS the CLI is inside the app bundle and a launchd agent's PATH does not reach it. Back to `tailscale` when
+ * nothing is found.
+ */
+export function resolveTailscaleBinary(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform, exists: (p: string) => boolean = executable): string {
+  return findTailscaleBinary(env, platform, exists) ?? 'tailscale';
+}
+
+/** resolveTailscaleBinary without the fallback: null when nothing is found anywhere. */
+export function findTailscaleBinary(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform, exists: (p: string) => boolean = executable): string | null {
+  const pinned = env['REMOTLY_TAILSCALE']?.trim();
+  if (pinned) return pinned;
+  for (const dir of (env['PATH'] ?? '').split(path.delimiter)) if (dir && exists(path.join(dir, 'tailscale'))) return 'tailscale';
+  for (const p of TAILSCALE_CANDIDATES[platform] ?? []) if (exists(p)) return p;
+  return null;
+}
+
+/**
+ * A `tailscale` command for one process: `find` is asked until it finds one, which is then kept (PATH and the bundle do
+ * not move while the bridge runs). Until then every call looks again — `tailscale` as the plain name, so the failure
+ * reads as ENOENT — which is how a Tailscale installed while `setup` waits for it is found on the next poll.
+ */
+export function tailscaleResolver(find: () => string | null): () => string {
+  let found: string | undefined;
+  return () => {
+    if (found === undefined) found = find() ?? undefined;
+    return found ?? 'tailscale';
+  };
+}
+
+/** The `tailscale` command this process spawns (see tailscaleResolver). */
+export const tailscaleCommand: () => string = tailscaleResolver(() => findTailscaleBinary());
+
+/** No shell, never rejects: a missing binary or a timeout is an ordinary failed result. `tailscale` is spawned as tailscaleCommand() says. */
 export const execFile: ExecFn = (cmd, args, opts = {}) =>
   new Promise((resolve) => {
     cpExecFile(
-      cmd,
+      cmd === 'tailscale' ? tailscaleCommand() : cmd,
       args,
       { timeout: opts.timeoutMs ?? 10_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' },
       (err, stdout, stderr) => {

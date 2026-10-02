@@ -17,8 +17,11 @@ import { FcmClient } from './push/fcm.ts';
 import { Notifier } from './push/notify.ts';
 import { RelayClient } from './push/relay.ts';
 import { startHttpServer } from './server/http.ts';
+import { tailscaleHints } from './platform/hints.ts';
+import { LOCK_FD_ENV, confirmCommand } from './platform/lock.ts';
+import { serviceManagerFor, serviceUnitDir, type ServiceManager } from './platform/service.ts';
 import { presenceFrom, waitForTailscale } from './server/tailscale-wait.ts';
-import { HERDR_INSTALL, TAILSCALE_INSTALL, classifyTailnet, parseSetupArgs, reconcileHerdrEnv, runSetup, stableNodePath, systemdUserDir, unitFile, type SetupDeps } from './setup.ts';
+import { HERDR_INSTALL, classifyTailnet, parseSetupArgs, reconcileHerdrEnv, runSetup, stableNodePath, type SetupDeps } from './setup.ts';
 import crypto from 'node:crypto';
 import { UploadStore } from './server/uploads.ts';
 import { Hub } from './server/hub.ts';
@@ -26,7 +29,7 @@ import { buildQrPayload, PairingManager, pairFallbackHost, pairUrl } from './ser
 import { Session } from './server/session.ts';
 import { certInfo, ensureTls, lanIPv4Addresses, startTlsRenewal, tlsPaths, type TlsMaterial } from './server/tls.ts';
 import { execFile as spawn, tailscaleIp4, type TailscaleStatus } from './tailscale.ts';
-import { LOCK_TAKEN_EXIT, inheritedLockFd, runUpdate, type UpdateDeps } from './update.ts';
+import { inheritedLockFd, runUpdate, type UpdateDeps } from './update.ts';
 
 export const VERSION: string = pkg.version;
 
@@ -37,7 +40,7 @@ usage: remotly-bridge <command>
                               check herdr and Tailscale, get the certificate, install and start the user
                               service and the daily update timer, print one pairing QR for all your phones
                               (what install.sh runs)
-  serve                       run the daemon (systemd)
+  serve                       run the daemon (what the user service runs)
   pair [--manual] [--ttl N]   create a single-use pairing code; prints a QR unless --manual
   devices list                list paired devices
   devices revoke <device_id>  revoke a device
@@ -47,7 +50,16 @@ usage: remotly-bridge <command>
   update                      install the newest release when this is not it (what the daily timer runs); a bridge
                               that does not stay up on it gets the previous copy back when that copy can be verified,
                               otherwise the output says what to do by hand
-env: REMOTLY_CONFIG_DIR (default ~/.config/remotly), REMOTLY_LOG_LEVEL (debug|info|warn|error), REMOTLY_SYSTEMD_UNIT (the unit setup installs and doctor checks; default remotly-bridge)`;
+env: REMOTLY_CONFIG_DIR (default ~/.config/remotly), REMOTLY_LOG_LEVEL (debug|info|warn|error), REMOTLY_SYSTEMD_UNIT (the unit setup installs and doctor checks;
+     default remotly-bridge — a systemd user unit on Linux, the launchd agent dev.remotly.<name> on macOS), REMOTLY_TAILSCALE (the tailscale CLI, when not on PATH)`;
+
+/** The service manager of this host — systemd on Linux, launchd on macOS — for the unit setup installs and the others check. */
+function serviceManager(): ServiceManager {
+  const home = os.homedir();
+  return serviceManagerFor(process.platform, { exec: spawn, unitDir: serviceUnitDir(process.platform, process.env, home), user: os.userInfo().username, uid: process.getuid?.() ?? -1, home });
+}
+/** The unit name every command shares: REMOTLY_SYSTEMD_UNIT, default `remotly-bridge`. */
+const unitOf = (): string => process.env['REMOTLY_SYSTEMD_UNIT'] ?? 'remotly-bridge';
 
 function arg(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(name);
@@ -61,7 +73,7 @@ async function serve(log: Logger): Promise<void> {
   // Boot order: Tailscale installed but not up yet must not turn into the every-interface / self-signed / gate-off fallback.
   // Seen up here, the listener and the gate hold on to it (a Tailscale that stops in between cannot open the host up;
   // the certificate may still fall back to self-signed, which only costs iPhones their connection).
-  const tailscaleUp = (await waitForTailscale(config, log)) === 'up';
+  const tailscaleUp = (await waitForTailscale(config, log, { platform: process.platform })) === 'up';
   const hostName = os.hostname();
   let tls: TlsMaterial = await ensureTls(config, log);
   const devices = new DeviceStore(statePath('devices.json'), { log }).load();
@@ -198,7 +210,7 @@ async function control<T>(req: Parameters<typeof controlRequest>[0], opts: { tim
     const e = err as NodeJS.ErrnoException;
     if (e instanceof ControlError) throw new Error(`${e.code}: ${e.message}`);
     if (e.code === 'ENOENT' || e.code === 'ECONNREFUSED') {
-      throw new Error(`daemon not reachable at ${controlSocketPath()} — is remotly-bridge running? (systemctl --user status ${unitFile(process.env['REMOTLY_SYSTEMD_UNIT'] ?? 'remotly-bridge')})`);
+      throw new Error(`daemon not reachable at ${controlSocketPath()} — is remotly-bridge running? (${serviceManager().hints.status(unitOf())})`);
     }
     throw err;
   }
@@ -250,6 +262,7 @@ async function setup(argv: string[]): Promise<void> {
   }
   reconcileHerdrEnv(opts, process.env, configuredHerdr);
   const home = os.homedir();
+  const service = serviceManager();
   const deps: SetupDeps = {
     version: VERSION,
     exec: spawn,
@@ -261,7 +274,10 @@ async function setup(argv: string[]): Promise<void> {
     nodePath: stableNodePath(process.execPath, home),
     mainPath: fileURLToPath(import.meta.url),
     env: process.env,
-    unitDir: systemdUserDir(process.env, home),
+    unitDir: service.unitDir,
+    platform: process.platform,
+    service,
+    home,
     configPath: configPath(),
     tlsDir: tlsDir(),
     herdrSocket: resolveSocketPath(),
@@ -324,8 +340,8 @@ async function doctor(): Promise<void> {
     console.log(`      fix: ${fix}`);
     if (hard) failures++;
   };
-  const unit = unitFile(process.env['REMOTLY_SYSTEMD_UNIT'] ?? 'remotly-bridge');
-  const user = os.userInfo().username;
+  const sm = serviceManager();
+  const unit = sm.unitName(unitOf());
   /** Paths in the printed fixes are meant to be pasted: quote anything a shell would split or expand. */
   const sh = (p: string): string => (/^[A-Za-z0-9_./~+:@=,-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`);
   console.log(`remotly-bridge doctor (config dir ${configDir()})`);
@@ -373,13 +389,13 @@ async function doctor(): Promise<void> {
   const strictTls = config.tls.mode === 'tailscale'; // serve refuses the self-signed fallback: the next restart needs Tailscale
   const lanMode = gateOff && !needCert && config.listen.host !== 'auto'; // the triple `setup --lan` writes
   const autoListenerNoGate = gateOff && !needCert && config.listen.host === 'auto'; // the same pair by hand, listener left to Tailscale
-  const tailnet = classifyTailnet(ts, tsPresent, { cert: needCert });
+  const tailnet = classifyTailnet(ts, tsPresent, { cert: needCert, platform: process.platform });
   // Same rules as setup and serve: the gate is hard when required, or `auto` with Tailscale installed (up → the gate is
   // on; stopped → serve waits for it and then refuses to start rather than running with the gate off); a certificate
   // mode that tries Tailscale first needs it too (setup waits for it — iPhones refuse the fallback).
   const gateHard = config.security.require_tailnet === true || (config.security.require_tailnet === 'auto' && tsPresent);
   const tsHard = gateHard || needCert;
-  const install = `${TAILSCALE_INSTALL}   then: sudo tailscale up`;
+  const install = tailscaleHints(process.platform).installThenUp;
   if (lanMode) ok('tailscale not used: LAN mode (tls.mode "selfsigned", require_tailnet false) — neither the binary nor tailscaled matters here');
   else if (autoListenerNoGate)
     ok(
@@ -409,7 +425,7 @@ async function doctor(): Promise<void> {
   const [cert, key, kind] = liveMode === 'tailscale' ? [paths.tsCert, paths.tsKey, 'tailscale'] : [paths.selfCert, paths.selfKey, 'self-signed'];
   if (!fs.existsSync(cert)) bad(`no ${kind} certificate yet (created on the first start)`, 'remotly-bridge setup', false);
   else {
-    const refresh = `systemctl --user restart ${unit}   (it requests or generates a fresh pair)`;
+    const refresh = `${sm.hints.restart(unitOf())}   (it requests or generates a fresh pair)`;
     try {
       const certPem = fs.readFileSync(cert);
       const info = certInfo(certPem);
@@ -419,7 +435,7 @@ async function doctor(): Promise<void> {
       else if (days > 0) ok(`${kind} certificate valid ${days} more days (${info.hostnames.join(', ')})${daemon ? '' : ' — daemon down, judged from the files'}`);
       else bad(`${kind} certificate ${cert} expired`, refresh);
       if (kind === 'self-signed' && tailnet.ok && needCert) {
-        bad('a self-signed certificate is in use although Tailscale is ready — iPhones refuse it', `remotly-bridge setup   (requests the Tailscale certificate; on "access denied": sudo tailscale set --operator=${user})`, false);
+        bad('a self-signed certificate is in use although Tailscale is ready — iPhones refuse it', `remotly-bridge setup   (requests the Tailscale certificate; on "access denied": ${tailscaleHints(process.platform).certDenied(os.userInfo().username)})`, false);
       }
     } catch (err) {
       bad(`certificate or key unreadable: ${(err as Error).message}`, `rm ${sh(cert)} ${sh(key)}; ${refresh}`);
@@ -471,21 +487,21 @@ async function doctor(): Promise<void> {
 
   // The daemon must be running somehow: as the unit, or by hand (`serve` in a terminal). Both down is a hard failure,
   // as is an active unit whose daemon does not answer on this config dir (it serves another one).
-  const active = (await spawn('systemctl', ['--user', 'is-active', unit])).stdout.trim() === 'active';
-  const mainPid = Number((await spawn('systemctl', ['--user', 'show', '-p', 'MainPID', '--value', unit])).stdout.trim()) || 0;
-  if (active) ok(`systemd unit ${unit} active${mainPid ? ` (pid ${mainPid})` : ''}`);
-  else if (daemon) bad(`systemd unit ${unit} is not active — the daemon answering here${daemon.pid !== undefined ? ` (pid ${daemon.pid})` : ''} was started by hand and does not come back after a reboot`, `stop that serve${daemon.pid !== undefined ? ` (kill ${daemon.pid})` : ''}, then: remotly-bridge setup   (setup does not install over it, and systemctl --user start ${unit} could not bind the socket it holds)`, false);
-  else bad(`systemd unit ${unit} is not active`, `remotly-bridge setup   (installs and starts it), or: systemctl --user start ${unit}`);
+  const active = (await sm.activeState(unitOf())).state === 'active';
+  const mainPid = (await sm.mainPid(unitOf())) ?? 0;
+  if (active) ok(`${sm.noun} ${unit} active${mainPid ? ` (pid ${mainPid})` : ''}`);
+  else if (daemon) bad(`${sm.noun} ${unit} is not active — the daemon answering here${daemon.pid !== undefined ? ` (pid ${daemon.pid})` : ''} was started by hand and does not come back after a reboot`, `stop that serve${daemon.pid !== undefined ? ` (kill ${daemon.pid})` : ''}, then: remotly-bridge setup   (setup does not install over it, and ${sm.hints.start(unitOf())} could not bind the socket it holds)`, false);
+  else bad(`${sm.noun} ${unit} is not active`, `remotly-bridge setup   (installs and starts it), or: ${sm.hints.start(unitOf())}`);
   // The daemon answering here must be the unit's process (a pid-less answer is a daemon from before this version).
   if (daemon && active && daemon.pid !== undefined && mainPid > 0 && daemon.pid !== mainPid) {
     bad(`the daemon on this config dir (pid ${daemon.pid}) is not unit ${unit} (pid ${mainPid}) — the unit serves another config dir, so this one is not restored after a reboot`, `remotly-bridge setup --unit <name>   for this config dir (after stopping the manual daemon), or run doctor with the unit's REMOTLY_CONFIG_DIR`);
   }
-  const linger = await spawn('loginctl', ['show-user', user, '-p', 'Linger', '--value']);
-  if (linger.stdout.trim() === 'yes') ok('linger on: the unit starts at boot and survives logout');
-  else bad('linger off: the bridge stops when you log out', `sudo loginctl enable-linger ${user}`, false);
+  const persistence = await sm.persistenceCheck(unitOf());
+  if (persistence.ok) ok(persistence.message);
+  else bad(persistence.message, persistence.fix ?? 'remotly-bridge setup', false);
   if (daemon) ok(`daemon reachable: herdr ${daemon.herdr}, listening ${daemon.listen?.host}:${daemon.listen?.port}, tls ${daemon.tls.mode}, ${daemon.devices} device(s), ${daemon.clients} client(s)`);
-  else if (active) bad(`unit ${unit} is active but no daemon answers at ${controlSocketPath()} — it runs with another REMOTLY_CONFIG_DIR`, `systemctl --user cat ${unit}   and run doctor with the same REMOTLY_CONFIG_DIR`);
-  else bad(`daemon not reachable at ${controlSocketPath()}`, `systemctl --user start ${unit}; if it stops again: journalctl --user -u ${unit} -n 30`);
+  else if (active) bad(`unit ${unit} is active but no daemon answers at ${controlSocketPath()} — it runs with another REMOTLY_CONFIG_DIR`, `${sm.hints.cat(unitOf())}   and run doctor with the same REMOTLY_CONFIG_DIR`);
+  else bad(`daemon not reachable at ${controlSocketPath()}`, `${sm.hints.start(unitOf())}; if it stops again: ${sm.hints.logs(unitOf(), 30)}`);
 
   console.log(failures === 0 ? 'doctor: no hard failures' : `doctor: ${failures} hard failure(s)`);
   if (failures > 0) process.exitCode = 1;
@@ -502,23 +518,26 @@ async function update(): Promise<void> {
     nodePath: process.env['REMOTLY_NODE'] ?? stableNodePath(process.execPath, os.homedir()),
     env: process.env,
     pathDirs: (process.env['PATH'] ?? '').split(path.delimiter),
-    unit: process.env['REMOTLY_SYSTEMD_UNIT'] ?? 'remotly-bridge',
+    unit: unitOf(),
+    platform: process.platform,
+    service: serviceManager(),
     out: (line) => console.log(line),
     exec: spawn,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     now: Date.now,
-    heldLockFd: inheritedLockFd,
+    heldLockFd: (lock) => inheritedLockFd(lock, process.env),
     relock: (cmd, args, env) =>
       new Promise((resolve) => {
         const child = spawnProcess(cmd, args, { stdio: 'inherit', env });
         child.on('error', (err) => resolve({ code: null, signal: null, error: err.message }));
         child.on('exit', (code, signal) => resolve({ code, signal }));
       }),
-    // flock on the inherited descriptor, handed to it as fd 3: a lock is per open file, so what the child confirms (or
-    // takes) on its fd 3 is held by this process's descriptor once the child is gone.
+    // flock on the inherited descriptor (perl's on macOS), handed to it as fd 3: a lock is per open file, so what the
+    // child confirms (or takes) on its fd 3 is held by this process's descriptor once the child is gone.
     confirmLock: (lockFd) =>
       new Promise((resolve) => {
-        const child = spawnProcess('flock', ['-n', '-E', String(LOCK_TAKEN_EXIT), '3'], { stdio: ['ignore', 'inherit', 'inherit', lockFd] });
+        const confirm = confirmCommand(process.platform, 3);
+        const child = spawnProcess(confirm.cmd, confirm.args, { stdio: ['ignore', 'inherit', 'inherit', lockFd] });
         child.on('error', (err) => resolve({ code: null, signal: null, error: err.message }));
         child.on('exit', (code, signal) => resolve({ code, signal }));
       }),
@@ -540,8 +559,9 @@ async function update(): Promise<void> {
     runInstaller: (script, args, env, lockFd) =>
       new Promise((resolve) => {
         // The lock descriptor goes along as fd 3 (`stdio` shares only 0–2 by itself): install.sh finds it under
-        // /proc/self/fd and takes no lock of its own, and the lock outlives this process as long as the installer runs.
-        const child = spawnProcess('sh', [script, ...args], { stdio: [0, 1, 2, lockFd], env });
+        // /proc/self/fd (by REMOTLY_UPDATE_LOCK_FD where there is no /proc) and takes no lock of its own, and the lock
+        // outlives this process as long as the installer runs.
+        const child = spawnProcess('sh', [script, ...args], { stdio: [0, 1, 2, lockFd], env: { ...env, [LOCK_FD_ENV]: '3' } });
         child.on('error', (err) => resolve({ code: null, signal: null, error: err.message }));
         child.on('exit', (code, signal) => resolve({ code, signal }));
       }),

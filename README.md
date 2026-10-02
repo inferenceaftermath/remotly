@@ -1,7 +1,7 @@
 # Remotly
 
 **Your terminal coding agents, on your phone.** Remotly is a native iPhone and Android app for the
-[herdr](https://herdr.dev) sessions already running on your Linux machine: the live terminal of every pane, one-tap
+[herdr](https://herdr.dev) sessions already running on your Linux or macOS machine: the live terminal of every pane, one-tap
 approval of Claude Code, Codex and pi permission dialogs, and a notification when an agent is waiting for you or has
 finished. The live terminal, pairing and input travel from the phone to your own machine over your
 [Tailscale](https://tailscale.com) network; there is no Remotly account. Push notifications are delivered through a
@@ -34,8 +34,9 @@ animations with synthetic sample sessions, not recordings of a phone.*
 
 ## What you need
 
-- **A Linux host** running [herdr](https://herdr.dev) 0.8.x (protocol 19) and [Tailscale](https://tailscale.com), with
-  MagicDNS and HTTPS certificates enabled for your tailnet. The bridge runs as a systemd user service; Linux hosts only.
+- **A Linux or macOS host** running [herdr](https://herdr.dev) 0.8.x (protocol 19) and [Tailscale](https://tailscale.com),
+  with MagicDNS and HTTPS certificates enabled for your tailnet. The bridge runs as a user service: a systemd user unit
+  on Linux, a launchd agent on macOS.
 - **A phone on the same tailnet:** iPhone or iPad (iOS 17 or newer) or an Android phone (Android 8.0 or newer), with the
   Tailscale app installed.
 - **Agents:** the terminal, key row and composer work with any program in a herdr pane. Permission dialogs are
@@ -82,8 +83,8 @@ Pairing a phone gives it shell access on the host as your user; the tailnet and 
 ## How it works
 
 - **The bridge** (`bridge/`; Node 24 runs the TypeScript directly, no build step) runs on the host beside herdr as a
-  systemd user service. It reads herdr over its Unix socket, serves paired phones over TLS WebSockets on the Tailscale
-  interface, and sends push notifications.
+  user service (systemd on Linux, launchd on macOS). It reads herdr over its Unix socket, serves paired phones over TLS
+  WebSockets on the Tailscale interface, and sends push notifications.
 - **The apps** (`ios/`: SwiftUI and the `FlowKit` package; `android/`: Kotlin and Compose) pair with the bridge by
   scanning a QR, then show tabs and panes, a terminal grid, key row, composer and approval bar, plus a Live Activity /
   ongoing notification while an agent works.

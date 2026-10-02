@@ -10,8 +10,8 @@ trap 'echo "install.sh: the script arrived incomplete (download cut short); noth
 #
 # Installs or upgrades the bridge under ~/.local/share/remotly/app, a private Node 24 runtime beside it when the
 # system has none, a `remotly-bridge` launcher in ~/.local/bin, then runs `remotly-bridge setup` (herdr and Tailscale
-# checks, certificate, systemd user service, pairing QR). Re-running upgrades in place; config and paired devices stay.
-# Arguments go to setup: `sh -s -- --lan`, `sh -s -- --no-pair`.
+# checks, certificate, the user service — a systemd user unit on Linux, a launchd agent on macOS — pairing QR).
+# Re-running upgrades in place; config and paired devices stay. Arguments go to setup: `sh -s -- --lan`, `sh -s -- --no-pair`.
 #
 # Environment: REMOTLY_VERSION=0.1.0 (default: latest release)   REMOTLY_HOME (default ~/.local/share/remotly)
 #              REMOTLY_BIN_DIR (default ~/.local/bin)             REMOTLY_NODE=/path/to/node (use this runtime)
@@ -33,14 +33,18 @@ main() {
     echo "  remotly-bridge installer — remotly.dev"
     echo ""
 
-    [ "$(id -u)" -ne 0 ] || err "run this as the user who runs herdr, not as root (the service is a per-user systemd unit)"
+    [ "$(id -u)" -ne 0 ] || err "run this as the user who runs herdr, not as root (the service is per user: a systemd user unit, a launchd agent on macOS)"
+    # OS, as nodejs.org names its tarballs (node-v24.x.y-<OS>-<arch>.tar.gz).
     case "$(uname -s)" in
-        Linux) ;;
-        Darwin) err "macOS hosts are not supported yet (no launchd service). Linux only for now." ;;
-        *) err "unsupported OS: $(uname -s)" ;;
+        Linux) OS=linux ;;
+        Darwin) OS=darwin ;;
+        *) err "unsupported OS: $(uname -s) (Linux and macOS hosts)" ;;
     esac
     need curl; need tar; need awk; need sed
-    command -v systemctl >/dev/null 2>&1 || err "systemctl not found — the bridge runs as a systemd user service"
+    case "$OS" in
+        linux) command -v systemctl >/dev/null 2>&1 || err "systemctl not found — on Linux the bridge runs as a systemd user service" ;;
+        darwin) command -v launchctl >/dev/null 2>&1 || err "launchctl not found — on macOS the bridge runs as a launchd user agent" ;;
+    esac
     pick_sha_tool
     check_paths
 
@@ -80,12 +84,15 @@ cleanup() {
 }
 
 # One install or update of this home at a time: `remotly-bridge update` (the daily timer) and a hand-run installer must
-# not move app/ under each other. The lock is flock(1)'s on update.lock, held by this shell (and by the `setup` it execs
-# into) until it exits, however it exits. Started by `update`, this shell inherits update's own lock descriptor (the
-# links under /proc/self/fd name the files): a lock is per open file, so `flock -n` on that descriptor confirms the lock
-# it holds (an open descriptor alone proves nothing) and a second one would only conflict with it.
+# not move app/ under each other. The lock is a kernel lock (flock) on update.lock, held by this shell (and by the
+# `setup` it execs into) until it exits, however it exits. Started by `update`, this shell inherits update's own lock
+# descriptor: a lock is per open file, so flock on that descriptor confirms the lock it holds (an open descriptor alone
+# proves nothing) and a second one would only conflict with it. Linux: flock(1), and the links under /proc/self/fd name
+# the files. macOS has neither: perl's flock (the same flock(2)) stands in, and `update` names the descriptor in
+# REMOTLY_UPDATE_LOCK_FD, believed only when it is open on the lock file (same device and inode).
 take_lock() {
     lock="$REMOTLY_HOME/update.lock"
+    if [ "$OS" = darwin ]; then take_lock_perl; return; fi
     command -v flock >/dev/null 2>&1 || { warn "flock not found (util-linux): installing without a lock against a concurrent remotly-bridge update"; return; }
     want="$(readlink -f "$lock" 2>/dev/null || echo "$lock")"
     for fd in /proc/self/fd/*; do
@@ -97,6 +104,29 @@ take_lock() {
     mkdir -p "$REMOTLY_HOME"
     exec 9>"$lock"
     flock -n 9 || err "another install or update of $REMOTLY_HOME is running (remotly-bridge update, or its daily timer); try again in a minute"
+}
+
+# perl's flock on an inherited descriptor: exit 0 locked (or confirmed), 99 another process holds it, 2 not the lock file.
+perl_flock() {   # $1 descriptor, $2 lock path
+    perl -e 'use Fcntl qw(:flock); my ($fd, $lock) = @ARGV; open(my $fh, ">>&=", $fd) or exit 2; my @want = stat($lock) or exit 2; my @have = stat($fh) or exit 2; exit 2 unless $want[0] == $have[0] && $want[1] == $have[1]; flock($fh, LOCK_EX | LOCK_NB) or exit 99; exit 0' "$1" "$2"
+}
+
+take_lock_perl() {
+    command -v perl >/dev/null 2>&1 || { warn "perl not found: installing without a lock against a concurrent remotly-bridge update"; return; }
+    case "${REMOTLY_UPDATE_LOCK_FD:-}" in
+        ''|*[!0-9]*) ;;
+        *)
+            mkdir -p "$REMOTLY_HOME"
+            rc=0; perl_flock "$REMOTLY_UPDATE_LOCK_FD" "$lock" || rc=$?
+            case "$rc" in
+                0) log "running under remotly-bridge update's lock"; return ;;
+                99) err "a descriptor on $lock was inherited, but another install or update of $REMOTLY_HOME holds the lock; try again in a minute" ;;
+            esac
+            ;;
+    esac
+    mkdir -p "$REMOTLY_HOME"
+    exec 9>>"$lock"
+    perl_flock 9 "$lock" || err "another install or update of $REMOTLY_HOME is running (remotly-bridge update, or its daily timer); try again in a minute"
 }
 
 # After an interrupted or killed run, app/ or node/ may be missing while the previous copy sits beside it: put it back.
@@ -125,10 +155,10 @@ node_ok() {
     [ -x "$1" ] && "$1" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 24 ? 0 : 1)' >/dev/null 2>&1
 }
 
-# NODE: a runtime whose path stays valid for the systemd unit. Version-manager shims (fnm, nvm, volta, mise) are
-# per-shell, so only a distribution package under /usr, /opt, /bin or /snap counts — any such directory on PATH, then
-# the usual fixed locations. Without one, a private Node 24 lives under $REMOTLY_HOME/node and is refreshed from
-# nodejs.org on later runs; a distribution package installed later takes over from it.
+# NODE: a runtime whose path stays valid for the service. Version-manager shims (fnm, nvm, volta, mise) are per-shell,
+# so only a distribution package under /usr, /opt, /bin or /snap counts (Homebrew's /usr/local/bin and /opt/homebrew/bin
+# among them) — any such directory on PATH, then the usual fixed locations. Without one, a private Node 24 lives under
+# $REMOTLY_HOME/node and is refreshed from nodejs.org on later runs; a distribution package installed later takes over.
 find_node() {
     if [ -n "${REMOTLY_NODE:-}" ]; then
         node_ok "$REMOTLY_NODE" || err "REMOTLY_NODE=$REMOTLY_NODE is not Node 24 or newer"
@@ -146,14 +176,14 @@ find_node() {
     fi
     arch="$(node_arch)" || err "no Node 24 or newer on this system and nodejs.org has no build for $(uname -m): install Node 24 from your distribution, or set REMOTLY_NODE=/path/to/node"
     log "no Node 24 or newer on this system; fetching the release list from nodejs.org..."
-    node_latest_line "$arch" || err "cannot reach $NODE_DIST (or it lists no Node 24 tarball for linux-$arch)"
+    node_latest_line "$arch" || err "cannot reach $NODE_DIST (or it lists no Node 24 tarball for $OS-$arch)"
     download_node
     NODE="$private"
 }
 
 find_system_node() {
     old_ifs="$IFS"; IFS=:
-    for d in $PATH /usr/local/bin /usr/bin /snap/bin /opt/node/bin; do
+    for d in $PATH /usr/local/bin /opt/homebrew/bin /usr/bin /snap/bin /opt/node/bin; do
         case "$d" in
             /usr/*|/bin|/bin/*|/opt/*|/snap/*) if node_ok "$d/node"; then IFS="$old_ifs"; printf '%s' "$d/node"; return 0; fi ;;
         esac
@@ -162,7 +192,7 @@ find_system_node() {
     return 1
 }
 
-# The architectures nodejs.org builds for; any other Linux runs the bridge on its own Node 24 (REMOTLY_NODE or a package).
+# The architectures nodejs.org builds for; any other machine runs the bridge on its own Node 24 (REMOTLY_NODE or a package).
 node_arch() {
     case "$(uname -m)" in
         x86_64|amd64) echo x64 ;;
@@ -171,10 +201,10 @@ node_arch() {
     esac
 }
 
-# LINE="<sha256>  node-v24.x.y-linux-<arch>.tar.gz" for the newest 24.x on nodejs.org; fails when unreachable.
+# LINE="<sha256>  node-v24.x.y-<OS>-<arch>.tar.gz" for the newest 24.x on nodejs.org; fails when unreachable.
 node_latest_line() {
     sums="$($CURL "$NODE_DIST/SHASUMS256.txt")" || return 1
-    LINE="$(printf '%s\n' "$sums" | awk -v want="-linux-$1.tar.gz" 'index($2, "node-v24.") == 1 && substr($2, length($2) - length(want) + 1) == want { print; exit }')"
+    LINE="$(printf '%s\n' "$sums" | awk -v want="-$OS-$1.tar.gz" 'index($2, "node-v24.") == 1 && substr($2, length($2) - length(want) + 1) == want { print; exit }')"
     [ -n "$LINE" ]
 }
 
@@ -184,7 +214,7 @@ refresh_private_node() {
     arch="$(node_arch)" || return 0
     have="$("$private" --version)"
     if ! node_latest_line "$arch"; then warn "cannot reach $NODE_DIST to check for a newer Node 24; keeping $have"; return 0; fi
-    latest="${LINE##* }"; latest="${latest#node-}"; latest="${latest%-linux-*}"
+    latest="${LINE##* }"; latest="${latest#node-}"; latest="${latest%-"$OS"-*}"
     [ "$latest" = "$have" ] && return 0
     log "node $have is behind $latest; updating the private runtime"
     download_node
