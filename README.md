@@ -52,7 +52,7 @@ and the one-line approval summary; `push.include_excerpt: false` keeps that text
 
 ## Get started
 
-1. On the host:
+1. On the host — **Linux | macOS**, as the user who runs herdr:
    ```sh
    curl -fsSL https://remotly.dev/install.sh | sh
    ```
