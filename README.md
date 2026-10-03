@@ -1,10 +1,10 @@
 # Remotly
 
-**Your terminal coding agents, on your phone.** Remotly is a native iPhone and Android app for the
-[herdr](https://herdr.dev) sessions already running on your Linux or macOS machine: the live terminal of every pane, one-tap
-approval of Claude Code, Codex and pi permission dialogs, and a notification when an agent is waiting for you or has
-finished. The live terminal, pairing and input travel from the phone to your own machine over your
-[Tailscale](https://tailscale.com) network; there is no Remotly account. Push notifications are delivered through a
+**Touch the grass, remote in hand.** Remote control of all your coding agents, from your iPhone or Android. Remotly is a
+native app for the [herdr](https://herdr.dev) sessions already running on your Linux or macOS machine: the live terminal
+of every pane, one-tap approval of Claude Code, Codex and pi permission dialogs, and a notification when an agent is
+waiting for you or has finished. The live terminal, pairing and input travel from the phone to your own machine over
+your [Tailscale](https://tailscale.com) network; there is no Remotly account. Push notifications are delivered through a
 hosted relay, and by default they carry the text shown in the notification (below). Product site:
 [remotly.dev](https://remotly.dev).
 
