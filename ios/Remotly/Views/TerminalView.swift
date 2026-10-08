@@ -19,6 +19,8 @@ import UIKit
 @MainActor
 struct TerminalView: UIViewRepresentable {
     var grid: TerminalGrid
+    /// The theme to draw in; passed from the parent's body, so a theme change reaches `updateUIView`.
+    var theme: ThemeChoice
     @Binding var fontSize: Double
     var isHistory: Bool
     /// Fit mode: the desktop pane follows this device, so a font size of 0 means the default size (not "fit cols to width").
@@ -47,6 +49,7 @@ struct TerminalView: UIViewRepresentable {
     func makeUIView(context: Context) -> TerminalScrollView { TerminalScrollView() }
 
     func updateUIView(_ view: TerminalScrollView, context: Context) {
+        view.theme = TerminalTheme.of(theme)
         view.onEffectiveFontSize = onEffectiveFontSize
         view.onDeviceGrid = onDeviceGrid
         view.onPullTop = onPullTop
@@ -68,6 +71,13 @@ final class TerminalScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
     enum ScrollTarget { case none, top, bottom }
 
     let content = TerminalGridUIView()
+    var theme: TerminalTheme {
+        get { content.theme }
+        set {
+            content.theme = newValue
+            backgroundColor = newValue.background
+        }
+    }
     var onEffectiveFontSize: ((Double) -> Void)?
     private var reportedFontSize: CGFloat = 0
     var onPullTop: (() -> Void)?
@@ -148,7 +158,7 @@ final class TerminalScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
 
     private func configure() {
         addSubview(content)
-        backgroundColor = TerminalTheme.background
+        backgroundColor = content.theme.background
         alwaysBounceVertical = true // the live screen fits the view; the bounce is the pull-to-scrollback affordance
         alwaysBounceHorizontal = false
         showsHorizontalScrollIndicator = true

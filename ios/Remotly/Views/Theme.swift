@@ -49,6 +49,14 @@ func cwdBasename(_ cwd: String?) -> String? {
     return last.isEmpty ? trimmed : last
 }
 
+extension View {
+    /// The theme's system appearance (light or dark controls, keyboard, menus, status bar) and the `interactive` tint.
+    /// On the root view and on every sheet, so a sheet that is open follows a theme change at once.
+    func themed() -> some View {
+        preferredColorScheme(Theme.colorScheme).tint(Theme.interactive)
+    }
+}
+
 // MARK: - Status pill (§4.1)
 
 struct StatusPill: View {

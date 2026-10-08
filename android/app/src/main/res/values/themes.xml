@@ -8,4 +8,15 @@
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
+
+    <!-- Applied over Theme.Remotly at run time while the Light theme is chosen (MainActivity), so platform UI the window
+         creates later — the floating Copy / Paste toolbar — is light. The window itself was already laid out dark, which
+         keeps the launch dark (DESIGN.md §1). -->
+    <style name="Theme.Remotly.Light" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:colorBackground">@color/bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
 </resources>

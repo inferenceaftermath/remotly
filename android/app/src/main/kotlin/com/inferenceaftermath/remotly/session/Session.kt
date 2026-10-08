@@ -117,6 +117,8 @@ class Session(private val app: Application, val store: HostStore) {
     val notifyOnPrompt: StateFlow<Boolean> = store.notifyOnPrompt.stateIn(scope, SharingStarted.Eagerly, true)
     val requireUnlock: StateFlow<Boolean> = store.requireUnlock.stateIn(scope, SharingStarted.Eagerly, true)
     val liveStatus: StateFlow<Boolean> = store.liveStatus.stateIn(scope, SharingStarted.Eagerly, true)
+    /** Settings › Appearance › Theme as its stored key (`ThemeChoice.of` reads it); null until one is chosen. */
+    val theme: StateFlow<String?> = store.theme.stateIn(scope, SharingStarted.Eagerly, null)
 
     /**
      * Panes this phone asked to be told about when their agent finishes. The bridge is the source of truth:
@@ -257,6 +259,10 @@ class Session(private val app: Application, val store: HostStore) {
 
     fun setZoomOnDesktop(on: Boolean) {
         scope.launch { store.setZoomOnDesktop(on) }
+    }
+
+    fun setTheme(key: String) {
+        scope.launch { store.setTheme(key) }
     }
 
     fun setNotifyOnPrompt(on: Boolean) {

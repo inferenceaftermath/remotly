@@ -7,32 +7,75 @@
 import FlowKit
 import UIKit
 
+/// The terminal's colours under one theme (shared/design/DESIGN.md §1): flush on the screen's `bg`, text in `fg`,
+/// selection in `selection`, ANSI 0–15 from the theme, and the theme's contrast floor for text.
 @MainActor
-enum TerminalTheme {
-    // shared/design/DESIGN.md §1: the terminal is flush on the screen's `bg`, text in `fg`, selection in `selection`.
-    static let background = UIColor(rgb: 0x0B0C0E)
-    static let foreground = UIColor(rgb: 0xE0E2E5)
-    static let selection = UIColor(rgb: 0x7AA2F7).withAlphaComponent(0.35)
+final class TerminalTheme {
+    let background: UIColor
+    let selection: UIColor
+    private let defaultForeground: RGB
+    private let defaultBackground: RGB
+    private let ansi: [RGB]
+    private let minimumContrast: Double
+    /// Text colour after the contrast floor, per (foreground, background) pair.
+    private var readable: [UInt64: RGB] = [:]
+
+    private init(_ palette: Palette) {
+        background = UIColor(rgb: palette.bg)
+        selection = UIColor(rgb: palette.interactive).withAlphaComponent(0.35)
+        defaultForeground = RGB(hex: palette.fg)
+        defaultBackground = RGB(hex: palette.bg)
+        ansi = palette.ansi.map { RGB(hex: $0) }
+        minimumContrast = palette.minimumContrast
+    }
+
+    private static var themes: [ThemeChoice: TerminalTheme] = [:]
+
+    /// One instance per theme, so a view can tell a change by identity.
+    static func of(_ choice: ThemeChoice) -> TerminalTheme {
+        if let theme = themes[choice] { return theme }
+        let theme = TerminalTheme(choice.palette)
+        themes[choice] = theme
+        return theme
+    }
 
     static func uiColor(_ rgb: RGB) -> UIColor {
         UIColor(red: CGFloat(rgb.r) / 255, green: CGFloat(rgb.g) / 255, blue: CGFloat(rgb.b) / 255, alpha: 1)
     }
 
-    /// Foreground/background after applying inverse and dim. `background == nil` means "theme default".
-    static func colors(for style: Style) -> (foreground: UIColor, background: UIColor?) {
-        // Closure literals, not `.map(uiColor)`: passing the main-actor static method as a bare function
-        // value would drop its global actor in the conversion.
-        var fg = style.foreground.rgb.map { uiColor($0) } ?? foreground
-        var bg = style.background.rgb.map { uiColor($0) }
+    /// Foreground/background after applying inverse, the contrast floor and dim. `background == nil` means "theme
+    /// default".
+    func colors(for style: Style) -> (foreground: UIColor, background: UIColor?) {
+        var fg = style.foreground.rgb(ansi: ansi) ?? defaultForeground
+        var bg = style.background.rgb(ansi: ansi)
         let attributes = style.attributes
         if attributes.contains(.inverse) {
             let newBackground = fg
-            fg = bg ?? background
+            fg = bg ?? defaultBackground
             bg = newBackground
         }
-        if attributes.contains(.dim) { fg = fg.withAlphaComponent(0.55) }
-        return (fg, bg)
+        fg = readableForeground(fg, on: bg ?? defaultBackground)
+        var foreground = TerminalTheme.uiColor(fg)
+        if attributes.contains(.dim) { foreground = foreground.withAlphaComponent(0.55) }
+        // Closure literal, not `.map(uiColor)`: passing the main-actor static method as a bare function value would
+        // drop its global actor in the conversion.
+        return (foreground, bg.map { TerminalTheme.uiColor($0) })
     }
+
+    private func readableForeground(_ fg: RGB, on bg: RGB) -> RGB {
+        guard minimumContrast > 1 else { return fg }
+        let key = UInt64(fg.hex) << 24 | UInt64(bg.hex)
+        if let hit = readable[key] { return hit }
+        if readable.count > 4096 { readable.removeAll(keepingCapacity: true) }
+        let out = Contrast.readable(fg, on: bg, minimum: minimumContrast)
+        readable[key] = out
+        return out
+    }
+}
+
+extension RGB {
+    init(hex: UInt32) { self.init(UInt8((hex >> 16) & 0xFF), UInt8((hex >> 8) & 0xFF), UInt8(hex & 0xFF)) }
+    var hex: UInt32 { UInt32(r) << 16 | UInt32(g) << 8 | UInt32(b) }
 }
 
 @MainActor
@@ -109,6 +152,13 @@ struct TerminalMetrics {
 
 final class TerminalGridUIView: UIView {
     private(set) var grid = TerminalGrid(cols: 80, rows: 24)
+    var theme = TerminalTheme.of(ThemeStore.shared.choice) {
+        didSet {
+            guard theme !== oldValue else { return }
+            backgroundColor = theme.background
+            setNeedsDisplay()
+        }
+    }
     var metrics = TerminalMetrics(size: 12) {
         didSet { if metrics.size != oldValue.size { setNeedsDisplay() } }
     }
@@ -233,7 +283,7 @@ final class TerminalGridUIView: UIView {
 
     private func configure() {
         isOpaque = true
-        backgroundColor = TerminalTheme.background
+        backgroundColor = theme.background
         contentMode = .redraw
     }
 
@@ -263,7 +313,7 @@ final class TerminalGridUIView: UIView {
 
     override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
-        ctx.setFillColor(TerminalTheme.background.cgColor)
+        ctx.setFillColor(theme.background.cgColor)
         ctx.fill(rect)
         let lineHeight = metrics.lineHeight
         guard lineHeight > 0, grid.rows > 0 else { return }
@@ -303,7 +353,7 @@ final class TerminalGridUIView: UIView {
         let lo = max(first, start.row)
         let hi = min(last, end.row)
         guard lo <= hi else { return }
-        ctx.setFillColor(TerminalTheme.selection.cgColor)
+        ctx.setFillColor(theme.selection.cgColor)
         for y in lo...hi {
             let c0 = y == start.row ? start.col : 0
             let c1 = y == end.row ? end.col : grid.cols - 1
@@ -337,7 +387,7 @@ final class TerminalGridUIView: UIView {
             let width = CGFloat(end - x) * cellWidth
             if originX + width < visibleX.lowerBound || originX > visibleX.upperBound { x = end; continue } // off-screen columns
             let style = grid.style(cell.styleId)
-            let colors = TerminalTheme.colors(for: style)
+            let colors = theme.colors(for: style)
             if let bg = colors.background {
                 ctx.setFillColor(bg.cgColor)
                 ctx.fill(CGRect(x: originX, y: top, width: width, height: metrics.lineHeight))

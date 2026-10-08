@@ -37,6 +37,18 @@ there to the App Store and Google Play by hand (`promote.yml`; `docs/DELIVERY.md
 - iOS includes the required-reason privacy manifest for its own saved preferences (`UserDefaults`, `CA92.1`).
 - Entering demo cancels pending real-host notification actions before they can send, including a delayed connection.
 
+### Phone apps — themes
+
+- Settings › Appearance › Theme on iOS and Android: **Dark** (the default, unchanged), **Light** — a white screen with
+  near-black text for reading in sunlight — and **Catppuccin Mocha**. The choice recolours the app, the terminal and its
+  ANSI palette at once, follows to the system controls, menus, Copy / Paste toolbar and status bar (and to the keyboard
+  on iOS; Android's keyboard app keeps its own look), and is remembered (also across Forget this host). The Live
+  Activity and Dynamic Island stay dark. Tokens per theme: `shared/design/DESIGN.md` §1.
+- Android's primary buttons (Try demo, Pair, Create) now label in `onInteractive` as DESIGN.md §4.8 and iOS have it;
+  Material's `labelLarge` had drawn them in `fg`, the one change to how Dark looks.
+- On Light, terminal text that a program coloured for a dark terminal (Claude Code's white text and grey hints) is
+  darkened to 4.5 : 1 against its background, keeping its hue (FlowKit / `:core` `Contrast`, unit-tested on both).
+
 ### Android — build toolchain
 
 - Gradle 9.7.1, Android Gradle Plugin 9.4.0 (its built-in Kotlin replaces the `kotlin-android` plugin; `:core` keeps the

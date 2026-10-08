@@ -18,9 +18,8 @@ struct RootView: View {
             }
             .id(model.isDemo)
         }
-        // shared/design/DESIGN.md §1: dark only, `interactive` blue for every system control.
-        .preferredColorScheme(.dark)
-        .tint(Theme.interactive)
+        // shared/design/DESIGN.md §1: the theme's light or dark system controls, `interactive` for every one of them.
+        .themed()
         .background(Theme.bg)
         .onChange(of: scenePhase, initial: true) { _, phase in
             model.scenePhaseChanged(phase)
