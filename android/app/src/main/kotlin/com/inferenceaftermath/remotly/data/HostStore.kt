@@ -42,6 +42,8 @@ class HostStore(context: Context) {
     val requireUnlock: Flow<Boolean> = ds.data.map { it[REQUIRE_UNLOCK] ?: true }
     /** Ongoing "working" notification per agent, fed by `status` pushes (default on). */
     val liveStatus: Flow<Boolean> = ds.data.map { it[LIVE_STATUS] ?: true }
+    /** Settings › Appearance › Theme: a theme key (`dark`, `light`, `catppuccin-mocha`); null until one is chosen. */
+    val theme: Flow<String?> = ds.data.map { it[THEME] }
 
     suspend fun save(host: HostConfig) {
         ds.edit { p ->
@@ -57,7 +59,7 @@ class HostStore(context: Context) {
 
     suspend fun clear() {
         ds.edit { p ->
-            val keep = listOf(FONT_SCALE, FIT_TO_DEVICE, ZOOM_ON_DESKTOP, NOTIFY_ON_PROMPT, REQUIRE_UNLOCK, LIVE_STATUS).mapNotNull { k -> p[k]?.let { k to it } }
+            val keep = listOf(FONT_SCALE, FIT_TO_DEVICE, ZOOM_ON_DESKTOP, NOTIFY_ON_PROMPT, REQUIRE_UNLOCK, LIVE_STATUS, THEME).mapNotNull { k -> p[k]?.let { k to it } }
             p.clear()
             for ((k, v) in keep) @Suppress("UNCHECKED_CAST") p.set(k as Preferences.Key<Any>, v)
         }
@@ -66,6 +68,7 @@ class HostStore(context: Context) {
     suspend fun setNotifyOnPrompt(on: Boolean) = ds.edit { it[NOTIFY_ON_PROMPT] = on }
     suspend fun setRequireUnlock(on: Boolean) = ds.edit { it[REQUIRE_UNLOCK] = on }
     suspend fun setLiveStatus(on: Boolean) = ds.edit { it[LIVE_STATUS] = on }
+    suspend fun setTheme(key: String) = ds.edit { it[THEME] = key }
 
     suspend fun setFontScale(scale: Float) = ds.edit { it[FONT_SCALE] = scale }
     suspend fun setFitToDevice(on: Boolean) = ds.edit { it[FIT_TO_DEVICE] = on }
@@ -100,5 +103,6 @@ class HostStore(context: Context) {
         val NOTIFY_ON_PROMPT = booleanPreferencesKey("notify_on_prompt")
         val REQUIRE_UNLOCK = booleanPreferencesKey("require_unlock")
         val LIVE_STATUS = booleanPreferencesKey("live_status")
+        val THEME = stringPreferencesKey("theme")
     }
 }

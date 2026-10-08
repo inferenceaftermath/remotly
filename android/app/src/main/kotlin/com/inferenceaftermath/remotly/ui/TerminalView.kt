@@ -45,6 +45,14 @@ import kotlin.math.sign
 
 class TerminalView(context: Context) : View(context) {
     var styles: StyleTable? = null
+    /** The theme's terminal colours ([Palette.terminal]); the screen sets it from [Tokens.palette]. */
+    var colors: TerminalColors = Tokens.palette.terminal
+        set(value) {
+            if (field === value) return
+            field = value
+            selectionPaint.color = value.selection
+            invalidate()
+        }
     /** Live mode: the user pulled past the top → the screen should fetch history. */
     var onScrollback: (() -> Unit)? = null
     /** History mode: near the top → fetch more (the caller throttles). */
@@ -140,7 +148,7 @@ class TerminalView(context: Context) : View(context) {
     private var draggingEnd = 0
     private var detectorSawDown = false
     private var actionMode: ActionMode? = null
-    private val selectionPaint = Paint().apply { color = SELECTION_COLOR }
+    private val selectionPaint = Paint().apply { color = colors.selection }
 
     private val rows: List<Row> get() = history ?: grid?.lines?.asList() ?: emptyList()
     private val cols: Int get() = max(grid?.cols ?: 0, history?.maxOfOrNull { it.cols } ?: 0)
@@ -336,7 +344,7 @@ class TerminalView(context: Context) : View(context) {
     // ------------------------------------------------------------ drawing
 
     override fun onDraw(canvas: Canvas) {
-        canvas.drawColor(TerminalColors.DEFAULT_BG)
+        canvas.drawColor(colors.defaultBg)
         val rs = rows
         if (rs.isEmpty() || cellH <= 0f) return
         val first = (offsetY / cellH).toInt().coerceIn(0, rs.size - 1)
@@ -397,11 +405,11 @@ class TerminalView(context: Context) : View(context) {
             }
             val widthCells = if (cell.width == 2) 2 else runEnd - x + 1
             val left = x * cellW - offsetX
-            val fg0 = TerminalColors.resolve(style.fg, TerminalColors.DEFAULT_FG)
-            val bg0 = TerminalColors.resolve(style.bg, TerminalColors.DEFAULT_BG)
-            val fg = if (style.inverse) bg0 else fg0
+            val fg0 = colors.resolve(style.fg, colors.defaultFg)
+            val bg0 = colors.resolve(style.bg, colors.defaultBg)
             val bg = if (style.inverse) fg0 else bg0
-            if (bg != TerminalColors.DEFAULT_BG) {
+            val fg = colors.readable(if (style.inverse) bg0 else fg0, bg)
+            if (bg != colors.defaultBg) {
                 bgPaint.color = bg
                 canvas.drawRect(left, top, left + widthCells * cellW, top + cellH, bgPaint)
             }
@@ -769,7 +777,6 @@ class TerminalView(context: Context) : View(context) {
     companion object {
         private const val MENU_COPY = 1
         private const val MENU_SELECT_ALL = 2
-        private const val SELECTION_COLOR = 0x597AA2F7.toInt() // DESIGN.md `selection`: interactive at 35 %
         /** Persisted sizes are multipliers of this (kept so saved values from earlier builds still mean the same). */
         const val BASE_SP = 14f
         /** Default in fit mode: the phone's body text size (sp already follows the system font-size setting). */

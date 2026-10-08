@@ -48,6 +48,12 @@ public enum TerminalColor: Hashable, Sendable {
         case .rgb(let c): return c
         }
     }
+
+    /// As `rgb`, with palette 0–15 taken from a theme's own 16 ANSI colours.
+    public func rgb(ansi: [RGB]) -> RGB? {
+        if case .palette(let n) = self, (0..<16).contains(n), ansi.count == 16 { return ansi[n] }
+        return rgb
+    }
 }
 
 /// xterm 256-colour palette. Entries 0–15 use a readable dark-theme ANSI set.

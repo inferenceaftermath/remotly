@@ -79,7 +79,8 @@ there? `remotly-bridge status` should show `tls: selfsigned`, and the host's fir
 Open the app: tabs and panes of your herdr session appear live; type into the composer, use the
 key row, and approve Claude Code / Codex / pi prompts from the notification. The terminal uses
 your phone's text size by default; A− / A+ in the title bar step it by one point (remembered),
-and Settings has the same control plus a reset. Swipe up on the screen to read scrollback (keep
+and Settings has the same control plus a reset. Settings → Appearance → Theme switches between Dark, Light (easiest to
+read in sunlight) and Catppuccin Mocha. Swipe up on the screen to read scrollback (keep
 swiping for older output, swipe past the bottom to return to live). Programs that draw their own
 screen (Claude Code, vim, tmux, less) keep no scrollback in herdr; the bridge notices when one has
 the pane and the default "Automatic" swipe mode then sends swipes to it as mouse-wheel steps, going

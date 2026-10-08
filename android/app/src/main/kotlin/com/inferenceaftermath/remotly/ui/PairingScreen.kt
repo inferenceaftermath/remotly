@@ -200,7 +200,7 @@ fun PairingScreen(session: Session) {
                 Spacer(Modifier.height(24.dp))
             }
             if (busy) {
-                Box(Modifier.fillMaxSize().background(Color(0x990B0C0E)), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxSize().background(Tokens.bg.copy(alpha = 0.6f)), contentAlignment = Alignment.Center) {
                     PanelCard(radius = 14.dp) {
                         Row(Modifier.padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             CircularProgressIndicator(color = Tokens.interactive, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))

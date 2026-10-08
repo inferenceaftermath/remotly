@@ -7,46 +7,66 @@ should be updated. Both apps implement every item here identically (`docs/BACKLO
 Sizes are points (iOS) / dp and sp (Android). The site's mockup is drawn at 340 px wide; its pixel values were scaled
 by about 1.15 to phone points.
 
-## 1. Tokens
+## 1. Tokens and themes
 
-The apps are dark only (iOS forces `UIUserInterfaceStyle` Dark; Android's theme is dark). No system colours: every
-surface, text and hairline below comes from this table. Define them once per app (`Theme.swift` / `Theme.kt`) and use
-those names everywhere.
+Three themes, chosen in Settings › Appearance (§4.9): **Dark**, the default and the original look; **Light**, a white
+screen with near-black text that reads in sunlight; and **Catppuccin Mocha** (catppuccin.com/palette). A theme sets every
+token below and the terminal palette, and the system appearance under the app follows it: light controls, menus, the
+Copy / Paste toolbar, status bar icons and (iOS) the keyboard for Light, dark ones for the other two (iOS no longer
+forces `UIUserInterfaceStyle`; Android lays a light platform theme over the window, and its keyboard app keeps its own
+look). No
+system colours: every surface, text and hairline comes from this table. Define them once per app
+(`Shared/DesignTokens.swift` / `ui/Theme.kt`, the same values on both) and use those names everywhere. A new choice
+applies at once, to whatever is on screen, and is remembered (`theme`: `dark`, `light`, `catppuccin-mocha`). What the app
+cannot reach keeps Dark: the iOS Live Activity and Dynamic Island (§4.11), the app icon and the launch screen.
 
-| Token | Value | Use |
-|---|---|---|
-| `bg` | `#0B0C0E` | screen background and terminal background (one colour, the terminal is flush) |
-| `panel` | `#141618` | cards: host banner, approval card, fields |
-| `panel2` | `#1B1E22` | key caps, composer, option buttons, segmented control |
-| `line` | `#262A2F` | hairlines and borders |
-| `separator` | `#20242A` | list row separators |
-| `pillBg` | `#191C20` | status pill background |
-| `raised` | `#2E3238` | option button border, segmented "on" fill |
-| `fg` | `#E0E2E5` | primary text |
-| `fg2` | `#B4B9C0` | secondary text (status words, hints, banner values) |
-| `fg3` | `#6E737B` | faint text (section labels, row folders, placeholders) |
-| `titleFg` | `#D5D8DD` | pane title, key cap glyphs |
-| `accent` | `#2DD4BF` | teal: tool name, marked option border, Ctrl armed, viewfinder corners, Approve on the lock screen |
-| `accentWash` | `#2DD4BF` at 8 % | marked option fill |
-| `interactive` | `#7AA2F7` | blue: back chevron, text links, send button, Pair button, the New terminal button, switches on |
-| `onInteractive` | `#0B0C0E` | text on `interactive` and on `accent` |
-| `blocked` | `#F7768E` | status rose; also destructive text |
-| `working` | `#E0AF68` | status amber |
-| `idle` | `#7AA2F7` | status blue |
-| `done` | `#9ECE6A` | status green; toast ok variant |
-| `toastBg` / `toastFg` | `#E0E2E5` / `#0B0C0E` | toast (ok variant: `done` / `#0B0C0E`) |
-| `selection` | `#7AA2F7` at 35 % | terminal text selection |
+| Token | Dark | Light | Catppuccin Mocha | Use |
+|---|---|---|---|---|
+| `bg` | `#0B0C0E` | `#FFFFFF` | `#1E1E2E` Base | screen background and terminal background (one colour, the terminal is flush) |
+| `panel` | `#141618` | `#F3F4F6` | `#181825` Mantle | cards: host banner, approval card, fields |
+| `panel2` | `#1B1E22` | `#E9EBEF` | `#313244` Surface 0 | key caps, composer, option buttons, segmented control |
+| `line` | `#262A2F` | `#D0D5DC` | `#45475A` Surface 1 | hairlines and borders |
+| `separator` | `#20242A` | `#E4E7EB` | `#313244` Surface 0 | list row separators |
+| `pillBg` | `#191C20` | `#F3F4F6` | `#181825` Mantle | status pill background |
+| `raised` | `#2E3238` | `#C3C9D1` | `#585B70` Surface 2 | option button border, segmented "on" fill |
+| `fg` | `#E0E2E5` | `#16181D` | `#CDD6F4` Text | primary text |
+| `fg2` | `#B4B9C0` | `#424852` | `#A6ADC8` Subtext 0 | secondary text (status words, hints, banner values) |
+| `fg3` | `#6E737B` | `#676E79` | `#7F849C` Overlay 1 | faint text (section labels, row folders, placeholders) |
+| `titleFg` | `#D5D8DD` | `#1F2329` | `#BAC2DE` Subtext 1 | pane title, key cap glyphs |
+| `accent` | `#2DD4BF` | `#0F766E` | `#94E2D5` Teal | teal: tool name, marked option border, Ctrl armed, viewfinder corners, Approve on the lock screen |
+| `accentWash` | `accent` at 8 % | ← | ← | marked option fill |
+| `interactive` | `#7AA2F7` | `#2563EB` | `#89B4FA` Blue | blue: back chevron, text links, send button, Pair button, the New terminal button, switches on |
+| `onInteractive` | `#0B0C0E` | `#FFFFFF` | `#11111B` Crust | text on `interactive` and on `accent` |
+| `blocked` | `#F7768E` | `#C7254E` | `#F38BA8` Red | status rose; also destructive text |
+| `working` | `#E0AF68` | `#B45309` | `#FAB387` Peach | status amber |
+| `idle` | `#7AA2F7` | `#2563EB` | `#89B4FA` Blue | status blue |
+| `done` | `#9ECE6A` | `#1A7F37` | `#A6E3A1` Green | status green; toast ok variant |
+| `toastBg` / `toastFg` | `#E0E2E5` / `#0B0C0E` | `#16181D` / `#FFFFFF` | `#CDD6F4` / `#1E1E2E` | toast (ok variant: `done` / `toastFg`) |
+| `selection` | `interactive` at 35 % | ← | ← | terminal text selection |
+
+Light keeps every text colour at 4.2 : 1 or more on the surface it sits on (5 : 1 or more on `bg`), and `onInteractive`
+at 5 : 1 on `interactive` and `accent`.
 
 Status colour for an unknown status or a pane without an agent: `fg3`. A pane "has an agent" when herdr names one
 (`agent`) or at least shows one (`display_agent`).
 
-**Terminal palette** (ANSI 0–15; 16–231 the standard xterm cube with levels 0, 95, 135, 175, 215, 255; 232–255 greys
-8 + 10 n). Default foreground `fg`, default background `bg`.
+**Terminal palette** (ANSI 0–15 per theme; 16–231 the standard xterm cube with levels 0, 95, 135, 175, 215, 255;
+232–255 greys 8 + 10 n, the same in every theme). Default foreground `fg`, default background `bg`.
 
 ```
-0 #1B2230  1 #F7768E  2 #9ECE6A  3 #E0AF68  4 #7AA2F7  5 #BB9AF7  6 #7DCFFF  7 #A9B1D6
-8 #414868  9 #F7768E 10 #9ECE6A 11 #E0AF68 12 #7AA2F7 13 #BB9AF7 14 #7DCFFF 15 #C0CAF5
+Dark              0 #1B2230  1 #F7768E  2 #9ECE6A  3 #E0AF68  4 #7AA2F7  5 #BB9AF7  6 #7DCFFF  7 #A9B1D6
+                  8 #414868  9 #F7768E 10 #9ECE6A 11 #E0AF68 12 #7AA2F7 13 #BB9AF7 14 #7DCFFF 15 #C0CAF5
+Light             0 #24292F  1 #C7254E  2 #1A7F37  3 #9A6700  4 #2563EB  5 #8250DF  6 #0E7490  7 #6E7781
+                  8 #57606A  9 #A40E26 10 #116329 11 #7D4E00 12 #1D4ED8 13 #6639BA 14 #155E75 15 #8C959F
+Catppuccin Mocha  0 #45475A  1 #F38BA8  2 #A6E3A1  3 #F9E2AF  4 #89B4FA  5 #F5C2E7  6 #94E2D5  7 #BAC2DE
+                  8 #585B70  9 #F38BA8 10 #A6E3A1 11 #F9E2AF 12 #89B4FA 13 #F5C2E7 14 #94E2D5 15 #A6ADC8
 ```
+
+**Contrast floor (Light).** Programs on the desktop pick their colours for the desktop's dark terminal — Claude Code's
+dark theme writes its text in white (xterm 231) and its hints in light greys (246) — so on Light, a cell's text whose WCAG contrast with its background (after
+inverse, before dim) is under 4.5 : 1 is mixed toward black in tenths until it reaches it, which keeps its hue (FlowKit
+`Contrast`, `:core` `Contrast`, the same steps). Text on a dark cell background (a program's own panels) is mixed toward
+white instead. Dark and Catppuccin Mocha draw every colour as the program sent it.
 
 ## 2. Typography
 
@@ -98,7 +118,7 @@ border, padding 3 × 8, fully rounded.
 ### 4.2 Toast
 One shared component, used for every transient notice on every screen (it replaces the iOS bottom capsule and the
 Android Snackbar). Top centre, 8 pt below the navigation bar, fully rounded pill, mono 12.5, padding 6 × 11, max width
-88 %. Plain variant `toastBg`/`toastFg`; **ok** variant `done`/`#0B0C0E`. Enters by sliding down 8 pt while fading in
+88 %. Plain variant `toastBg`/`toastFg`; **ok** variant `done`/`toastFg`. Enters by sliding down 8 pt while fading in
 over 250 ms, leaves after 2.4 s. Copy is lowercase, dotted: `fit · pty resized to 54 cols` (ok), `approval.result · sent`
 (ok), `copied`, `<title> closed`, `pairing with <host>…`; errors use the plain variant with the error text.
 
@@ -247,6 +267,10 @@ Same sections, rows and words on both platforms, footers at most one sentence.
   same on both: "Every prompt sent from this phone asks for one notification when the agent finishes its turn." ·
   "Approve, Deny with feedback and Reply from a notification work only once the phone is unlocked." · "Each working
   agent stays visible outside the app with a running timer."
+- **Appearance:** "Theme" ("Applies to the app and the terminal; Light reads best in sunlight."), the current theme's
+  name on the right in `interactive` (iOS: the menu picker's chevrons; Android: a drop-down arrow); a tap opens a menu of
+  Dark · Light · Catppuccin Mocha with a check on the current one (Android in the pane overflow's look), and the choice
+  applies at once. Shown in the demo too.
 - **Terminal:** "Fit pane to this phone" (toggle; "While you view a pane, its width on the desktop follows this
   screen's columns.") · "Zoom on desktop while viewing" (toggle; "The pane fills its desktop tab while you view it; the
   split comes back when you leave."). No text-size row: the pane header's A− / A+ are the only control.
@@ -265,11 +289,12 @@ and runs the command once the shell is ready."; Create in `interactive`.
 ### 4.11 Notifications and Live Activity
 - Copy comes from the bridge (§5). Action labels: Approve · Deny · Deny with feedback; done alerts: Reply, whose text
   field hints "Your next prompt" on both platforms.
-- Android: `setColor(accent)`, small icon = the mark (§4.12), big text "<Tool> · <command>", then the question and the
+- Android: `setColor(accent)` (Dark's, a fixed colour in every theme), small icon = the mark (§4.12), big text "<Tool> · <command>", then the question and the
   numbered options as today. The ongoing status notification: title = the session title (the push's `title`, else the
   pane id), text = "Working", or while blocked "Waiting for approval · <detail>" ("Has a question" for a `choice`),
   sub-text = the host, chronometer from `since`. No agent name: the title names the session.
-- iOS Live Activity (Lock Screen): background `bg` at 85 %, eyebrow "REMOTLY" in mono 11 uppercase, letter spacing
+- iOS Live Activity (Lock Screen), always in Dark's tokens (the widget extension cannot read the app's theme, and the
+  Dynamic Island is black anyway): background `bg` at 85 %, eyebrow "REMOTLY" in mono 11 uppercase, letter spacing
   0.08 em, `fg3`; then the row: the status mark (§4.12, 14 pt, with its drawn trail while working), the session title
   (content state `title`) in mono 14 semibold `fg`, one line truncated at the end, and trailing the elapsed time in mono
   14 tabular `fg` ("✓" when done). Second line, sans 13: the status word (§3) in the status colour ("Ended" when the
@@ -311,7 +336,8 @@ and runs the command once the shell is ready."; Create in `interactive`.
   reduced motion and when the row or screen is not visible. In the Live Activity, where the system runs no custom
   animation, the motion is drawn: a second chevron 6 units behind the first at 35 % opacity, only while `working`.
   Every other state is still. Accessibility label = the status word of §3 ("Terminal" for a plain shell).
-- iOS `AccentColor` = `interactive`. Launch screen background `bg`.
+- iOS `AccentColor` = `interactive` (Dark's; Light's for the light appearance). The app icon and the launch screen use
+  Dark's `bg` in every theme.
 
 ### 4.13 Motion
 Toast 250 ms ease-out; approval card state changes 200 ms cross-fade; segmented control and key row state changes
@@ -329,7 +355,8 @@ SHA-256) · Leave empty when the bridge uses a Tailscale certificate. · Pair ·
 Deny with feedback… · Something else… · What should it do instead? · Esc dismisses the dialog first, then your words are
 typed to the agent. · ✓ Answered from your phone · ✕ Not sent · sent · sending… · Send anyway · Approve · Approve for
 session · Deny · Interrupt · Live ↓ · Copy screen · Raw text mode · Tell me when it's done · Swiping up and down ·
-Smaller text · Larger text (the A− / A+ accessibility labels) · Close terminal · Ends the shell on the desktop and
+Smaller text · Larger text (the A− / A+ accessibility labels) · Appearance · Theme · Dark · Light · Catppuccin Mocha ·
+Applies to the app and the terminal; Light reads best in sunlight. · Close terminal · Ends the shell on the desktop and
 anything running in it. · New terminal · Name (optional) · Command to run (optional) · Create · Waiting for
 the bridge… · Retry now · This phone is no longer paired. · Forget host and pair again · No panes open in herdr. ·
 Waiting for the first frame… · Nothing older here: herdr holds no scrollback for this pane. If a full-screen program is

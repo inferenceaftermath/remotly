@@ -202,7 +202,7 @@ struct ApprovalCard: View {
                 }
             }
         }
-        .tint(Theme.interactive)
+        .themed()
         .presentationDetents([.medium])
         .presentationBackground(Theme.bg)
     }

@@ -86,6 +86,12 @@ struct SettingsView: View {
                 }
                 .listRowBackground(Theme.panel)
                 Section {
+                    ThemeRow()
+                } header: {
+                    SectionLabel("Appearance", inset: false)
+                }
+                .listRowBackground(Theme.panel)
+                Section {
                     ToggleRow(title: "Fit pane to this phone",
                               detail: "While you view a pane, its width on the desktop follows this screen's columns.",
                               isOn: $fitToDevice)
@@ -145,7 +151,7 @@ struct SettingsView: View {
             .onChange(of: liveActivities) { _, on in model.setLiveActivities(on) }
         }
         }
-        .tint(Theme.interactive)
+        .themed()
         .presentationBackground(Theme.bg)
     }
 
@@ -173,6 +179,27 @@ private struct ValueRow: View {
                 .truncationMode(.middle)
         }
         .contentShape(Rectangle())
+    }
+}
+
+/// The theme menu (DESIGN.md §1, §4.9): the current theme on the right; a tap lists the three with a check on the current
+/// one. The choice applies at once, to the app and the terminal.
+private struct ThemeRow: View {
+    var body: some View {
+        Picker(selection: Binding(get: { ThemeStore.shared.choice }, set: { ThemeStore.shared.select($0) })) {
+            ForEach(ThemeChoice.allCases) { choice in
+                Text(choice.title).tag(choice)
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Theme").font(.system(size: 15)).foregroundStyle(Theme.fg)
+                Text("Applies to the app and the terminal; Light reads best in sunlight.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.fg3)
+            }
+        }
+        .pickerStyle(.menu)
+        .tint(Theme.interactive)
     }
 }
 

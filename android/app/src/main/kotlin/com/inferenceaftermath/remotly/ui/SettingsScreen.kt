@@ -1,4 +1,4 @@
-// Settings (DESIGN.md §4.9): Host · Notifications · Terminal · About, then "Forget this host".
+// Settings (DESIGN.md §4.9): Host · Notifications · Appearance · Terminal · About, then "Forget this host".
 package com.inferenceaftermath.remotly.ui
 
 import android.Manifest
@@ -9,6 +9,7 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,7 +27,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
@@ -63,6 +66,7 @@ fun SettingsScreen(session: Session, host: HostConfig, onBack: () -> Unit) {
     val notifyOnPrompt by session.notifyOnPrompt.collectAsStateWithLifecycle()
     val requireUnlock by session.requireUnlock.collectAsStateWithLifecycle()
     val liveStatus by session.liveStatus.collectAsStateWithLifecycle()
+    val theme by session.theme.collectAsStateWithLifecycle()
     val pushToken by session.store.pushToken.collectAsStateWithLifecycle(initialValue = null)
     val welcome = (connState as? ConnectionState.Connected)?.welcome
     var notificationsAllowed by remember { mutableStateOf(Notifications.hasPermission(context)) }
@@ -133,6 +137,9 @@ fun SettingsScreen(session: Session, host: HostConfig, onBack: () -> Unit) {
                         trailing = { FlowSwitch(liveStatus) { session.setLiveStatus(it) } },
                     )
                 }
+                SectionLabel("Appearance", inset)
+                ThemeRow(ThemeChoice.of(theme)) { session.setTheme(it.key) }
+
                 SectionLabel("Terminal", inset)
                 SettingRow(
                     "Fit pane to this phone",
@@ -187,5 +194,38 @@ fun SettingsScreen(session: Session, host: HostConfig, onBack: () -> Unit) {
             },
             dismissButton = { TextButton(onClick = { confirmForget = false }) { Text("Cancel", color = Tokens.fg2) } },
         )
+    }
+}
+
+/**
+ * The theme menu (DESIGN.md §1, §4.9): the current theme on the right; a tap lists the three with a check on the current
+ * one, in the pane overflow's look. The choice applies at once, to the app and the terminal.
+ */
+@Composable
+private fun ThemeRow(current: ThemeChoice, onSelect: (ThemeChoice) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth()) {
+        SettingRow(
+            "Theme",
+            "Applies to the app and the terminal; Light reads best in sunlight.",
+            onClick = { open = true },
+            trailing = {
+                Text(current.title, style = Type.body, color = Tokens.interactive)
+                Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Tokens.interactive)
+            },
+        )
+        Box(Modifier.align(Alignment.BottomEnd).padding(end = 16.dp)) {
+            DropdownMenu(
+                expanded = open, onDismissRequest = { open = false },
+                shape = RoundedCornerShape(12.dp), containerColor = Tokens.panel2, border = BorderStroke(1.dp, Tokens.line),
+            ) {
+                for (choice in ThemeChoice.entries) {
+                    MenuItem(choice.title, checked = choice == current) {
+                        open = false
+                        onSelect(choice)
+                    }
+                }
+            }
+        }
     }
 }

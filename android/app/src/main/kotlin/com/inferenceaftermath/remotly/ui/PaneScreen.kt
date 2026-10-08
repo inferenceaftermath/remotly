@@ -378,6 +378,7 @@ fun PaneScreen(session: Session, paneId: String, onBack: () -> Unit) {
                 AndroidView(
                     factory = { ctx -> TerminalView(ctx).also { terminalView = it } },
                     update = { v ->
+                        v.colors = Tokens.palette.terminal
                         v.onScrollback = { if (history == null) loadHistory(HISTORY_FIRST_PAGE) }
                         v.onReachTop = { if (history != null && hasMore && !loadingHistory) loadHistory(min(historyLines * 2, HISTORY_MAX)) }
                         v.onPullBottom = { history = null }

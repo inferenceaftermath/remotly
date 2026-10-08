@@ -39,10 +39,13 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,31 +75,134 @@ import com.inferenceaftermath.remotly.session.Session
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
-/** DESIGN.md §1. */
+/** DESIGN.md §1: the selected theme's colours. */
 object Tokens {
-    val bg = Color(0xFF0B0C0E)
-    val panel = Color(0xFF141618)
-    val panel2 = Color(0xFF1B1E22)
-    val line = Color(0xFF262A2F)
-    val separator = Color(0xFF20242A)
-    val pillBg = Color(0xFF191C20)
-    val raised = Color(0xFF2E3238)
-    val fg = Color(0xFFE0E2E5)
-    val fg2 = Color(0xFFB4B9C0)
-    val fg3 = Color(0xFF6E737B)
-    val titleFg = Color(0xFFD5D8DD)
-    val accent = Color(0xFF2DD4BF)
-    val accentWash = Color(0x142DD4BF)
-    val interactive = Color(0xFF7AA2F7)
-    val onInteractive = Color(0xFF0B0C0E)
-    val blocked = Color(0xFFF7768E)
-    val working = Color(0xFFE0AF68)
-    val idle = Color(0xFF7AA2F7)
-    val done = Color(0xFF9ECE6A)
-    val toastBg = Color(0xFFE0E2E5)
-    val toastFg = Color(0xFF0B0C0E)
-    val selection = Color(0x597AA2F7)
+    /**
+     * The selected theme's palette. Snapshot state: everything composed or drawn from a token follows a theme change at
+     * once. Set from the stored choice by [MainActivity][com.inferenceaftermath.remotly.MainActivity].
+     */
+    var palette: Palette by mutableStateOf(Palette.DARK)
+        private set
+
+    fun use(choice: ThemeChoice) {
+        palette = choice.palette
+    }
+
+    val bg: Color get() = palette.bg
+    val panel: Color get() = palette.panel
+    val panel2: Color get() = palette.panel2
+    val line: Color get() = palette.line
+    val separator: Color get() = palette.separator
+    val pillBg: Color get() = palette.pillBg
+    val raised: Color get() = palette.raised
+    val fg: Color get() = palette.fg
+    val fg2: Color get() = palette.fg2
+    val fg3: Color get() = palette.fg3
+    val titleFg: Color get() = palette.titleFg
+    val accent: Color get() = palette.accent
+    val accentWash: Color get() = palette.accent.copy(alpha = 0.08f)
+    val interactive: Color get() = palette.interactive
+    val onInteractive: Color get() = palette.onInteractive
+    val blocked: Color get() = palette.blocked
+    val working: Color get() = palette.working
+    val idle: Color get() = palette.idle
+    val done: Color get() = palette.done
+    /** Toast fill; the ok variant fills with [done]. [toastFg] is the text on both. */
+    val toastBg: Color get() = palette.toastBg
+    val toastFg: Color get() = palette.toastFg
+    val selection: Color get() = palette.interactive.copy(alpha = 0.35f)
     val whiteWash = Color(0x24FFFFFF)
+}
+
+/** The themes Settings › Appearance offers (DESIGN.md §1). Dark is the default; Light reads best in sunlight. */
+enum class ThemeChoice(val key: String, val title: String) {
+    DARK("dark", "Dark"),
+    LIGHT("light", "Light"),
+    CATPPUCCIN_MOCHA("catppuccin-mocha", "Catppuccin Mocha");
+
+    val palette: Palette get() = when (this) {
+        DARK -> Palette.DARK
+        LIGHT -> Palette.LIGHT
+        CATPPUCCIN_MOCHA -> Palette.CATPPUCCIN_MOCHA
+    }
+
+    companion object {
+        /** The stored key's theme; Dark for none or an unknown one. */
+        fun of(key: String?): ThemeChoice = entries.firstOrNull { it.key == key } ?: DARK
+    }
+}
+
+/**
+ * One theme's colours: every token of DESIGN.md §1, the terminal's ANSI 0–15 (0xRRGGBB) and the contrast floor terminal
+ * text is lifted to (1 = colours as the program sent them). The same values as iOS `Palette`.
+ */
+class Palette(
+    val isLight: Boolean,
+    val bg: Color, val panel: Color, val panel2: Color, val line: Color, val separator: Color, val pillBg: Color,
+    val raised: Color, val fg: Color, val fg2: Color, val fg3: Color, val titleFg: Color, val accent: Color,
+    val interactive: Color, val onInteractive: Color, val blocked: Color, val working: Color, val idle: Color,
+    val done: Color, val toastBg: Color, val toastFg: Color,
+    val ansi: IntArray,
+    val minimumContrast: Double,
+) {
+    /** The terminal's colour resolver for this theme (one per palette, so the view can tell a change by identity). */
+    val terminal: TerminalColors by lazy { TerminalColors(this) }
+
+    companion object {
+        /** The original look (Tokyo Night-derived, matched to the status colours). */
+        val DARK = Palette(
+            isLight = false,
+            bg = Color(0xFF0B0C0E), panel = Color(0xFF141618), panel2 = Color(0xFF1B1E22), line = Color(0xFF262A2F),
+            separator = Color(0xFF20242A), pillBg = Color(0xFF191C20), raised = Color(0xFF2E3238), fg = Color(0xFFE0E2E5),
+            fg2 = Color(0xFFB4B9C0), fg3 = Color(0xFF6E737B), titleFg = Color(0xFFD5D8DD), accent = Color(0xFF2DD4BF),
+            interactive = Color(0xFF7AA2F7), onInteractive = Color(0xFF0B0C0E), blocked = Color(0xFFF7768E),
+            working = Color(0xFFE0AF68), idle = Color(0xFF7AA2F7), done = Color(0xFF9ECE6A), toastBg = Color(0xFFE0E2E5),
+            toastFg = Color(0xFF0B0C0E),
+            ansi = intArrayOf(
+                0x1B2230, 0xF7768E, 0x9ECE6A, 0xE0AF68, 0x7AA2F7, 0xBB9AF7, 0x7DCFFF, 0xA9B1D6,
+                0x414868, 0xF7768E, 0x9ECE6A, 0xE0AF68, 0x7AA2F7, 0xBB9AF7, 0x7DCFFF, 0xC0CAF5,
+            ),
+            minimumContrast = 1.0,
+        )
+
+        /**
+         * White screen, near-black text, every colour at least 4.2 : 1 on its surface, for reading in sunlight. Programs on
+         * the desktop usually pick their colours for a dark background, so terminal text is lifted to 4.5 : 1.
+         */
+        val LIGHT = Palette(
+            isLight = true,
+            bg = Color(0xFFFFFFFF), panel = Color(0xFFF3F4F6), panel2 = Color(0xFFE9EBEF), line = Color(0xFFD0D5DC),
+            separator = Color(0xFFE4E7EB), pillBg = Color(0xFFF3F4F6), raised = Color(0xFFC3C9D1), fg = Color(0xFF16181D),
+            fg2 = Color(0xFF424852), fg3 = Color(0xFF676E79), titleFg = Color(0xFF1F2329), accent = Color(0xFF0F766E),
+            interactive = Color(0xFF2563EB), onInteractive = Color(0xFFFFFFFF), blocked = Color(0xFFC7254E),
+            working = Color(0xFFB45309), idle = Color(0xFF2563EB), done = Color(0xFF1A7F37), toastBg = Color(0xFF16181D),
+            toastFg = Color(0xFFFFFFFF),
+            ansi = intArrayOf(
+                0x24292F, 0xC7254E, 0x1A7F37, 0x9A6700, 0x2563EB, 0x8250DF, 0x0E7490, 0x6E7781,
+                0x57606A, 0xA40E26, 0x116329, 0x7D4E00, 0x1D4ED8, 0x6639BA, 0x155E75, 0x8C959F,
+            ),
+            minimumContrast = 4.5,
+        )
+
+        /**
+         * Catppuccin Mocha (catppuccin.com/palette): Base screen, Mantle cards, Surface 0–2 for caps and borders, Text and
+         * Subtext for words; the terminal uses Catppuccin's own Mocha ANSI colours.
+         */
+        val CATPPUCCIN_MOCHA = Palette(
+            isLight = false,
+            bg = Color(0xFF1E1E2E), panel = Color(0xFF181825), panel2 = Color(0xFF313244), line = Color(0xFF45475A),
+            separator = Color(0xFF313244), pillBg = Color(0xFF181825), raised = Color(0xFF585B70), fg = Color(0xFFCDD6F4),
+            fg2 = Color(0xFFA6ADC8), fg3 = Color(0xFF7F849C), titleFg = Color(0xFFBAC2DE), accent = Color(0xFF94E2D5),
+            interactive = Color(0xFF89B4FA), onInteractive = Color(0xFF11111B), blocked = Color(0xFFF38BA8),
+            working = Color(0xFFFAB387), idle = Color(0xFF89B4FA), done = Color(0xFFA6E3A1), toastBg = Color(0xFFCDD6F4),
+            toastFg = Color(0xFF1E1E2E),
+            ansi = intArrayOf(
+                0x45475A, 0xF38BA8, 0xA6E3A1, 0xF9E2AF, 0x89B4FA, 0xF5C2E7, 0x94E2D5, 0xBAC2DE,
+                0x585B70, 0xF38BA8, 0xA6E3A1, 0xF9E2AF, 0x89B4FA, 0xF5C2E7, 0x94E2D5, 0xA6ADC8,
+            ),
+            minimumContrast = 1.0,
+        )
+    }
 }
 
 /** JetBrains Mono, bundled (res/font). Only Regular and Bold exist, so "semibold" mono is Bold. */
@@ -105,40 +211,44 @@ val Mono = FontFamily(
     Font(R.font.jetbrains_mono_bold, FontWeight.Bold),
 )
 
-/** DESIGN.md §2. */
+/** DESIGN.md §2. Styles that carry a token colour are getters, so they follow the theme. */
 object Type {
-    val sectionLabel = TextStyle(fontFamily = Mono, fontSize = 12.sp, letterSpacing = 0.12.em, color = Tokens.fg3)
+    val sectionLabel: TextStyle get() = TextStyle(fontFamily = Mono, fontSize = 12.sp, letterSpacing = 0.12.em, color = Tokens.fg3)
     val pill = TextStyle(fontFamily = Mono, fontSize = 12.sp)
     /** Key cap (§4.6): mono 15; a single glyph is set at 18 by the cap itself. */
-    val keyCap = TextStyle(fontFamily = Mono, fontSize = 15.sp, color = Tokens.titleFg)
+    val keyCap: TextStyle get() = TextStyle(fontFamily = Mono, fontSize = 15.sp, color = Tokens.titleFg)
     /** The New terminal sheet's command chips. */
-    val chip = TextStyle(fontFamily = Mono, fontSize = 13.sp, color = Tokens.titleFg)
-    val rowName = TextStyle(fontFamily = Mono, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Tokens.fg)
+    val chip: TextStyle get() = TextStyle(fontFamily = Mono, fontSize = 13.sp, color = Tokens.titleFg)
+    val rowName: TextStyle get() = TextStyle(fontFamily = Mono, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Tokens.fg)
     /** Row line 2 (§4.3): folder and status word, each in its own colour via spans. */
-    val rowLine2 = TextStyle(fontFamily = Mono, fontSize = 13.sp, color = Tokens.fg2)
-    val chrono = TextStyle(fontFamily = Mono, fontSize = 14.sp, color = Tokens.fg2, fontFeatureSettings = "tnum")
-    val paneTitle = TextStyle(fontFamily = Mono, fontSize = 15.sp, color = Tokens.titleFg)
+    val rowLine2: TextStyle get() = TextStyle(fontFamily = Mono, fontSize = 13.sp, color = Tokens.fg2)
+    val chrono: TextStyle get() = TextStyle(fontFamily = Mono, fontSize = 14.sp, color = Tokens.fg2, fontFeatureSettings = "tnum")
+    val paneTitle: TextStyle get() = TextStyle(fontFamily = Mono, fontSize = 15.sp, color = Tokens.titleFg)
     val cardHead = TextStyle(fontFamily = Mono, fontSize = 13.sp)
-    val command = TextStyle(fontFamily = Mono, fontSize = 12.5.sp, color = Tokens.fg)
-    val question = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Tokens.fg)
-    val description = TextStyle(fontSize = 14.sp, color = Tokens.fg2)
-    val option = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Medium, color = Tokens.fg)
-    val composer = TextStyle(fontSize = 15.sp, color = Tokens.fg)
+    val command: TextStyle get() = TextStyle(fontFamily = Mono, fontSize = 12.5.sp, color = Tokens.fg)
+    val question: TextStyle get() = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Tokens.fg)
+    val description: TextStyle get() = TextStyle(fontSize = 14.sp, color = Tokens.fg2)
+    val option: TextStyle get() = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Medium, color = Tokens.fg)
+    val composer: TextStyle get() = TextStyle(fontSize = 15.sp, color = Tokens.fg)
     val toast = TextStyle(fontFamily = Mono, fontSize = 12.5.sp)
     val banner = TextStyle(fontFamily = Mono, fontSize = 12.5.sp)
-    val hint = TextStyle(fontSize = 15.sp, color = Tokens.fg2)
-    val listTitle = TextStyle(fontFamily = Mono, fontSize = 16.sp, color = Tokens.fg)
-    val navTitle = TextStyle(fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = Tokens.fg)
-    val body = TextStyle(fontSize = 15.sp, color = Tokens.fg)
-    val small = TextStyle(fontSize = 14.sp, color = Tokens.fg)
-    val monoSmall = TextStyle(fontFamily = Mono, fontSize = 12.5.sp, color = Tokens.fg3)
-    val eyebrow = TextStyle(fontFamily = Mono, fontSize = 11.sp, letterSpacing = 0.08.em, color = Tokens.fg3)
+    val hint: TextStyle get() = TextStyle(fontSize = 15.sp, color = Tokens.fg2)
+    val listTitle: TextStyle get() = TextStyle(fontFamily = Mono, fontSize = 16.sp, color = Tokens.fg)
+    val navTitle: TextStyle get() = TextStyle(fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = Tokens.fg)
+    val body: TextStyle get() = TextStyle(fontSize = 15.sp, color = Tokens.fg)
+    val small: TextStyle get() = TextStyle(fontSize = 14.sp, color = Tokens.fg)
+    val monoSmall: TextStyle get() = TextStyle(fontFamily = Mono, fontSize = 12.5.sp, color = Tokens.fg3)
+    val eyebrow: TextStyle get() = TextStyle(fontFamily = Mono, fontSize = 11.sp, letterSpacing = 0.08.em, color = Tokens.fg3)
 }
 
-/** Always dark: Material's scheme is remapped onto the tokens so any stock component that slips through still matches. */
+/**
+ * Material's scheme remapped onto the selected theme's tokens (its light or dark base by the theme), so any stock
+ * component that slips through still matches.
+ */
 @Composable
 fun FlowTheme(content: @Composable () -> Unit) {
-    val scheme = darkColorScheme(
+    val base = if (Tokens.palette.isLight) lightColorScheme() else darkColorScheme()
+    val scheme = base.copy(
         primary = Tokens.interactive,
         onPrimary = Tokens.onInteractive,
         primaryContainer = Tokens.panel2,
@@ -167,7 +277,7 @@ fun FlowTheme(content: @Composable () -> Unit) {
         surfaceTint = Color.Transparent,
         outline = Tokens.line,
         outlineVariant = Tokens.separator,
-        scrim = Color(0xB30B0C0E),
+        scrim = Tokens.bg.copy(alpha = 0.7f),
     )
     val typography = Typography().let { t ->
         t.copy(
@@ -416,7 +526,10 @@ fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifi
             containerColor = Tokens.interactive, contentColor = Tokens.onInteractive,
             disabledContainerColor = Tokens.interactive, disabledContentColor = Tokens.onInteractive,
         ),
-    ) { Text(text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
+    ) {
+        // Explicit: FlowTheme's `labelLarge` carries `fg`, which would win over the button's content colour.
+        Text(text, color = Tokens.onInteractive, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+    }
 }
 
 /** Small filled pill in `interactive` (the "Live ↓" button). */

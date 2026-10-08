@@ -187,7 +187,8 @@ struct PaneView: View {
     // MARK: Terminal
 
     private var terminal: some View {
-        TerminalView(grid: model.history ?? model.grid, fontSize: $fontSize, isHistory: model.history != nil,
+        TerminalView(grid: model.history ?? model.grid, theme: ThemeStore.shared.choice, fontSize: $fontSize,
+                     isHistory: model.history != nil,
                      fitMode: fitToDevice,
                      forwardScroll: model.effectiveScrollMode(for: paneId) != .scrollback,
                      onDeviceGrid: { cols, rows in if fitToDevice { model.fitPane(cols: cols, rows: rows) } },
