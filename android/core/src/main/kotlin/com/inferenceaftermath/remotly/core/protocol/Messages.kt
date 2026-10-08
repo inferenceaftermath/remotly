@@ -29,6 +29,8 @@ object ErrorCodes {
     // Client-side only.
     const val DISCONNECTED = "disconnected"
     const val TIMEOUT = "timeout"
+    /** The request was no longer wanted when its turn to go out came (nothing was sent). */
+    const val SUPERSEDED = "superseded"
 }
 
 object AgentStatus {
@@ -242,6 +244,21 @@ data class HistoryMessage(
     val scrollback: Int? = null,
 ) : ServerMessage
 
+/**
+ * Lines of the pane's history from the bridge's copy (§6 `scrollback`): logical lines, oldest first, `start` the number
+ * of `lines[0]` within `epoch`. `reset`: drop what is held and take these. No id: the answer comes before its `ok`.
+ */
+@Serializable
+@SerialName("scrollback")
+data class ScrollbackMessage(
+    val pane: String,
+    val epoch: String,
+    val start: Int = 0,
+    val lines: List<WireLine> = emptyList(),
+    val styles: Map<String, Style> = emptyMap(),
+    val reset: Boolean? = null,
+) : ServerMessage
+
 @Serializable
 @SerialName("approval.result")
 data class ApprovalResult(
@@ -258,7 +275,7 @@ data class HerdrMessage(val state: String) : ServerMessage {
     val isUp get() = state == "up"
 }
 
-/** `ok` plus the optional result fields of `watch` (`cols`, `rows`) and `zoom` (`zoomed`). */
+/** `ok` plus the optional result fields of `watch` (`cols`, `rows`), `zoom` (`zoomed`) and `scrollback` (`epoch`, `next`, `max_lines`). */
 @Serializable
 @SerialName("ok")
 data class OkMessage(
@@ -271,6 +288,10 @@ data class OkMessage(
     val tab: String? = null,
     /** `notify` → the arming now in force. */
     val done: Boolean? = null,
+    /** `scrollback` → the copy's epoch, the number its next line will get, and how many lines a phone keeps. */
+    val epoch: String? = null,
+    val next: Int? = null,
+    val max_lines: Int? = null,
 ) : ServerMessage
 
 @Serializable
@@ -305,6 +326,11 @@ data class Unwatch(val id: String, val pane: String) : ClientMessage
 @Serializable
 @SerialName("history")
 data class History(val id: String, val pane: String, val lines: Int, val unwrapped: Boolean? = null) : ClientMessage
+
+/** The pane's history from the bridge's copy (§4 `scrollback`): everything, or with `epoch` + `from` only the lines from `from` on. */
+@Serializable
+@SerialName("scrollback")
+data class Scrollback(val id: String, val pane: String, val epoch: String? = null, val from: Int? = null) : ClientMessage
 
 @Serializable
 @SerialName("keys")

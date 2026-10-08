@@ -5,7 +5,9 @@
 // dependency, so tests never touch binaries, the service manager or the network.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { AGENT_SETTINGS_RECORD, agentDirs, agentSettingsStep, claudeRunning, type AgentDirs } from './agent-settings.ts';
 import { expandHome } from './config.ts';
 import type { ControlStatus, PairInfo } from './control.ts';
 import { TAILSCALE_INSTALL, tailscaleHints } from './platform/hints.ts';
@@ -55,6 +57,8 @@ export interface SetupOptions {
    * always; no answer from systemd is not read as "running".
    */
   keepStopped?: boolean;
+  /** Set the coding agents up to keep their output in the scrollback (agent-settings.ts; default). false: `--no-agent-settings`. */
+  agentSettings?: boolean;
 }
 
 /** What `--lan` writes into config.json (keys the daemon otherwise resolves from Tailscale's presence). */
@@ -107,6 +111,9 @@ export function parseSetupArgs(argv: string[], env: NodeJS.ProcessEnv = process.
         break;
       case '--keep-stopped':
         opts.keepStopped = true;
+        break;
+      case '--no-agent-settings':
+        opts.agentSettings = false;
         break;
       default:
         throw new Error(`unknown setup option "${a}"`);
@@ -209,6 +216,12 @@ export interface SetupDeps {
   /** Reusable pairing code from the daemon. */
   pair: (ttlSec: number) => Promise<PairInfo>;
   showPairing: (info: PairInfo) => Promise<void>;
+  /** Where Claude Code and Codex keep their settings; default from `env` and `home` (`agentDirs`). */
+  agentDirs?: AgentDirs;
+  /** What became of those settings on this install; default `agent-settings.json` beside `configPath`. */
+  agentRecord?: string;
+  /** Whether Claude Code runs for this user; default a look at the processes (`claudeRunning`). */
+  claudeRunning?: () => boolean;
 }
 
 type Check =
@@ -764,6 +777,23 @@ export async function runSetup(deps: SetupDeps, opts: SetupOptions): Promise<num
   if (!(await ownershipGuard(deps, sm, opts))) return 1; // before anything is written (config, certificate, unit)
 
   if (!(await waitFor(deps, opts, herdrCheck(deps)))) return 1;
+
+  // The agents' own settings: made by every setup run by hand, by an unattended re-run (`update`) only once per install
+  // (one from before this step); after that they are the user's.
+  {
+    const home = deps.home ?? os.homedir();
+    agentSettingsStep(
+      {
+        dirs: deps.agentDirs ?? agentDirs(deps.env, home),
+        env: deps.env,
+        home,
+        out: deps.out,
+        record: deps.agentRecord ?? path.join(path.dirname(deps.configPath), AGENT_SETTINGS_RECORD),
+        claudeRunning: deps.claudeRunning ?? (() => claudeRunning(deps.uid)),
+      },
+      { unattended: opts.keepMode === true, skip: opts.agentSettings === false },
+    );
+  }
 
   // Which certificate the daemon will run on. `--lan` and `tls.mode` decide; only `auto` tries Tailscale with a fallback.
   // `--keep-mode` (unattended re-runs) takes the mode from config.json instead of switching a LAN host back to Tailscale.

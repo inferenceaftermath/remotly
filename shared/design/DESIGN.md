@@ -178,10 +178,19 @@ over 250 ms, leaves after 2.4 s. Copy is lowercase, dotted: `fit · pty resized 
   overflow, nothing in Settings. On iOS the title and the mark sit in the toolbar's principal slot, never in
   `.topBarLeading`: iOS 26 wraps leading items in a glass circle and truncates them.
 - **Terminal** flush on `bg`, no border; selection in `selection`.
-- **Scrollback:** the "Live ↓" button is a pill in `interactive` / `onInteractive`, bottom right, 12 pt inset. The
-  no-scrollback hint is a `panel` card with `line` border, radius 10, at the top: the sentence in sans 14 `fg` and
-  "Use mouse wheel" as a text button in `interactive`; tap elsewhere on it dismisses.
-- **Overflow menu**, same items and order on both: Copy screen · Raw text mode (checkmark when on) · Tell me when it's
+- **Scrollback:** one continuous scroll: the pane's history (the bridge's copy, protocol §4 `scrollback`, all of it on
+  the phone when the pane opens, wrapped to the pane's width) runs straight into the live screen, which keeps updating
+  while the user reads above it. Nothing loads while scrolling. The view opens at the bottom and stays there while
+  output arrives; scrolled up, the text in view stays put as lines are added, on the live screen too (when the screen
+  scrolls under it, the view follows the text, and a selection there moves with its text until that text leaves the
+  screen, when it is let go (select it again in the history); not while the history is still loading or a full-screen
+  program is up, when the text moves with the screen). The "Live ↓" button, a pill in
+  `interactive` / `onInteractive`, bottom right, 12 pt inset, shows while the view is more than a row above the bottom
+  and scrolls back down. Pulling past the top of a pane with no history at all shows the no-scrollback hint: a `panel`
+  card with `line` border, radius 10, at the top: the sentence in sans 14 `fg` and "Use mouse wheel" as a text button in
+  `interactive`; tap elsewhere on it dismisses. In the mouse-wheel and arrow-key swipe modes the history is hidden and
+  swipes go to the program.
+- **Overflow menu**, same items and order on both: Copy screen (the rows in view) · Raw text mode (checkmark when on) · Tell me when it's
   done (checkmark when armed; only with an agent) · Swiping up and down (the four modes Automatic · Scrollback on this
   phone · Mouse wheel to the program · Arrow keys to the program as a radio group) · separator · Close terminal
   (destructive). Zoom on the desktop is the Settings toggle alone; text size is the header's A− / A+ alone.

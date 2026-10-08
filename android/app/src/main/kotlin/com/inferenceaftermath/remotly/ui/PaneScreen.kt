@@ -1,5 +1,5 @@
-// Terminal view of one pane (DESIGN.md §4.4): frames via `watch`, scrollback via `history`, key row, composer,
-// approval card while blocked, zoom-on-desktop, copy screen.
+// Terminal view of one pane (DESIGN.md §4.4): frames via `watch`, the pane's history from the bridge's scrollback copy
+// above them in one scroll, key row, composer, approval card while blocked, zoom-on-desktop, copy screen.
 package com.inferenceaftermath.remotly.ui
 
 import android.content.ClipData
@@ -66,19 +66,13 @@ import com.inferenceaftermath.remotly.core.connection.FlowException
 import com.inferenceaftermath.remotly.core.protocol.ApprovalResult
 import com.inferenceaftermath.remotly.core.protocol.ErrorCodes
 import com.inferenceaftermath.remotly.core.protocol.Outcome
-import com.inferenceaftermath.remotly.core.terminal.Row as TermRow
 import com.inferenceaftermath.remotly.push.Notifications
 import com.inferenceaftermath.remotly.session.ScrollMode
 import com.inferenceaftermath.remotly.session.Session
-import kotlin.math.max
-import kotlin.math.min
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-
-private const val HISTORY_FIRST_PAGE = 300
-private const val HISTORY_MAX = 999
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -87,6 +81,7 @@ fun PaneScreen(session: Session, paneId: String, onBack: () -> Unit) {
     val connState by session.connState.collectAsStateWithLifecycle()
     val snapshot by session.snapshot.collectAsStateWithLifecycle()
     val grid by session.grid.collectAsStateWithLifecycle()
+    val scrollback by session.scrollback.collectAsStateWithLifecycle()
     val fontScale by session.fontScale.collectAsStateWithLifecycle()
     val fitToDevice by session.fitToDevice.collectAsStateWithLifecycle()
     val zoomOnDesktop by session.zoomOnDesktop.collectAsStateWithLifecycle()
@@ -113,11 +108,9 @@ fun PaneScreen(session: Session, paneId: String, onBack: () -> Unit) {
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
 
-    var history by remember(paneId) { mutableStateOf<List<TermRow>?>(null) }
-    var historyLines by remember(paneId) { mutableIntStateOf(0) }
-    var hasMore by remember(paneId) { mutableStateOf(false) }
-    var loadingHistory by remember(paneId) { mutableStateOf(false) }
-    /** A pull for scrollback found nothing above the screen in herdr (alternate-screen program, fresh shell): shown briefly. */
+    /** The terminal is more than a row above its bottom: "Live ↓" shows. */
+    var scrolledUp by remember(paneId) { mutableStateOf(false) }
+    /** A pull past the top found no history above the screen (alternate-screen program, fresh shell): shown briefly. */
     var noScrollbackHint by remember(paneId) { mutableStateOf(false) }
     var ctrl by remember { mutableStateOf(false) }
     var rawMode by rememberSaveable { mutableStateOf(false) }
@@ -218,8 +211,6 @@ fun PaneScreen(session: Session, paneId: String, onBack: () -> Unit) {
             onBack()
         }
     }
-    // Swipes go to the program → the phone's own scrollback is off.
-    LaunchedEffect(effectiveMode) { if (effectiveMode != ScrollMode.SCROLLBACK) history = null }
     LaunchedEffect(noScrollbackHint) {
         if (noScrollbackHint) {
             delay(8_000)
@@ -251,33 +242,6 @@ fun PaneScreen(session: Session, paneId: String, onBack: () -> Unit) {
             fitPhase = 0
             lastFit = null
             conn?.let { c -> runCatching { c.releaseFit(paneId) } }
-        }
-    }
-
-    fun loadHistory(lines: Int) {
-        val c = conn ?: return
-        if (loadingHistory) return
-        loadingHistory = true
-        scope.launch {
-            try {
-                val h = c.history(paneId, lines)
-                if (h.scrollback == 0) {
-                    // herdr holds nothing above the screen: `recent` is the live view again. Stay live and say so
-                    // (programs that draw their own screen scroll with the wheel instead).
-                    history = null
-                    noScrollbackHint = true
-                } else {
-                    val widest = h.lines.maxOfOrNull { l -> l.runs.maxOfOrNull { it.c + it.w } ?: 0 } ?: 0
-                    val cols = max(grid?.cols ?: 0, widest)
-                    history = h.lines.map { TermRow.fromRuns(it.runs, cols) }
-                    hasMore = h.has_more && lines < HISTORY_MAX
-                    historyLines = lines
-                }
-            } catch (e: Exception) {
-                report(e)
-            } finally {
-                loadingHistory = false
-            }
         }
     }
 
@@ -348,8 +312,8 @@ fun PaneScreen(session: Session, paneId: String, onBack: () -> Unit) {
                     ) {
                         MenuItem("Copy screen") {
                             menuOpen = false
-                            // What is on screen: the scrollback rows while browsing them, else the live grid (same as iOS).
-                            (history?.joinToString("\n") { it.text() } ?: grid?.plainText())?.let {
+                            // The rows in view, history or live (DESIGN.md §4.4).
+                            (terminalView?.visibleText() ?: grid?.plainText())?.let {
                                 context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("screen", it))
                                 session.notify("copied")
                             }
@@ -379,9 +343,9 @@ fun PaneScreen(session: Session, paneId: String, onBack: () -> Unit) {
                     factory = { ctx -> TerminalView(ctx).also { terminalView = it } },
                     update = { v ->
                         v.colors = Tokens.palette.terminal
-                        v.onScrollback = { if (history == null) loadHistory(HISTORY_FIRST_PAGE) }
-                        v.onReachTop = { if (history != null && hasMore && !loadingHistory) loadHistory(min(historyLines * 2, HISTORY_MAX)) }
-                        v.onPullBottom = { history = null }
+                        // only once the history has arrived: before that, no rows says nothing
+                        v.onPullPastTop = { if (conn?.historyLoadedFor == paneId) noScrollbackHint = true }
+                        v.onScrolledUp = { scrolledUp = it }
                         v.onTap = {
                             // Same as iOS: a tap on the terminal puts the keyboard away.
                             focusManager.clearFocus()
@@ -389,6 +353,7 @@ fun PaneScreen(session: Session, paneId: String, onBack: () -> Unit) {
                         }
                         v.onCopied = { session.notify("copied") }
                         v.forwardScroll = effectiveMode != ScrollMode.SCROLLBACK
+                        v.altScreen = paneAlt == true
                         v.onScrollLines = { dir, n, c, r -> run { it.scroll(paneId, dir, n, effectiveMode.wire, c, r) } }
                         v.styles = conn?.styles
                         v.fitMode = fitToDevice
@@ -410,17 +375,19 @@ fun PaneScreen(session: Session, paneId: String, onBack: () -> Unit) {
                             }
                         }
                         v.setFontScale(fontScale)
+                        val history = scrollback?.takeIf { it.pane == paneId }
+                        v.answering = history?.answering == true
+                        v.seedWidth(conn?.lastCols ?: 0)
                         v.setGrid(grid)
-                        v.setHistory(history)
+                        v.setScrollback(history)
                     },
                     modifier = Modifier.fillMaxSize(),
                 )
-                if (grid == null && history == null) {
+                if (grid == null && scrollback?.takeIf { it.pane == paneId }?.lines.isNullOrEmpty()) {
                     Text("Waiting for the first frame…", Modifier.align(Alignment.Center), style = Type.hint, textAlign = TextAlign.Center)
                 }
-                if (history != null) {
-                    // Scrolling past the bottom also returns to live; this is the visible cue that the view is frozen.
-                    PillButton(if (loadingHistory) "Loading…" else "Live ↓", onClick = { history = null }, modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp))
+                if (scrolledUp && effectiveMode == ScrollMode.SCROLLBACK) {
+                    PillButton("Live ↓", onClick = { terminalView?.scrollToBottom() }, modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp))
                 }
                 if (noScrollbackHint) {
                     // Same message and action as iOS: nothing older exists in herdr for this pane.

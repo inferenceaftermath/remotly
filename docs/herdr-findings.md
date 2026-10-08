@@ -33,7 +33,7 @@ These findings amended the herdr section (§4) of the original build brief, whic
 - Every styled run is prefixed by a reset: `ESC[0m` then attributes, e.g. `ESC[0m ESC[1m ESC[38;5;2m text ESC[0m`. Colours are emitted as **256-palette** (`38;5;n` / `48;5;n`) even for the basic 16 (red → `38;5;1`), and as **truecolour** `38;2;r;g;b` when the source was RGB. Attributes seen: `1` bold, `2` dim, `3` italic, `4` underline, `7` inverse, `9` strike.
 - Rows are separated by `\n`; in ANSI mode each row except the last ends with **`\r`** (`…\r\n`); in text mode there is no `\r`. Tabs are already expanded to spaces. **Trailing spaces are preserved in ANSI mode** ("trailing   \r"), trimmed in text mode. Wide characters are plain UTF-8 (no padding cells).
 - **Trailing blank rows are trimmed:** after `clear; echo X` the visible read has 3 lines although the pane has 41 rows. `rows` must therefore come from the layout/PTY, not from the read; missing rows are blank.
-- `lines` on `visible` returns the **last N** rows (`truncated:true`). `recent`/`recent_unwrapped lines=N` return N−1 lines, capped at 999 (`lines=5000` → 999, `truncated:true`); default without `lines` ≈ 80. `strip_ansi:true` with `format:"ansi"` strips SGR but keeps `\r`. GNU `clear` (E3) wipes herdr's scrollback too.
+- `lines` on `visible` returns the **last N** rows (`truncated:true`). `recent`/`recent_unwrapped lines=N` cover the last N rows of history and screen, capped at 999 (`lines=5000` → 999, `truncated:true`): N lines when the screen's last row has content, fewer when it ends in blank rows (counted, not returned; measured in §9, superseding an earlier "N−1" here); default without `lines` ≈ 80. `strip_ansi:true` with `format:"ansi"` strips SGR but keeps `\r`. GNU `clear` (E3) wipes herdr's scrollback too.
 
 ## 3. Pane dimensions (§4.2 item 3)
 
@@ -87,6 +87,50 @@ Measured with `bridge/scripts/capture.ts` in a scratch directory (`/tmp/flow-cap
 - `agent.get {target}` accepts an agent name or a pane id and returns `state_change_seq` (monotonic per agent); Remotly's `prompt_id` is `<pane_id>@<state_change_seq>` captured when the pane is `blocked`, which stays stable across bridge restarts.
 - `pane.zoom` params are `{pane_id, mode: "toggle"|"on"|"off"}`; `pane.process_info` returns `shell_pid` (and foreground process info) used for the PTY size probe.
 - A newer herdr (0.8.2) is available; the user's installation is 0.8.0 on purpose (not upgraded by the agent).
-- `pane.get` → `scroll {offset_from_bottom, max_offset_from_bottom, viewport_rows}` is herdr's own scrollback state; `max_offset_from_bottom` is the number of lines above the screen and is **0 for every Claude Code / Codex pane** (they run in the alternate screen, `[?1049h`), so `pane.read source=recent` returns just the visible rows for them. Shell and pi panes have thousands. Remotly's `history` reply passes it through as `scrollback`.
+- `pane.get` → `scroll {offset_from_bottom, max_offset_from_bottom, viewport_rows}` is herdr's own scrollback state; `max_offset_from_bottom` is the number of lines above the screen and is **0 for every Claude Code / Codex pane** (they run in the alternate screen, `[?1049h`), so `pane.read source=recent` returns just the visible rows for them. Shell and pi panes have thousands. Remotly's `history` reply passes it through as `scrollback`. Since 2026-10, `setup` switches both agents out of the alternate screen (§9).
 - Claude Code 2.1.x enables mouse tracking (`[?1000h`, `[?1006h`): SGR wheel reports written via `pane.send_text` scroll its transcript, which is what Remotly's `scroll mode=wheel` relies on.
 - `pane.resize {pane_id, direction: left|right|up|down}` exists but moves a split boundary by one step (it changed the pane from 197 to 180 columns and was reversed with the opposite direction); it is not a PTY-size call. Rows-fit from the phone still needs an upstream addition.
+
+## 9. Scrollback for the bridge's own copy (measured 2026-10-07/08 against herdr 0.8.0, Claude Code 2.1.294, Codex 0.157)
+
+Measured in a scratch session (`herdr --session remotly-scroll`) with bursts of numbered lines, long soft-wrapped lines,
+resizes, `less` and `clear`; these facts shape `bridge/src/terminal/scrollback.ts` and `server/scrollback.ts`.
+
+- `recent lines=N` is the last N rows of history **plus the whole screen**: the screen's blank bottom rows count toward N
+  but are not returned (so a read of a pane whose cursor sits high returns fewer than N rows). Its tail is `visible`.
+  `truncated:true` when older rows exist above the read.
+- `recent_unwrapped lines=N` covers the same N rows with soft-wrapped rows joined into logical lines; its first line may be
+  the cut-off end of a longer one. There is no offset parameter: nothing older than the last 999 rows can be read.
+- `pane.list` carries every pane's `scroll`, so one request a tick tells which panes gained rows above the screen.
+  `max_offset_from_bottom` is 0 while a program holds the alternate screen and the old value is back after it exits.
+  herdr caps scrollback by bytes (`scrollback_limit_bytes`), not rows: a full scrollback scrolls without the count growing
+  (seen above 20 000 rows).
+- herdr re-wraps its history when the pane's width changes (a desktop resize, a split, a phone's fit): row counts and row
+  contents change, logical lines do not. A wider pane can pull the newest history lines back onto the screen.
+- GNU `clear` (E3) empties herdr's history; `max_offset_from_bottom` drops to 0. So does a program taking the alternate
+  screen, and only `pane.process_info` tells the two apart: after `clear` the shell's process group has the terminal
+  (`foreground_process_group_id == shell_pid`), under `less` or vim another one does. A pane widened enough to pull every
+  history row back onto the screen also reads 0 with the shell in front; its rows are then on the screen (the copy's
+  last lines are among `recent_unwrapped`), unlike after `clear`. A whole read (`truncated:false`) holding none of the
+  copy's lines says nothing about `clear` by itself: a scrollback capped by bytes can hold fewer rows than one read,
+  and all of it can turn over between two reads.
+- The counts move while a read is in flight: `pane.list` before the reads and `pane.get` after them bound how many rows
+  the history gained since the last read (at least the before-count minus the last after-count, at most the
+  after-count minus the last before-count). Repeated identical output (`yes | head`) can only be lined up with the
+  copy by that growth, since its lines match at many places. Once herdr's scrollback is full the count no longer grows,
+  so identical lines printed while the screen already shows the same line leave no trace at all (count, screen and
+  last lines all as before): the copy then holds fewer of them than were printed. Nothing in herdr 0.8.0's API tells
+  them apart (no output counter, no read offset). Lines are compared with their colours: herdr writes each logical
+  line of an `ansi` read from its cells (a reset, then a code where the style changes, none where the line wraps), so
+  the same line reads the same at any width and in any read, and lines that differ only in colour are told apart.
+- herdr 0.8.0 sometimes loses a line on a widening resize: with bursts of numbered lines (every third 127 characters
+  long) in a 40-column pane widened to 80 columns while the last burst was still printing, the burst's final long line
+  was missing from herdr's own `recent_unwrapped` afterwards in 2 of 8 runs. Nothing else was lost or reordered; the
+  bridge's copy matched herdr in every run (it can only keep what herdr keeps).
+- Claude Code: `"tui": "default"` in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) selects the classic renderer,
+  which writes into the normal screen; `"fullscreen"` uses the alternate screen. `/tui default` in a session writes the
+  setting and restarts that session; other sessions already running garble when the file changes under them (they need
+  `/exit` and `claude --resume`). `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` forces classic too. The classic renderer keeps
+  its scrollback across a width change (SIGWINCH) and ignores SGR wheel reports.
+- Codex: `[tui] alternate_screen = "never"` in `~/.codex/config.toml` (or `$CODEX_HOME`) keeps it inline, like
+  `--no-alt-screen`; an invalid value is a startup error. pi always draws inline.

@@ -34,6 +34,7 @@ import com.inferenceaftermath.remotly.core.pairing.PairingClient
 import com.inferenceaftermath.remotly.core.pairing.QrPayload
 import com.inferenceaftermath.remotly.core.protocol.ClientInfo
 import com.inferenceaftermath.remotly.core.protocol.Snapshot
+import com.inferenceaftermath.remotly.core.terminal.ScrollbackLines
 import com.inferenceaftermath.remotly.core.terminal.TerminalGrid
 import com.inferenceaftermath.remotly.data.HostStore
 import com.inferenceaftermath.remotly.push.Notifications
@@ -96,6 +97,10 @@ class Session(private val app: Application, val store: HostStore) {
         .stateIn(scope, SharingStarted.Eagerly, null)
     val grid: StateFlow<TerminalGrid?> = _connection
         .flatMapLatest { it?.grid ?: flowOf(null) }
+        .stateIn(scope, SharingStarted.Eagerly, null)
+    /** History of the watched pane (the bridge's scrollback copy, or a legacy `history` read); check its `pane`. */
+    val scrollback: StateFlow<ScrollbackLines?> = _connection
+        .flatMapLatest { it?.scrollback ?: flowOf(null) }
         .stateIn(scope, SharingStarted.Eagerly, null)
     val herdrUp: StateFlow<Boolean> = _connection
         .flatMapLatest { it?.herdrUp ?: flowOf(true) }

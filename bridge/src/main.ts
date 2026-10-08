@@ -12,6 +12,7 @@ import { ControlError, controlRequest, controlSocketPath, startControlServer, ty
 import { HerdrClient, resolveSocketPath } from './herdr/client.ts';
 import { HerdrLink } from './herdr/link.ts';
 import { createLogger, parseLevel, type Logger } from './log.ts';
+import { AGENT_SETTINGS_RECORD, applyPendingAgents, claudeRunning } from './agent-settings.ts';
 import { ApnsClient } from './push/apns.ts';
 import { FcmClient } from './push/fcm.ts';
 import { Notifier } from './push/notify.ts';
@@ -36,10 +37,10 @@ export const VERSION: string = pkg.version;
 const USAGE = `remotly-bridge ${VERSION}
 usage: remotly-bridge <command>
   setup [--ttl N] [--no-pair] [--no-wait] [--lan] [--keep-mode] [--keep-stopped] [--no-auto-update]
-        [--unit NAME] [--config-dir DIR] [--herdr-session NAME] [--herdr-socket PATH]
-                              check herdr and Tailscale, get the certificate, install and start the user
-                              service and the daily update timer, print one pairing QR for all your phones
-                              (what install.sh runs)
+        [--no-agent-settings] [--unit NAME] [--config-dir DIR] [--herdr-session NAME] [--herdr-socket PATH]
+                              check herdr and Tailscale, set Claude Code and Codex to keep their output in the
+                              scrollback, get the certificate, install and start the user service and the daily
+                              update timer, print one pairing QR for all your phones (what install.sh runs)
   serve                       run the daemon (what the user service runs)
   pair [--manual] [--ttl N]   create a single-use pairing code; prints a QR unless --manual
   devices list                list paired devices
@@ -79,7 +80,7 @@ async function serve(log: Logger): Promise<void> {
   const devices = new DeviceStore(statePath('devices.json'), { log }).load();
   const pairing = new PairingManager();
   const link = new HerdrLink({ socketPath: resolveSocketPath(config.herdr), log });
-  const hub = new Hub({ link, log, hostName, version: VERSION });
+  const hub = new Hub({ link, log, hostName, version: VERSION, scrollbackLines: config.scrollback.max_lines });
 
   // Per platform: local credentials send directly; otherwise the relay (relay/README.md) sends on the host's behalf.
   const apnsCfg = config.push.apns;
@@ -118,6 +119,7 @@ async function serve(log: Logger): Promise<void> {
   log.info('push.ready', { apns: pushMode.apns, fcm: pushMode.fcm, ...(relay ? { relay: config.push.relay_url } : {}) });
 
   link.start();
+  hub.scrollback.start();
   const gate = createTailnetGate(config, { log, tailscaleUp });
   const uploads = new UploadStore({ dir: config.uploads.dir, keepDays: config.uploads.keep_days, maxBytes: config.uploads.max_mb * 1024 * 1024, log });
   const http = await startHttpServer({
@@ -175,11 +177,42 @@ async function serve(log: Logger): Promise<void> {
   const control = await startControlServer(handlers, { log });
   log.info('bridge.started', { version: VERSION, config_dir: configDir(), listen: `${http.address}:${http.port}`, tls: tls.mode, herdr_socket: resolveSocketPath(config.herdr) });
 
+  // The agents' settings an unattended update left to be made (agent-settings.ts): Claude Code's while a session of it
+  // runs, either one after a failed edit. Looked at now and every 15 minutes while any is left; each line logged once.
+  let agentsTimer: NodeJS.Timeout | undefined;
+  const agentNotes = new Set<string>();
+  const pendingAgentSettings = (): void => {
+    agentsTimer = undefined;
+    let state: ReturnType<typeof applyPendingAgents>;
+    try {
+      state = applyPendingAgents({
+        env: process.env,
+        home: os.homedir(),
+        out: (line) => {
+          if (agentNotes.has(line)) return;
+          agentNotes.add(line);
+          log.info('agents.settings', { note: line.trim() });
+        },
+        record: statePath(AGENT_SETTINGS_RECORD),
+        claudeRunning: () => {
+          const uid = process.getuid?.();
+          return uid === undefined || claudeRunning(uid);
+        },
+      });
+    } catch (err) {
+      log.warn('agents.settings_failed', { error: (err as Error).message });
+      return;
+    }
+    if (state === 'waiting' || state === 'failed') agentsTimer = setTimeout(pendingAgentSettings, 15 * 60_000).unref();
+  };
+  pendingAgentSettings();
+
   let stopping = false;
   const shutdown = (signal: string): void => {
     if (stopping) return;
     stopping = true;
     log.info('bridge.stopping', { signal });
+    clearTimeout(agentsTimer);
     renewal.stop();
     notifier.close();
     devices.flush();
@@ -191,6 +224,7 @@ async function serve(log: Logger): Promise<void> {
       .then(() => hub.zoomer.restoreAll())
       .catch(() => undefined)
       .then(() => {
+        hub.scrollback.stop();
         link.stop();
         return Promise.allSettled([control.close(), http.close()]);
       })

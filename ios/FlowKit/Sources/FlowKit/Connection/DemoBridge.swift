@@ -10,6 +10,11 @@ final class DemoBridge {
     private var input: [String: String] = [:]
     private var finishing: [String: Int] = [:]
     private var watched: String?
+    /// Per pane: the scrollback copy last sent (logical lines that left the screen), and how often it restarted.
+    private var copies: [String: [String]] = [:]
+    private var copyRestarts: [String: Int] = [:]
+    /// The pane whose new scrollback lines are pushed (its last `scrollback` request), as the bridge does.
+    private var subscribed: String?
     private var cols = 80
     private var rows = 24
     private var revision = 0
@@ -27,6 +32,7 @@ final class DemoBridge {
 
     func welcome() -> String {
         watched = nil
+        subscribed = nil
         return encode(["t": "welcome", "protocol": 1,
                        "host": ["name": "Demo host", "flow_version": "sample"],
                        "device": ["id": "demo-device", "name": "This device"],
@@ -62,9 +68,11 @@ final class DemoBridge {
         switch type {
         case "watch":
             watched = pane
+            if subscribed != pane { subscribed = nil }
             events = [ok(["cols": cols, "rows": rows]), frame(pane)]
         case "unwatch":
             if watched == pane { watched = nil }
+            if subscribed == pane { subscribed = nil }
             events = [ok()]
         case "fit":
             let release = m["release"] as? Bool == true
@@ -78,9 +86,26 @@ final class DemoBridge {
             events = [["t": "history", "id": id, "pane": pane,
                        "lines": all.suffix(count).map { ["runs": runs($0)] }, "styles": styles(),
                        "has_more": all.count > count, "scrollback": max(0, all.count - rows)]]
+        case "scrollback":
+            // The sample copy, as a bridge answers: from `from` on when `epoch` is the copy's and `from` within it (a
+            // phone coming back), else all of it; new lines follow as pushes. Lines back on the screen (a wider fit) stay
+            // in the copy; a copy the sample output no longer continues starts over under another epoch.
+            var lines = scrolledOff(pane)
+            if let old = copies[pane] {
+                if old.starts(with: lines) { lines = old } else if !lines.starts(with: old) { copyRestarts[pane, default: 0] += 1 }
+            }
+            copies[pane] = lines
+            subscribed = pane
+            let from = m["from"] as? Int
+            let resume = m["epoch"] as? String == copyEpoch(pane) && from.map { (0...lines.count).contains($0) } == true
+            let start = resume ? from ?? 0 : 0
+            events = resume && start == lines.count ? [] : [scrollback(pane, start: start, lines: Array(lines[start...]), reset: !resume)]
+            events.append(ok(["epoch": copyEpoch(pane), "next": lines.count, "max_lines": 10_000]))
         case "pane.close":
             panes.remove(at: index); output[pane] = nil; input[pane] = nil; finishing[pane] = nil
+            copies[pane] = nil; copyRestarts[pane] = nil
             if watched == pane { watched = nil }
+            if subscribed == pane { subscribed = nil }
             events = [ok(), snapshot()]
         case "approve", "choose":
             let prompt = string("prompt_id")
@@ -122,6 +147,7 @@ final class DemoBridge {
         case "scroll": events = [ok()]
         default: return error("unsupported", "This feature needs a paired host and is unavailable in demo mode.")
         }
+        if let push = scrollbackPush() { events.append(push) }
         return events.map(encode)
     }
 
@@ -135,6 +161,7 @@ final class DemoBridge {
             events.append(snapshot())
             if watched == pane { events.append(frame(pane)) }
         }
+        if let push = scrollbackPush() { events.append(push) }
         return events.map(encode)
     }
 
@@ -152,13 +179,50 @@ final class DemoBridge {
     private func append(_ pane: String, _ text: String) {
         output[pane] = Array(((output[pane] ?? []) + clean(text).components(separatedBy: "\n")).suffix(200))
     }
-    private func wrapped(_ pane: String) -> [String] {
+    private func logical(_ pane: String) -> [String] {
         let lines = (output[pane] ?? []) + (input[pane].map { ["> \($0)"] } ?? [])
-        return lines.flatMap { $0.components(separatedBy: "\n") }.flatMap { line -> [String] in
+        return lines.flatMap { $0.components(separatedBy: "\n") }
+    }
+    private func wrapped(_ pane: String) -> [String] {
+        logical(pane).flatMap { line -> [String] in
             if line.isEmpty { return [""] }
             let chars = Array(line)
             return stride(from: 0, to: chars.count, by: cols).map { String(chars[$0..<min($0 + cols, chars.count)]) }
         }
+    }
+    /// The logical lines whose rows have all left the screen (the last `rows` rows), oldest first.
+    private func scrolledOff(_ pane: String) -> [String] {
+        let lines = logical(pane)
+        var above = max(0, lines.reduce(0) { $0 + max(1, ($1.count + cols - 1) / cols) } - rows)
+        var out: [String] = []
+        for line in lines {
+            let taken = max(1, (line.count + cols - 1) / cols)
+            guard taken <= above else { break }
+            out.append(line)
+            above -= taken
+        }
+        return out
+    }
+    private func copyEpoch(_ pane: String) -> String {
+        let restarts = copyRestarts[pane] ?? 0
+        return restarts == 0 ? "demo" : "demo-\(restarts)"
+    }
+    private func scrollback(_ pane: String, start: Int, lines: [String], reset: Bool) -> Object {
+        var message: Object = ["t": "scrollback", "pane": pane, "epoch": copyEpoch(pane), "start": start,
+                               "lines": lines.map { ["runs": runs($0)] }, "styles": styles()]
+        if reset { message["reset"] = true }
+        return message
+    }
+    /// Lines that left the subscribed pane's screen since its copy was sent, as the bridge pushes them. Lines back on
+    /// the screen (a wider fit) stay in the copy; a copy the sample output no longer continues starts over.
+    private func scrollbackPush() -> Object? {
+        guard let pane = subscribed, let old = copies[pane], output[pane] != nil else { return nil }
+        let now = scrolledOff(pane)
+        if old.starts(with: now) { return nil }
+        copies[pane] = now
+        if now.starts(with: old) { return scrollback(pane, start: old.count, lines: Array(now[old.count...]), reset: false) }
+        copyRestarts[pane, default: 0] += 1
+        return scrollback(pane, start: 0, lines: now, reset: true)
     }
     private func frame(_ pane: String) -> Object {
         revision += 1

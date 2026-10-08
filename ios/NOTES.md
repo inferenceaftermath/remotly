@@ -128,6 +128,8 @@ Interpretations of DESIGN.md taken here (mirror them on Android if they are kept
   the pane status (same on Android).
 - "Fitting…" clears on the first frame after the `fit` reply, or after 3 s when the program does not redraw.
 - Blocked panes appear only under "Needs you", not again in their tab's section.
+- `CADisableMinimumFrameDurationOnPhone` in Info.plist: Apple's opt-in for frame rates above 60 Hz on ProMotion
+  iPhones; the terminal redraws the rows in view itself at every step of a scroll through the history.
 
 ## Review pass
 
@@ -165,5 +167,3 @@ A second, compiler-less read of every `.swift` file against Swift 6 strict concu
 
 - Long-press key variants, Alt modifier, "copy line" (only "copy screen"), haptics, multiple
   hosts, reader mode. `FlowTests`/`FlowUITests` app-level test targets (FlowKit carries the tests).
-- Scrollback is a paged fetch (500, then up to 999 lines) rendered in the same grid view with
-  "Older" / "Jump to live" buttons rather than infinite upward scrolling.

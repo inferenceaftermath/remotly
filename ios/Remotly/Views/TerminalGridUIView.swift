@@ -1,9 +1,11 @@
 // UIKit grid renderer: one NSAttributedString draw per same-style run of ASCII cells, one per
 // non-ASCII or wide cell (centred in its cell box so fallback fonts cannot drift the columns).
-// Redraws only rows whose cells changed. The view is only ever viewport-sized: the scroll view
-// pins it to the visible area and sets `origin`, so a 999-row scrollback never becomes one giant
-// layer (Core Animation stops rendering backing stores beyond the GPU texture limit — the screen
-// would simply go blank).
+// The pane's history rows (the bridge's scrollback copy, wrapped to the grid's columns) sit above
+// the live grid in one column of rows: history row i is row i, live row y is row history + y.
+// Redraws only live rows whose cells changed, and only ever the rows on screen. The view is only
+// ever viewport-sized: the scroll view pins it to the visible area and sets `origin`, so a
+// 10 000-line history never becomes one giant layer (Core Animation stops rendering backing stores
+// beyond the GPU texture limit — the screen would simply go blank).
 import FlowKit
 import UIKit
 
@@ -159,10 +161,14 @@ final class TerminalGridUIView: UIView {
             setNeedsDisplay()
         }
     }
+    /// History rows above the live grid, oldest first (none while swipes go to the program).
+    private(set) var history = WrappedHistory()
+    /// Styles of the history rows' runs (their ids outlive the connection; the live grid's do not).
+    var historyStyles = HistoryStyles()
     var metrics = TerminalMetrics(size: 12) {
         didSet { if metrics.size != oldValue.size { setNeedsDisplay() } }
     }
-    /// Grid point (in grid coordinates: cols × cellWidth, rows × lineHeight) shown at this view's top-left.
+    /// Content point (cols × cellWidth wide; history rows, then live rows, each lineHeight tall) shown at this view's top-left.
     var origin: CGPoint = .zero {
         didSet { if origin != oldValue { setNeedsDisplay() } }
     }
@@ -172,7 +178,37 @@ final class TerminalGridUIView: UIView {
     }
 
     var selectionText: String? {
-        selection.map { grid.text(from: $0.anchor, to: $0.focus) }
+        selection.map { text(from: $0.anchor, to: $0.focus) }
+    }
+
+    /// History rows, then the live grid's.
+    var totalRows: Int { history.rowCount + grid.rows }
+
+    /// Top of the live grid in content coordinates.
+    var liveTop: CGFloat { CGFloat(history.rowCount) * metrics.lineHeight }
+
+    func setHistory(_ newHistory: WrappedHistory) {
+        if newHistory.generation != history.generation || newHistory.cols != history.cols { madeRows = [:] }
+        history = newHistory
+        setNeedsDisplay()
+    }
+
+    /// The rows of the history lines drawn lately, by line number: a line's rows are made once, not for each of its rows
+    /// in every frame (they stay the same until the lines are replaced or wrapped at another width).
+    private var madeRows: [Int: [[WireRun]]] = [:]
+
+    /// History row `y`'s runs (placed from its column 0).
+    private func historyRow(_ y: Int) -> [WireRun] {
+        guard let at = history.line(atRow: y) else { return [] }
+        let rows: [[WireRun]]
+        if let made = madeRows[at.line] {
+            rows = made
+        } else {
+            if madeRows.count >= 256 { madeRows = [:] }
+            rows = history.rows(ofLine: at.line)
+            madeRows[at.line] = rows
+        }
+        return at.rowInLine < rows.count ? rows[at.rowInLine] : []
     }
 
     // MARK: Slide (a scrolled frame glides into place instead of jumping)
@@ -238,7 +274,7 @@ final class TerminalGridUIView: UIView {
             return
         }
         slideOffset -= slideOffset > 0 ? step : -step
-        let region = CGRect(x: 0, y: -origin.y, width: bounds.width, height: CGFloat(slideMovingRows) * metrics.lineHeight)
+        let region = CGRect(x: 0, y: liveTop - origin.y, width: bounds.width, height: CGFloat(slideMovingRows) * metrics.lineHeight)
         setNeedsDisplay(region.intersection(bounds))
     }
 
@@ -253,11 +289,12 @@ final class TerminalGridUIView: UIView {
                       height: CGFloat(end.row - start.row + 1) * metrics.lineHeight)
     }
 
-    /// Cell under a point in this view's coordinates; columns clamp to the grid, rows outside it are nil.
+    /// Cell (history and live rows counted together) under a point in this view's coordinates; columns clamp to the
+    /// grid, rows outside the content are nil.
     func cell(at point: CGPoint) -> GridPosition? {
-        guard metrics.cellWidth > 0, metrics.lineHeight > 0, grid.rows > 0, grid.cols > 0 else { return nil }
+        guard metrics.cellWidth > 0, metrics.lineHeight > 0, totalRows > 0, grid.cols > 0 else { return nil }
         let row = Int(floor((point.y + origin.y) / metrics.lineHeight))
-        guard row >= 0, row < grid.rows else { return nil }
+        guard row >= 0, row < totalRows else { return nil }
         let col = Int(floor((point.x + origin.x) / metrics.cellWidth))
         return GridPosition(row: row, col: min(max(col, 0), grid.cols - 1))
     }
@@ -269,6 +306,74 @@ final class TerminalGridUIView: UIView {
 
     private func ordered(_ s: (anchor: GridPosition, focus: GridPosition)) -> (GridPosition, GridPosition) {
         s.anchor <= s.focus ? (s.anchor, s.focus) : (s.focus, s.anchor)
+    }
+
+    // MARK: Text (history and live rows together)
+
+    /// Row `y` as cells; a history row is laid out here on demand (selection and copying only, never while drawing).
+    private func rowCells(_ y: Int) -> [Cell] {
+        let historyCount = history.rowCount
+        if y >= 0, y < historyCount {
+            let cols = max(grid.cols, 1)
+            var row = Array(repeating: Cell.blank, count: cols)
+            TerminalGrid.paint(runs: historyRow(y), into: &row, cols: cols)
+            return row
+        }
+        let live = y - historyCount
+        return live >= 0 && live < grid.rows ? grid.cells[live] : []
+    }
+
+    /// Text of the cells from `a` to `b` inclusive (either order) in reading order, as `TerminalGrid.text(from:to:)`.
+    func text(from a: GridPosition, to b: GridPosition) -> String {
+        let total = totalRows
+        let cols = grid.cols
+        guard total > 0, cols > 0 else { return "" }
+        func clamp(_ p: GridPosition) -> GridPosition {
+            GridPosition(row: min(max(p.row, 0), total - 1), col: min(max(p.col, 0), cols - 1))
+        }
+        let (start, end) = a <= b ? (clamp(a), clamp(b)) : (clamp(b), clamp(a))
+        var lines: [String] = []
+        for y in start.row...end.row {
+            let row = rowCells(y)
+            var from = y == start.row ? start.col : 0
+            let to = min(y == end.row ? end.col : cols - 1, row.count - 1)
+            if from > 0, from < row.count, row[from].width == 0 { from -= 1 }
+            var text = ""
+            if from <= to {
+                for x in from...to where row[x].width > 0 { text += row[x].text }
+            }
+            while text.hasSuffix(" ") { text.removeLast() }
+            lines.append(text)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// The whitespace-delimited word around `p` (a blank cell selects just itself); nil off the content.
+    func wordRange(at p: GridPosition) -> ClosedRange<GridPosition>? {
+        guard p.row >= 0, p.row < totalRows, p.col >= 0, p.col < grid.cols else { return nil }
+        let row = rowCells(p.row)
+        guard p.col < row.count else { return nil }
+        func isInk(_ x: Int) -> Bool { row[x].width == 0 || (row[x].text != " " && !row[x].text.isEmpty) }
+        guard isInk(p.col) else { return p...p }
+        var from = p.col
+        while from > 0, isInk(from - 1) { from -= 1 }
+        var to = p.col
+        while to + 1 < row.count, isInk(to + 1) { to += 1 }
+        return GridPosition(row: p.row, col: from)...GridPosition(row: p.row, col: to)
+    }
+
+    /// The rows on screen now (history and/or live), one per line, trailing blanks trimmed ("Copy screen").
+    func visibleText() -> String {
+        let line = metrics.lineHeight
+        guard line > 0, totalRows > 0, grid.cols > 0 else { return "" }
+        // rows at least half in view
+        let first = max(0, Int(ceil(origin.y / line - 0.5)))
+        let last = min(totalRows - 1, Int(floor((origin.y + bounds.height) / line - 0.5)))
+        guard first <= last else { return "" }
+        // trailing blank rows dropped, as on Android
+        var lines = text(from: GridPosition(row: first, col: 0), to: GridPosition(row: last, col: grid.cols - 1)).components(separatedBy: "\n")
+        while lines.last?.isEmpty == true { lines.removeLast() }
+        return lines.joined(separator: "\n")
     }
 
     override init(frame: CGRect) {
@@ -287,6 +392,7 @@ final class TerminalGridUIView: UIView {
         contentMode = .redraw
     }
 
+    /// The live grid's size (the history rows above it take `liveTop`).
     var gridSize: CGSize {
         CGSize(width: CGFloat(grid.cols) * metrics.cellWidth, height: CGFloat(grid.rows) * metrics.lineHeight)
     }
@@ -306,9 +412,9 @@ final class TerminalGridUIView: UIView {
         }
     }
 
-    /// Row `y` in this view's coordinates.
+    /// Live row `y` in this view's coordinates.
     private func rowRect(_ y: Int) -> CGRect {
-        CGRect(x: 0, y: CGFloat(y) * metrics.lineHeight - origin.y, width: bounds.width, height: metrics.lineHeight)
+        CGRect(x: 0, y: liveTop + CGFloat(y) * metrics.lineHeight - origin.y, width: bounds.width, height: metrics.lineHeight)
     }
 
     override func draw(_ rect: CGRect) {
@@ -316,15 +422,42 @@ final class TerminalGridUIView: UIView {
         ctx.setFillColor(theme.background.cgColor)
         ctx.fill(rect)
         let lineHeight = metrics.lineHeight
-        guard lineHeight > 0, grid.rows > 0 else { return }
-        // Work in grid coordinates: shift the context so row y sits at y × lineHeight.
-        let gridRect = rect.offsetBy(dx: origin.x, dy: origin.y)
+        guard lineHeight > 0 else { return }
+        // Work in content coordinates: shift the context so content row y sits at y × lineHeight.
+        let contentRect = rect.offsetBy(dx: origin.x, dy: origin.y)
+        let visibleX = contentRect.minX...contentRect.maxX
+        ctx.saveGState()
+        ctx.translateBy(x: -origin.x, y: -origin.y)
+        let historyCount = history.rowCount
+        if historyCount > 0 {
+            // Only the rows on screen, straight from their runs: the cost of a frame does not grow with the history.
+            let first = max(0, Int(floor(contentRect.minY / lineHeight)))
+            let last = min(historyCount - 1, Int(ceil(contentRect.maxY / lineHeight)))
+            if first <= last {
+                for y in first...last { drawRuns(historyRow(y), top: CGFloat(y) * lineHeight, in: ctx, visibleX: visibleX) }
+            }
+        }
+        // The live grid below them, in its own coordinates (live row y at y × lineHeight).
+        let top = liveTop
+        ctx.saveGState()
+        ctx.translateBy(x: 0, y: top)
+        drawLive(gridRect: contentRect.offsetBy(dx: 0, dy: -top), in: ctx, visibleX: visibleX)
+        ctx.restoreGState()
+        if slideOffset == 0 || slideMovingRows == 0 {
+            let first = max(0, Int(floor(contentRect.minY / lineHeight)))
+            let last = min(totalRows - 1, Int(ceil(contentRect.maxY / lineHeight)))
+            if first <= last { drawSelection(first: first, last: last, in: ctx) }
+        }
+        ctx.restoreGState()
+    }
+
+    /// The live grid's rows within `gridRect` (live-grid coordinates; the context is translated to match).
+    private func drawLive(gridRect: CGRect, in ctx: CGContext, visibleX: ClosedRange<CGFloat>) {
+        let lineHeight = metrics.lineHeight
+        guard grid.rows > 0 else { return }
         let first = max(0, Int(floor(gridRect.minY / lineHeight)))
         let last = min(grid.rows - 1, Int(ceil(gridRect.maxY / lineHeight)))
         guard first <= last else { return }
-        ctx.saveGState()
-        ctx.translateBy(x: -origin.x, y: -origin.y)
-        let visibleX = gridRect.minX...gridRect.maxX
         if slideOffset != 0, slideMovingRows > 0 {
             // The moving region (rows 0..<m) is drawn displaced by slideOffset and clipped to its own box, with
             // the rows that scrolled out still showing next to it; the rows below it stay put.
@@ -342,9 +475,7 @@ final class TerminalGridUIView: UIView {
             ctx.restoreGState()
         } else {
             for y in first...last { drawRow(y, in: ctx, visibleX: visibleX) }
-            drawSelection(first: first, last: last, in: ctx)
         }
-        ctx.restoreGState()
     }
 
     private func drawSelection(first: Int, last: Int, in ctx: CGContext) {
@@ -403,6 +534,42 @@ final class TerminalGridUIView: UIView {
                 }
             }
             x = end
+        }
+    }
+
+    /// One history row (runs placed from its column 0) with its top edge at `top`, drawn as `drawCells` draws cells but
+    /// straight from the runs, so a row on screen costs no cell array: printable ASCII in one draw, other narrow
+    /// characters each centred in its cell, a wide character centred in its two.
+    private func drawRuns(_ runs: [WireRun], top: CGFloat, in ctx: CGContext, visibleX: ClosedRange<CGFloat>) {
+        let cellWidth = metrics.cellWidth
+        for run in runs where run.w > 0 {
+            let originX = CGFloat(run.c) * cellWidth
+            let width = CGFloat(run.w) * cellWidth
+            if originX + width < visibleX.lowerBound || originX > visibleX.upperBound { continue } // off-screen columns
+            let style = historyStyles.style(run.s)
+            let colors = theme.colors(for: style)
+            if let bg = colors.background {
+                ctx.setFillColor(bg.cgColor)
+                ctx.fill(CGRect(x: originX, y: top, width: width, height: metrics.lineHeight))
+            }
+            if run.t.allSatisfy({ $0 == " " }) { continue }
+            let attributes = metrics.attributes(for: style, foreground: colors.foreground)
+            let utf8 = run.t.utf8
+            if utf8.count == run.w, utf8.allSatisfy({ (0x20...0x7E).contains($0) }) {
+                NSAttributedString(string: run.t, attributes: attributes).draw(at: CGPoint(x: originX, y: top))
+            } else if run.t.count == run.w {
+                var x = originX
+                for character in run.t {
+                    if character != " " {
+                        let glyph = NSAttributedString(string: String(character), attributes: attributes)
+                        glyph.draw(at: CGPoint(x: x + max(0, (cellWidth - glyph.size().width) / 2), y: top))
+                    }
+                    x += cellWidth
+                }
+            } else {
+                let glyph = NSAttributedString(string: run.t, attributes: attributes)
+                glyph.draw(at: CGPoint(x: originX + max(0, (width - glyph.size().width) / 2), y: top))
+            }
         }
     }
 
