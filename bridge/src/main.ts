@@ -12,6 +12,7 @@ import { ControlError, controlRequest, controlSocketPath, startControlServer, ty
 import { HerdrClient, resolveSocketPath } from './herdr/client.ts';
 import { HerdrLink } from './herdr/link.ts';
 import { createLogger, parseLevel, type Logger } from './log.ts';
+import { AGENT_SETTINGS_RECORD, applyPendingAgents, claudeRunning } from './agent-settings.ts';
 import { ApnsClient } from './push/apns.ts';
 import { FcmClient } from './push/fcm.ts';
 import { Notifier } from './push/notify.ts';
@@ -176,11 +177,42 @@ async function serve(log: Logger): Promise<void> {
   const control = await startControlServer(handlers, { log });
   log.info('bridge.started', { version: VERSION, config_dir: configDir(), listen: `${http.address}:${http.port}`, tls: tls.mode, herdr_socket: resolveSocketPath(config.herdr) });
 
+  // The agents' settings an unattended update left to be made (agent-settings.ts): Claude Code's while a session of it
+  // runs, either one after a failed edit. Looked at now and every 15 minutes while any is left; each line logged once.
+  let agentsTimer: NodeJS.Timeout | undefined;
+  const agentNotes = new Set<string>();
+  const pendingAgentSettings = (): void => {
+    agentsTimer = undefined;
+    let state: ReturnType<typeof applyPendingAgents>;
+    try {
+      state = applyPendingAgents({
+        env: process.env,
+        home: os.homedir(),
+        out: (line) => {
+          if (agentNotes.has(line)) return;
+          agentNotes.add(line);
+          log.info('agents.settings', { note: line.trim() });
+        },
+        record: statePath(AGENT_SETTINGS_RECORD),
+        claudeRunning: () => {
+          const uid = process.getuid?.();
+          return uid === undefined || claudeRunning(uid);
+        },
+      });
+    } catch (err) {
+      log.warn('agents.settings_failed', { error: (err as Error).message });
+      return;
+    }
+    if (state === 'waiting' || state === 'failed') agentsTimer = setTimeout(pendingAgentSettings, 15 * 60_000).unref();
+  };
+  pendingAgentSettings();
+
   let stopping = false;
   const shutdown = (signal: string): void => {
     if (stopping) return;
     stopping = true;
     log.info('bridge.stopping', { signal });
+    clearTimeout(agentsTimer);
     renewal.stop();
     notifier.close();
     devices.flush();

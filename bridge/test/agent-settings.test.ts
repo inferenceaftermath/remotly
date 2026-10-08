@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
-import { agentDirs, applyAgentSettings, withClaudeTui, withCodexAltScreen } from '../src/agent-settings.ts';
+import { agentDirs, agentSettingsStep, applyAgentSettings, applyPendingAgents, claudeRunning, isClaudeCommand, readAgentRecord, withClaudeTui, withCodexAltScreen } from '../src/agent-settings.ts';
 
 let dir: string;
 beforeEach(() => (dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remotly-agents-'))));
@@ -126,4 +126,194 @@ test('applyAgentSettings: only installed agents, through a symlinked file, mode 
   applyAgentSettings({ dirs, env: {}, home: dir, out: (l) => out.push(l) });
   assert.match(out[0]!, /⚠ Claude Code: could not set "tui": "default" .*not valid JSON/);
   assert.equal(fs.readFileSync(real, 'utf8'), '{oops', 'a file it cannot read is left as it is');
+});
+
+test('readAgentRecord: none is null; on, on with settings pending (absolute dirs only), off; anything it cannot read counts as off', () => {
+  const file = path.join(dir, 'agent-settings.json');
+  assert.equal(readAgentRecord(file), null);
+  fs.writeFileSync(file, '{"choice":"on"}\n');
+  assert.deepEqual(readAgentRecord(file), { choice: 'on' });
+  fs.writeFileSync(file, '{"choice":"on","pending":{"claude":"/h/.claude","codex":"rel/dir","x":"/y"}}\n');
+  assert.deepEqual(readAgentRecord(file), { choice: 'on', pending: { claude: '/h/.claude' } });
+  fs.writeFileSync(file, '{"choice":"on","pending":{"codex":3}}\n');
+  assert.deepEqual(readAgentRecord(file), { choice: 'on' });
+  fs.writeFileSync(file, '{"choice":"off","pending":{"claude":"/h/.claude"}}\n');
+  assert.deepEqual(readAgentRecord(file), { choice: 'off' });
+  for (const junk of ['', '{oops', '[]', '{"choice":"maybe"}', 'null']) {
+    fs.writeFileSync(file, junk);
+    assert.deepEqual(readAgentRecord(file), { choice: 'off' }, JSON.stringify(junk));
+  }
+  fs.rmSync(file);
+  fs.mkdirSync(file);
+  assert.deepEqual(readAgentRecord(file), { choice: 'off' }, 'unreadable');
+});
+
+test('agentSettingsStep: by hand always (recorded), skipped when asked (recorded); unattended only once, on an install with no record', () => {
+  const out: string[] = [];
+  const dirs = { claude: path.join(dir, 'claude'), codex: path.join(dir, 'codex') };
+  fs.mkdirSync(dirs.claude);
+  fs.mkdirSync(dirs.codex);
+  const record = path.join(dir, 'config', 'agent-settings.json');
+  const claudeFile = path.join(dirs.claude, 'settings.json');
+  const codexFile = path.join(dirs.codex, 'config.toml');
+  let running = false;
+  let looked = 0;
+  const d = { dirs, env: {}, home: dir, out: (l: string) => out.push(l), record, claudeRunning: () => (looked++, running) };
+  const reset = () => {
+    for (const f of [claudeFile, codexFile, record]) fs.rmSync(f, { force: true });
+    out.length = 0;
+    looked = 0;
+  };
+
+  agentSettingsStep(d, { unattended: false, skip: true });
+  assert.deepEqual(readAgentRecord(record), { choice: 'off' });
+  assert.equal(fs.existsSync(claudeFile) || fs.existsSync(codexFile), false);
+  assert.equal(fs.statSync(record).mode & 0o777, 0o600);
+  agentSettingsStep(d, { unattended: true, skip: false });
+  assert.equal(fs.existsSync(codexFile), false, 'off: an update leaves them alone');
+
+  running = true; // by hand the user reads what to restart, so a running Claude Code does not hold it back
+  agentSettingsStep(d, { unattended: false, skip: false });
+  assert.deepEqual(readAgentRecord(record), { choice: 'on' });
+  assert.deepEqual(JSON.parse(fs.readFileSync(claudeFile, 'utf8')), { tui: 'default' });
+  assert.ok(fs.existsSync(codexFile));
+  fs.writeFileSync(claudeFile, '{"tui":"fullscreen"}');
+  fs.rmSync(codexFile);
+  out.length = 0;
+  agentSettingsStep(d, { unattended: true, skip: false });
+  assert.equal(fs.readFileSync(claudeFile, 'utf8'), '{"tui":"fullscreen"}', 'recorded: the user\'s own edits since stand');
+  assert.equal(fs.existsSync(codexFile), false);
+  assert.equal(out.length, 0);
+
+  // an install from before the record: its first update sets both, once
+  reset();
+  running = false;
+  agentSettingsStep(d, { unattended: true, skip: false });
+  assert.deepEqual(readAgentRecord(record), { choice: 'on' });
+  assert.deepEqual(JSON.parse(fs.readFileSync(claudeFile, 'utf8')), { tui: 'default' });
+  assert.ok(fs.existsSync(codexFile));
+  assert.equal(looked, 1, 'looked for a running Claude Code right before the write');
+  fs.rmSync(codexFile);
+  agentSettingsStep(d, { unattended: true, skip: false });
+  assert.equal(fs.existsSync(codexFile), false, 'only once');
+
+  // ... with Claude Code running: Codex now, Claude Code left to the daemon, in the directory used here
+  reset();
+  running = true;
+  agentSettingsStep(d, { unattended: true, skip: false });
+  assert.deepEqual(readAgentRecord(record), { choice: 'on', pending: { claude: dirs.claude } });
+  assert.equal(fs.existsSync(claudeFile), false, 'a running session would redraw badly');
+  assert.ok(fs.existsSync(codexFile));
+  assert.ok(out.some((l) => l.includes('⚠ Claude Code is running')));
+  agentSettingsStep(d, { unattended: true, skip: false });
+  assert.deepEqual(readAgentRecord(record), { choice: 'on', pending: { claude: dirs.claude } }, 'the next update leaves it to the daemon');
+  agentSettingsStep(d, { unattended: false, skip: false });
+  assert.deepEqual(readAgentRecord(record), { choice: 'on' }, 'setup by hand sets it now');
+  assert.deepEqual(JSON.parse(fs.readFileSync(claudeFile, 'utf8')), { tui: 'default' });
+
+  // ... with Claude Code running but already set: nothing to write, nothing pending
+  fs.rmSync(record);
+  agentSettingsStep(d, { unattended: true, skip: false });
+  assert.deepEqual(readAgentRecord(record), { choice: 'on' });
+
+  // ... an edit that fails is left pending, not recorded as made
+  reset();
+  running = false;
+  fs.writeFileSync(codexFile, 'tui = { alternate_screen = "always" }\n');
+  fs.writeFileSync(claudeFile, '{oops');
+  agentSettingsStep(d, { unattended: true, skip: false });
+  assert.deepEqual(readAgentRecord(record), { choice: 'on', pending: { claude: dirs.claude, codex: dirs.codex } });
+  assert.equal(fs.readFileSync(codexFile, 'utf8'), 'tui = { alternate_screen = "always" }\n');
+
+  // Claude Code not installed: running or not, nothing is pending
+  reset();
+  running = true;
+  fs.rmSync(dirs.claude, { recursive: true });
+  agentSettingsStep(d, { unattended: true, skip: false });
+  assert.deepEqual(readAgentRecord(record), { choice: 'on' });
+  assert.equal(fs.existsSync(dirs.claude), false);
+});
+
+test('applyPendingAgents: Claude Code once no session of it runs, a failed edit again until it works, in the recorded dirs; a setup meanwhile has the last word', () => {
+  const out: string[] = [];
+  const dirs = { claude: path.join(dir, 'claude'), codex: path.join(dir, 'codex') };
+  fs.mkdirSync(dirs.claude);
+  fs.mkdirSync(dirs.codex);
+  const record = path.join(dir, 'agent-settings.json');
+  const claudeFile = path.join(dirs.claude, 'settings.json');
+  const codexFile = path.join(dirs.codex, 'config.toml');
+  let running: () => boolean = () => true;
+  const d = { env: {}, home: dir, out: (l: string) => out.push(l), record, claudeRunning: () => running() };
+  assert.equal(applyPendingAgents(d), 'none', 'no record');
+  for (const r of ['{"choice":"on"}', '{"choice":"off"}', '{oops', `{"choice":"off","pending":{"claude":${JSON.stringify(dirs.claude)}}}`]) {
+    fs.writeFileSync(record, r);
+    assert.equal(applyPendingAgents(d), 'none', r);
+  }
+  assert.equal(fs.existsSync(claudeFile), false);
+
+  fs.writeFileSync(record, JSON.stringify({ choice: 'on', pending: { claude: dirs.claude } }));
+  assert.equal(applyPendingAgents(d), 'waiting');
+  assert.equal(fs.existsSync(claudeFile), false);
+  running = () => false;
+  assert.equal(applyPendingAgents(d), 'done');
+  assert.deepEqual(JSON.parse(fs.readFileSync(claudeFile, 'utf8')), { tui: 'default' });
+  assert.deepEqual(readAgentRecord(record), { choice: 'on' });
+  assert.match(out[0]!, /Claude Code: "tui": "default" set in ~\/claude\/settings\.json/);
+  assert.equal(applyPendingAgents(d), 'none');
+
+  // a failed Codex edit: tried again, and made once the file can be edited
+  fs.writeFileSync(codexFile, 'tui = { alternate_screen = "always" }\n');
+  fs.writeFileSync(record, JSON.stringify({ choice: 'on', pending: { codex: dirs.codex } }));
+  assert.equal(applyPendingAgents(d), 'failed');
+  assert.deepEqual(readAgentRecord(record), { choice: 'on', pending: { codex: dirs.codex } });
+  fs.writeFileSync(codexFile, 'model = "x"\n');
+  assert.equal(applyPendingAgents(d), 'done');
+  assert.equal(fs.readFileSync(codexFile, 'utf8'), 'model = "x"\n\n[tui]\nalternate_screen = "never"\n');
+
+  // `setup --no-agent-settings` while the daemon looks: its record stands
+  fs.rmSync(claudeFile);
+  fs.writeFileSync(record, JSON.stringify({ choice: 'on', pending: { claude: dirs.claude } }));
+  running = () => {
+    fs.writeFileSync(record, '{"choice":"off"}');
+    return false;
+  };
+  assert.equal(applyPendingAgents(d), 'none');
+  assert.deepEqual(readAgentRecord(record), { choice: 'off' });
+});
+
+test('isClaudeCommand: the native binary, a link to it, node running the package; not other programs', () => {
+  for (const argv of [['claude'], ['claude', '--resume', 'x'], ['/home/u/.local/bin/claude'], ['/home/u/.local/share/claude/versions/2.1.0', '--model', 'opus'], ['node', '/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js'], ['node', '/home/u/.npm-global/bin/claude']]) {
+    assert.equal(isClaudeCommand(argv), true, argv.join(' '));
+  }
+  for (const argv of [[''], ['bash'], ['codex', '--model', 'claude'], ['vim', 'notes/claude.md'], ['/usr/bin/claude-monitor'], ['bash', '-c', 'source /home/u/.claude/shell-snapshots/s.sh']]) {
+    assert.equal(isClaudeCommand(argv), false, argv.join(' '));
+  }
+});
+
+test('claudeRunning: this user\'s processes from /proc; ps where there is no /proc; yes whenever something cannot be read', () => {
+  const uid = process.getuid!();
+  const proc = path.join(dir, 'proc');
+  const pid = (n: number, argv: string[]) => {
+    fs.mkdirSync(path.join(proc, String(n)), { recursive: true });
+    fs.writeFileSync(path.join(proc, String(n), 'cmdline'), argv.join('\0') + '\0');
+  };
+  pid(10, ['bash']);
+  pid(11, ['codex', 'exec']);
+  fs.mkdirSync(path.join(proc, 'self'));
+  fs.symlinkSync(path.join(dir, 'nowhere'), path.join(proc, '13')); // ended between the listing and the look
+  assert.equal(claudeRunning(uid, { procDir: proc }), false);
+  assert.equal(claudeRunning(uid + 1, { procDir: proc }), false);
+  fs.mkdirSync(path.join(proc, '14', 'cmdline'), { recursive: true }); // a command line that cannot be read
+  assert.equal(claudeRunning(uid, { procDir: proc }), true, 'not known: counted as running');
+  assert.equal(claudeRunning(uid + 1, { procDir: proc }), false, 'another user\'s process is not looked into');
+  fs.rmSync(path.join(proc, '14'), { recursive: true });
+  pid(12, ['claude', '--resume']);
+  assert.equal(claudeRunning(uid, { procDir: proc }), true);
+  assert.equal(claudeRunning(uid + 1, { procDir: proc }), false, 'another user\'s sessions are not this user\'s settings');
+
+  const none = path.join(dir, 'no-proc');
+  assert.equal(claudeRunning(uid, { procDir: none, ps: () => `  ${uid} bash\n  ${uid} codex exec\n` }), false);
+  assert.equal(claudeRunning(uid, { procDir: none, ps: () => `  ${uid + 1} claude\n  ${uid} /Users/u/.local/bin/claude --model opus\n` }), true);
+  assert.equal(claudeRunning(uid, { procDir: none, ps: () => `  ${uid + 1} claude\n` }), false);
+  assert.equal(claudeRunning(uid, { procDir: none, ps: () => { throw new Error('no ps'); } }), true);
 });

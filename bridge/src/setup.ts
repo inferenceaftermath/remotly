@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { agentDirs, applyAgentSettings, type AgentDirs } from './agent-settings.ts';
+import { AGENT_SETTINGS_RECORD, agentDirs, agentSettingsStep, claudeRunning, type AgentDirs } from './agent-settings.ts';
 import { expandHome } from './config.ts';
 import type { ControlStatus, PairInfo } from './control.ts';
 import { TAILSCALE_INSTALL, tailscaleHints } from './platform/hints.ts';
@@ -218,6 +218,10 @@ export interface SetupDeps {
   showPairing: (info: PairInfo) => Promise<void>;
   /** Where Claude Code and Codex keep their settings; default from `env` and `home` (`agentDirs`). */
   agentDirs?: AgentDirs;
+  /** What became of those settings on this install; default `agent-settings.json` beside `configPath`. */
+  agentRecord?: string;
+  /** Whether Claude Code runs for this user; default a look at the processes (`claudeRunning`). */
+  claudeRunning?: () => boolean;
 }
 
 type Check =
@@ -774,10 +778,21 @@ export async function runSetup(deps: SetupDeps, opts: SetupOptions): Promise<num
 
   if (!(await waitFor(deps, opts, herdrCheck(deps)))) return 1;
 
-  // The agents' own settings belong to the user once set: an unattended re-run (`update`) leaves them as they are now.
-  if (!opts.keepMode && opts.agentSettings !== false) {
+  // The agents' own settings: made by every setup run by hand, by an unattended re-run (`update`) only once per install
+  // (one from before this step); after that they are the user's.
+  {
     const home = deps.home ?? os.homedir();
-    applyAgentSettings({ dirs: deps.agentDirs ?? agentDirs(deps.env, home), env: deps.env, home, out: deps.out });
+    agentSettingsStep(
+      {
+        dirs: deps.agentDirs ?? agentDirs(deps.env, home),
+        env: deps.env,
+        home,
+        out: deps.out,
+        record: deps.agentRecord ?? path.join(path.dirname(deps.configPath), AGENT_SETTINGS_RECORD),
+        claudeRunning: deps.claudeRunning ?? (() => claudeRunning(deps.uid)),
+      },
+      { unattended: opts.keepMode === true, skip: opts.agentSettings === false },
+    );
   }
 
   // Which certificate the daemon will run on. `--lan` and `tls.mode` decide; only `auto` tries Tailscale with a fallback.

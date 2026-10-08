@@ -119,6 +119,7 @@ function makeDeps(over: Partial<SetupDeps> & { script?: Record<string, ExecResul
     showPairing: async (info) => void out.push(`QR ${info.code} ${info.reusable ? 'reusable' : 'single'}`),
     // never the real ~/.claude or ~/.codex: nothing is installed here unless a test creates the directory
     agentDirs: { claude: path.join(dir, 'agents', 'claude'), codex: path.join(dir, 'agents', 'codex') },
+    claudeRunning: () => false,
     ...Object.fromEntries(Object.entries(over).filter(([k]) => k !== 'script')),
   };
   return { deps, out, calls, sock, touchSocket: () => fs.writeFileSync(sock, '') };
@@ -151,15 +152,30 @@ test('parseSetupArgs: defaults, flags, validation', () => {
   assert.throws(() => parseSetupArgs(['--bogus'], {}), /unknown setup option/);
 });
 
-test('setup sets the installed agents up, except on unattended re-runs (--keep-mode) and with --no-agent-settings', async () => {
-  for (const [opts, applied] of [[OPTS, true], [{ ...OPTS, keepMode: true }, false], [{ ...OPTS, agentSettings: false }, false]] as const) {
+test('setup sets the installed agents up by hand, on an unattended re-run (--keep-mode) only once per install, never with --no-agent-settings', async () => {
+  const record = path.join(dir, 'agent-settings.json');
+  const toml = path.join(dir, 'agents', 'codex', 'config.toml');
+  // [options, record before, settings made, record after]
+  const cases = [
+    [OPTS, null, true, 'on'],
+    [OPTS, '{"choice":"off"}', true, 'on'],
+    [{ ...OPTS, agentSettings: false }, null, false, 'off'],
+    [{ ...OPTS, keepMode: true }, null, true, 'on'],
+    [{ ...OPTS, keepMode: true }, '{"choice":"on"}', false, 'on'],
+    [{ ...OPTS, keepMode: true }, '{"choice":"off"}', false, 'off'],
+  ] as const;
+  for (const [opts, before, applied, after] of cases) {
     fs.rmSync(path.join(dir, 'agents'), { recursive: true, force: true });
+    fs.rmSync(record, { force: true });
+    if (before) fs.writeFileSync(record, before);
     fs.mkdirSync(path.join(dir, 'agents', 'codex'), { recursive: true });
     const { deps, out, touchSocket } = makeDeps({ script: { ...tsScript(), ...lingerYes } });
     touchSocket();
-    assert.equal(await runSetup(deps, opts), 0);
-    assert.equal(fs.existsSync(path.join(dir, 'agents', 'codex', 'config.toml')), applied, JSON.stringify(opts));
-    assert.equal(out.some((l) => l.includes('Codex: [tui] alternate_screen')), applied);
+    const label = JSON.stringify([opts, before]);
+    assert.equal(await runSetup(deps, opts), 0, label);
+    assert.equal(fs.existsSync(toml), applied, label);
+    assert.equal(out.some((l) => l.includes('Codex: [tui] alternate_screen')), applied, label);
+    assert.equal(JSON.parse(fs.readFileSync(record, 'utf8')).choice, after, label);
     assert.equal(fs.existsSync(path.join(dir, 'agents', 'claude')), false, 'Claude Code is not installed: left alone');
   }
   assert.equal(parseSetupArgs(['--no-agent-settings'], {}).agentSettings, false);

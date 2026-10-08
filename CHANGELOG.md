@@ -7,7 +7,7 @@ there to the App Store and Google Play by hand (`promote.yml`; `docs/DELIVERY.md
 
 ## Unreleased
 
-### Scrollback in one piece
+### Bridge 0.4.0 — scrollback in one piece
 
 - The bridge keeps its own copy of every pane's scrollback, whether a phone is connected or not: twice a second it asks
   herdr (`pane.list`) which panes gained rows above the screen and folds the lines that left the screen into the copy —
@@ -16,15 +16,25 @@ there to the App Store and Google Play by hand (`promote.yml`; `docs/DELIVERY.md
   `clear` starts a new copy.
 - New request `scrollback` (protocol §4/§6): a phone gets the whole copy when it opens a pane and then every new line as
   it scrolls off; after a reconnect, only what it missed. Over a slow link the lines go out as fast as it takes them,
-  without holding up the live screen or a switch to another pane. `history` stays for older apps.
-- The apps show the history and the live screen as one continuous scroll, wrapped to the phone's width, with everything
-  on the phone from the start: no loading at the top, no frozen copy, the live screen keeps updating while you read
-  above it, and "Live ↓" brings you back. Against an older bridge they read one 999-line `history` instead.
+  without holding up the live screen or a switch to another pane. `history` stays for older apps, and
+  the apps below fall back to it against an older bridge.
 - `setup` (what the install command runs) sets Claude Code to its classic renderer (`"tui": "default"` in
   `~/.claude/settings.json`) and Codex to stay out of the alternate screen (`[tui] alternate_screen = "never"` in
   `~/.codex/config.toml`) when they are installed, so their output lands in the scrollback too; it says what it changed,
-  and that Claude Code sessions already running need `/exit` and `claude --resume`. `--no-agent-settings` skips it;
-  unattended updates never touch it.
+  and that Claude Code sessions already running need `/exit` and `claude --resume`. `--no-agent-settings` skips it.
+- Hosts installed before 0.4.0 get the same settings once, from the update that brings 0.4.0: Codex at once (it reads
+  them when a session starts), Claude Code at once unless a session of it is running — a running session redraws badly
+  when they change — in which case the bridge sets it as soon as none is (it looks every 15 minutes; `remotly-bridge
+  setup` sets it now); an edit that fails is tried again the same way. After that the settings are the user's: later
+  updates leave them alone, and a `setup --no-agent-settings` keeps them out of updates too
+  (`<config dir>/agent-settings.json` records which). The service does not see a `CLAUDE_CONFIG_DIR` or `CODEX_HOME`
+  set in a shell: with those, run `remotly-bridge setup` from that shell.
+
+### Phone apps — scrollback in one piece
+
+- The apps show the history and the live screen as one continuous scroll, wrapped to the phone's width, with everything
+  on the phone from the start: no loading at the top, no frozen copy, the live screen keeps updating while you read
+  above it, and "Live ↓" brings you back. Against an older bridge they read one 999-line `history` instead.
 
 ### Bridge 0.3.0
 

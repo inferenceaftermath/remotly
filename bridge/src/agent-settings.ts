@@ -3,6 +3,7 @@
 // alternate screen leaves no scrollback behind: Claude Code's full-screen renderer and Codex's default do. Claude Code
 // has a classic renderer (`"tui": "default"` in its settings.json) and Codex an inline mode (`[tui] alternate_screen =
 // "never"` in config.toml); pi always draws inline. Only agents installed here are touched, and only that one key.
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { writeFileAtomic } from './auth/devices.ts';
@@ -242,8 +243,11 @@ function onPath(env: NodeJS.ProcessEnv, name: string): boolean {
   return false;
 }
 
-/** Apply `edit` to `file` (through a symlink to the file it points at), keeping its mode. A link to nothing is left alone. */
-function rewrite(file: string, edit: (text: string | null) => Edit): Edit {
+/**
+ * Apply `edit` to `file` (through a symlink to the file it points at), keeping its mode. A link to nothing is left alone.
+ * `mayWrite`, asked right before a changed file is written (and not when nothing changes), can hold the write back.
+ */
+function rewrite(file: string, edit: (text: string | null) => Edit, mayWrite?: () => boolean): Edit | { kind: 'blocked' } {
   let target = file;
   let text: string | null = null;
   let mode = 0o600;
@@ -276,6 +280,7 @@ function rewrite(file: string, edit: (text: string | null) => Edit): Edit {
     return { kind: 'error', message: (err as Error).message };
   }
   if (result.kind !== 'set') return result;
+  if (mayWrite && !mayWrite()) return { kind: 'blocked' };
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
     writeFileAtomic(target, result.text, mode);
@@ -285,23 +290,236 @@ function rewrite(file: string, edit: (text: string | null) => Edit): Edit {
   return result;
 }
 
-/** Set both agents up (those installed here) and say what changed. */
-export function applyAgentSettings(deps: { dirs: AgentDirs; env: NodeJS.ProcessEnv; home: string; out: (line: string) => void }): void {
-  const shown = (p: string): string => (p === deps.home || p.startsWith(deps.home + path.sep) ? `~${p.slice(deps.home.length)}` : p);
-  if (fs.existsSync(deps.dirs.claude) || onPath(deps.env, 'claude')) {
-    const file = path.join(deps.dirs.claude, 'settings.json');
-    const r = rewrite(file, withClaudeTui);
-    if (r.kind === 'kept') deps.out(`  ✔ Claude Code: "tui": "default" in ${shown(file)}`);
-    else if (r.kind === 'set') {
-      deps.out(`  ✔ Claude Code: "tui": "default" set in ${shown(file)}${r.was ? ` (was ${r.was})` : ''}, so its output stays in the scrollback the phones show`);
-      deps.out('    a Claude Code session already running redraws badly after this change: in each, /exit, then claude --resume');
-    } else deps.out(`  ⚠ Claude Code: could not set "tui": "default" in ${shown(file)} (${r.message}); set it by hand for its full scrollback on the phones`);
+export interface AgentOut {
+  dirs: AgentDirs;
+  env: NodeJS.ProcessEnv;
+  home: string;
+  out: (line: string) => void;
+}
+
+/** What became of one agent's setting: not installed here, set (or already so), not set (said why), held back. */
+export type AgentOutcome = 'absent' | 'done' | 'error' | 'blocked';
+
+const shownPath = (home: string, p: string): string => (p === home || p.startsWith(home + path.sep) ? `~${p.slice(home.length)}` : p);
+
+function claudeInstalled(d: AgentOut): boolean {
+  return fs.existsSync(d.dirs.claude) || onPath(d.env, 'claude');
+}
+
+/** Claude Code's setting (when it is installed here), and what changed said; `mayWrite` as `rewrite`'s, said by the caller. */
+function applyClaude(d: AgentOut, mayWrite?: () => boolean): AgentOutcome {
+  if (!claudeInstalled(d)) return 'absent';
+  const file = path.join(d.dirs.claude, 'settings.json');
+  const r = rewrite(file, withClaudeTui, mayWrite);
+  if (r.kind === 'blocked') return 'blocked';
+  if (r.kind === 'kept') d.out(`  ✔ Claude Code: "tui": "default" in ${shownPath(d.home, file)}`);
+  else if (r.kind === 'set') {
+    d.out(`  ✔ Claude Code: "tui": "default" set in ${shownPath(d.home, file)}${r.was ? ` (was ${r.was})` : ''}, so its output stays in the scrollback the phones show`);
+    d.out('    a Claude Code session already running redraws badly after this change: in each, /exit, then claude --resume');
+  } else {
+    d.out(`  ⚠ Claude Code: could not set "tui": "default" in ${shownPath(d.home, file)} (${r.message}); set it by hand for its full scrollback on the phones`);
+    return 'error';
   }
-  if (fs.existsSync(deps.dirs.codex) || onPath(deps.env, 'codex')) {
-    const file = path.join(deps.dirs.codex, 'config.toml');
-    const r = rewrite(file, withCodexAltScreen);
-    if (r.kind === 'kept') deps.out(`  ✔ Codex: [tui] alternate_screen = "never" in ${shown(file)}`);
-    else if (r.kind === 'set') deps.out(`  ✔ Codex: [tui] alternate_screen = "never" set in ${shown(file)}${r.was ? ` (was ${r.was})` : ''}: sessions started from now on keep their output in the scrollback`);
-    else deps.out(`  ⚠ Codex: could not set [tui] alternate_screen = "never" in ${shown(file)} (${r.message}); set it by hand for its full scrollback on the phones`);
+  return 'done';
+}
+
+/** Codex's setting (when it is installed here), and what changed said. Codex reads it when a session starts. */
+function applyCodex(d: AgentOut): AgentOutcome {
+  if (!(fs.existsSync(d.dirs.codex) || onPath(d.env, 'codex'))) return 'absent';
+  const file = path.join(d.dirs.codex, 'config.toml');
+  const r = rewrite(file, withCodexAltScreen);
+  if (r.kind === 'kept') d.out(`  ✔ Codex: [tui] alternate_screen = "never" in ${shownPath(d.home, file)}`);
+  else if (r.kind === 'set') d.out(`  ✔ Codex: [tui] alternate_screen = "never" set in ${shownPath(d.home, file)}${r.was ? ` (was ${r.was})` : ''}: sessions started from now on keep their output in the scrollback`);
+  else {
+    d.out(`  ⚠ Codex: could not set [tui] alternate_screen = "never" in ${shownPath(d.home, file)} (${r.kind === 'error' ? r.message : 'held back'}); set it by hand for its full scrollback on the phones`);
+    return 'error';
+  }
+  return 'done';
+}
+
+/** Set both agents up (those installed here) and say what changed. */
+export function applyAgentSettings(d: AgentOut): void {
+  applyClaude(d);
+  applyCodex(d);
+}
+
+// ---- once per install: what became of these settings ------------------------------------------------------------
+
+/**
+ * What became of the agents' settings on this install: `<config dir>/agent-settings.json`. No file: never decided — an
+ * install from before setup made them, whose next unattended update makes them once.
+ */
+export interface AgentSettingsRecord {
+  /** `off`: the last setup run by hand had `--no-agent-settings`, and unattended runs leave the agents alone as well. */
+  choice: 'on' | 'off';
+  /**
+   * Settings still to be made (`on` only), per agent with the directory the run that left them used (the daemon's
+   * environment may not name it): Claude Code's while a session of it was running (a running session redraws badly
+   * when its settings change), either one after an edit that failed. The daemon makes them (`applyPendingAgents`).
+   */
+  pending?: { claude?: string; codex?: string };
+}
+
+export const AGENT_SETTINGS_RECORD = 'agent-settings.json';
+
+/** The record; null when there is none. One that cannot be read counts as `off`: whatever the user chose stands. */
+export function readAgentRecord(file: string): AgentSettingsRecord | null {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? null : { choice: 'off' };
+  }
+  try {
+    const v = JSON.parse(text) as { choice?: unknown; pending?: unknown };
+    if (v.choice === 'off') return { choice: 'off' };
+    if (v.choice === 'on') {
+      const p = v.pending !== null && typeof v.pending === 'object' ? (v.pending as Record<string, unknown>) : {};
+      const pending: NonNullable<AgentSettingsRecord['pending']> = {};
+      for (const agent of ['claude', 'codex'] as const) {
+        const dir = p[agent];
+        if (typeof dir === 'string' && path.isAbsolute(dir)) pending[agent] = dir;
+      }
+      return Object.keys(pending).length > 0 ? { choice: 'on', pending } : { choice: 'on' };
+    }
+  } catch {
+    /* not JSON */
+  }
+  return { choice: 'off' };
+}
+
+function writeAgentRecord(file: string, record: AgentSettingsRecord, out: (line: string) => void): void {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    writeFileAtomic(file, `${JSON.stringify(record)}\n`, 0o600);
+  } catch (err) {
+    out(`  ⚠ could not write ${file} (${(err as Error).message}): the agents' settings may be looked at again by the next update`);
+  }
+}
+
+const onRecord = (pending: NonNullable<AgentSettingsRecord['pending']>): AgentSettingsRecord =>
+  Object.keys(pending).length > 0 ? { choice: 'on', pending } : { choice: 'on' };
+
+const CLAUDE_RUNNING = '  ⚠ Claude Code is running: "tui": "default" is set once no session of it is (a running session redraws badly when it changes); `remotly-bridge setup` sets it now';
+
+export interface AgentStepDeps extends AgentOut {
+  /** The record's path (`<config dir>/agent-settings.json`). */
+  record: string;
+  /** Whether a Claude Code process of this user runs (`claudeRunning`). */
+  claudeRunning: () => boolean;
+}
+
+/**
+ * setup's step. Run by hand: both agents are set up now (the user reads what changed and what to restart), or with
+ * `--no-agent-settings` left alone, and the choice is recorded. Unattended (`update`): only an install with no record
+ * (one from before this step) is set up, once — Codex now (it reads its settings when a session starts), Claude Code
+ * now unless it is running (a running session redraws badly when its settings change under it; looked at again right
+ * before the write), and what is left (a running Claude Code, a failed edit) is left to the daemon. With a record, an
+ * unattended run changes nothing: the user's own edits since stand.
+ */
+export function agentSettingsStep(d: AgentStepDeps, opts: { unattended: boolean; skip: boolean }): void {
+  if (opts.skip) {
+    writeAgentRecord(d.record, { choice: 'off' }, d.out);
+    return;
+  }
+  if (!opts.unattended) {
+    applyAgentSettings(d);
+    writeAgentRecord(d.record, { choice: 'on' }, d.out);
+    return;
+  }
+  if (readAgentRecord(d.record) !== null) return;
+  const pending: NonNullable<AgentSettingsRecord['pending']> = {};
+  if (applyCodex(d) === 'error') pending.codex = d.dirs.codex;
+  const claude = applyClaude(d, () => !d.claudeRunning());
+  if (claude === 'blocked') d.out(CLAUDE_RUNNING);
+  if (claude === 'blocked' || claude === 'error') pending.claude = d.dirs.claude;
+  writeAgentRecord(d.record, onRecord(pending), d.out);
+}
+
+/**
+ * The daemon's part: the settings an unattended run left to be made (`pending`), in the directories it used. Claude
+ * Code's only while no session of it runs. `waiting` while one does, `failed` while an edit still fails (both: look
+ * again later), `done` when all are made, `none` when nothing is pending (any more). A setup run meanwhile, which
+ * rewrites the record, has the last word: the record is read again before each agent and before it is written.
+ */
+export function applyPendingAgents(d: Omit<AgentStepDeps, 'dirs'>): 'none' | 'waiting' | 'failed' | 'done' {
+  const record = readAgentRecord(d.record);
+  if (record?.choice !== 'on' || !record.pending) return 'none';
+  const seen = JSON.stringify(record);
+  const unchanged = (): boolean => JSON.stringify(readAgentRecord(d.record)) === seen;
+  const left = { ...record.pending };
+  const a: AgentOut = { ...d, dirs: { claude: left.claude ?? '', codex: left.codex ?? '' } };
+  let waiting = false;
+  if (left.codex !== undefined) {
+    if (!unchanged()) return 'none';
+    if (applyCodex(a) !== 'error') delete left.codex;
+  }
+  if (left.claude !== undefined) {
+    if (!unchanged()) return 'none';
+    const r = applyClaude(a, () => !d.claudeRunning());
+    if (r === 'blocked') waiting = true;
+    else if (r !== 'error') delete left.claude;
+  }
+  if (!unchanged()) return 'none';
+  writeAgentRecord(d.record, onRecord(left), d.out);
+  if (waiting) return 'waiting';
+  return Object.keys(left).length > 0 ? 'failed' : 'done';
+}
+
+// ---- is Claude Code running? ------------------------------------------------------------------------------------
+
+/** A command line that is Claude Code's CLI: run as `claude` (native, or a link to it), by node, or from its package. */
+export function isClaudeCommand(argv: string[]): boolean {
+  const [first = '', second = ''] = argv;
+  const named = (arg: string): boolean => /(^|\/)claude$/.test(arg);
+  return named(first) || first.includes('/claude/versions/') || named(second) || argv.some((a) => a.includes('@anthropic-ai/claude-code'));
+}
+
+/** A process that ended between the listing and the look (anything else about it is not known). */
+const gone = (err: unknown): boolean => ['ENOENT', 'ESRCH'].includes((err as NodeJS.ErrnoException).code ?? '');
+
+/**
+ * Whether a Claude Code process of user `uid` runs: `/proc` where there is one (Linux), `ps` otherwise (macOS). Whatever
+ * cannot be read counts as yes (a process whose owner or command line is hidden, no listing at all): the setting then
+ * waits rather than garble a session.
+ */
+export function claudeRunning(uid: number, deps: { procDir?: string; ps?: () => string } = {}): boolean {
+  const proc = deps.procDir ?? '/proc';
+  let pids: string[] | null = null;
+  try {
+    pids = fs.readdirSync(proc).filter((n) => /^\d+$/.test(n));
+  } catch {
+    pids = null;
+  }
+  if (pids !== null && pids.length > 0) {
+    for (const pid of pids) {
+      let owner: number;
+      try {
+        owner = fs.statSync(path.join(proc, pid)).uid;
+      } catch (err) {
+        if (gone(err)) continue;
+        return true;
+      }
+      if (owner !== uid) continue;
+      let argv: string[];
+      try {
+        argv = fs.readFileSync(path.join(proc, pid, 'cmdline'), 'utf8').split('\0');
+      } catch (err) {
+        if (gone(err)) continue;
+        return true;
+      }
+      if (isClaudeCommand(argv)) return true;
+    }
+    return false;
+  }
+  try {
+    const listing = deps.ps ? deps.ps() : execFileSync('ps', ['-A', '-o', 'uid=,args='], { encoding: 'utf8', timeout: 5000 });
+    for (const line of listing.split('\n')) {
+      const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+      if (m && Number(m[1]) === uid && isClaudeCommand(m[2]!.trim().split(/\s+/))) return true;
+    }
+    return false;
+  } catch {
+    return true;
   }
 }

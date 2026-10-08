@@ -85,7 +85,8 @@ bridge keeps every pane's history (10 000 lines each by default, `scrollback.max
 phone has all of it as soon as the pane opens, so it scrolls in one piece from the oldest line
 into the live screen, which keeps updating; "Live ↓" brings you back down. `setup` sets Claude
 Code (`"tui": "default"`) and Codex (`[tui] alternate_screen = "never"`) to print into the normal
-screen, so their output is in that history too (`--no-agent-settings` leaves them alone). Programs
+screen, so their output is in that history too (a host installed earlier gets them once from its
+next update; `--no-agent-settings` leaves them alone). Programs
 that draw their own screen (vim, tmux, less, an agent left in full-screen mode) keep no scrollback;
 the bridge notices when one has the pane and the default "Automatic" swipe mode then sends swipes
 to it as mouse-wheel steps, going back to the phone's scrollback when it exits. The desktop's screen is usually taller than the phone's,
