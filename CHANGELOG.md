@@ -7,6 +7,25 @@ there to the App Store and Google Play by hand (`promote.yml`; `docs/DELIVERY.md
 
 ## Unreleased
 
+### Scrollback in one piece
+
+- The bridge keeps its own copy of every pane's scrollback, whether a phone is connected or not: twice a second it asks
+  herdr (`pane.list`) which panes gained rows above the screen and folds the lines that left the screen into the copy —
+  as logical lines, lined up with the ones it already has, so a resize or reflow adds nothing twice — up to
+  `scrollback.max_lines` per pane (default 10 000; herdr itself hands out only the last 999 rows). A pane cleared with
+  `clear` starts a new copy.
+- New request `scrollback` (protocol §4/§6): a phone gets the whole copy when it opens a pane and then every new line as
+  it scrolls off; after a reconnect, only what it missed. Over a slow link the lines go out as fast as it takes them,
+  without holding up the live screen or a switch to another pane. `history` stays for older apps.
+- The apps show the history and the live screen as one continuous scroll, wrapped to the phone's width, with everything
+  on the phone from the start: no loading at the top, no frozen copy, the live screen keeps updating while you read
+  above it, and "Live ↓" brings you back. Against an older bridge they read one 999-line `history` instead.
+- `setup` (what the install command runs) sets Claude Code to its classic renderer (`"tui": "default"` in
+  `~/.claude/settings.json`) and Codex to stay out of the alternate screen (`[tui] alternate_screen = "never"` in
+  `~/.codex/config.toml`) when they are installed, so their output lands in the scrollback too; it says what it changed,
+  and that Claude Code sessions already running need `/exit` and `claude --resume`. `--no-agent-settings` skips it;
+  unattended updates never touch it.
+
 ### Bridge 0.3.0
 
 - macOS hosts. `install.sh` installs on a Mac (Darwin Node tarballs from nodejs.org when there is no node ≥ 24; a

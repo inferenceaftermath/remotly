@@ -36,10 +36,10 @@ export const VERSION: string = pkg.version;
 const USAGE = `remotly-bridge ${VERSION}
 usage: remotly-bridge <command>
   setup [--ttl N] [--no-pair] [--no-wait] [--lan] [--keep-mode] [--keep-stopped] [--no-auto-update]
-        [--unit NAME] [--config-dir DIR] [--herdr-session NAME] [--herdr-socket PATH]
-                              check herdr and Tailscale, get the certificate, install and start the user
-                              service and the daily update timer, print one pairing QR for all your phones
-                              (what install.sh runs)
+        [--no-agent-settings] [--unit NAME] [--config-dir DIR] [--herdr-session NAME] [--herdr-socket PATH]
+                              check herdr and Tailscale, set Claude Code and Codex to keep their output in the
+                              scrollback, get the certificate, install and start the user service and the daily
+                              update timer, print one pairing QR for all your phones (what install.sh runs)
   serve                       run the daemon (what the user service runs)
   pair [--manual] [--ttl N]   create a single-use pairing code; prints a QR unless --manual
   devices list                list paired devices
@@ -79,7 +79,7 @@ async function serve(log: Logger): Promise<void> {
   const devices = new DeviceStore(statePath('devices.json'), { log }).load();
   const pairing = new PairingManager();
   const link = new HerdrLink({ socketPath: resolveSocketPath(config.herdr), log });
-  const hub = new Hub({ link, log, hostName, version: VERSION });
+  const hub = new Hub({ link, log, hostName, version: VERSION, scrollbackLines: config.scrollback.max_lines });
 
   // Per platform: local credentials send directly; otherwise the relay (relay/README.md) sends on the host's behalf.
   const apnsCfg = config.push.apns;
@@ -118,6 +118,7 @@ async function serve(log: Logger): Promise<void> {
   log.info('push.ready', { apns: pushMode.apns, fcm: pushMode.fcm, ...(relay ? { relay: config.push.relay_url } : {}) });
 
   link.start();
+  hub.scrollback.start();
   const gate = createTailnetGate(config, { log, tailscaleUp });
   const uploads = new UploadStore({ dir: config.uploads.dir, keepDays: config.uploads.keep_days, maxBytes: config.uploads.max_mb * 1024 * 1024, log });
   const http = await startHttpServer({
@@ -191,6 +192,7 @@ async function serve(log: Logger): Promise<void> {
       .then(() => hub.zoomer.restoreAll())
       .catch(() => undefined)
       .then(() => {
+        hub.scrollback.stop();
         link.stop();
         return Promise.allSettled([control.close(), http.close()]);
       })

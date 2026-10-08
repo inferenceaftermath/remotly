@@ -117,6 +117,8 @@ function makeDeps(over: Partial<SetupDeps> & { script?: Record<string, ExecResul
     status: async () => STATUS,
     pair: async () => PAIR,
     showPairing: async (info) => void out.push(`QR ${info.code} ${info.reusable ? 'reusable' : 'single'}`),
+    // never the real ~/.claude or ~/.codex: nothing is installed here unless a test creates the directory
+    agentDirs: { claude: path.join(dir, 'agents', 'claude'), codex: path.join(dir, 'agents', 'codex') },
     ...Object.fromEntries(Object.entries(over).filter(([k]) => k !== 'script')),
   };
   return { deps, out, calls, sock, touchSocket: () => fs.writeFileSync(sock, '') };
@@ -147,6 +149,20 @@ test('parseSetupArgs: defaults, flags, validation', () => {
   assert.throws(() => parseSetupArgs(['--unit', 'a b'], {}), /plain unit name/);
   assert.throws(() => parseSetupArgs(['--unit', '-x'], {}), /plain unit name/, 'a leading dash would be taken as a systemctl option');
   assert.throws(() => parseSetupArgs(['--bogus'], {}), /unknown setup option/);
+});
+
+test('setup sets the installed agents up, except on unattended re-runs (--keep-mode) and with --no-agent-settings', async () => {
+  for (const [opts, applied] of [[OPTS, true], [{ ...OPTS, keepMode: true }, false], [{ ...OPTS, agentSettings: false }, false]] as const) {
+    fs.rmSync(path.join(dir, 'agents'), { recursive: true, force: true });
+    fs.mkdirSync(path.join(dir, 'agents', 'codex'), { recursive: true });
+    const { deps, out, touchSocket } = makeDeps({ script: { ...tsScript(), ...lingerYes } });
+    touchSocket();
+    assert.equal(await runSetup(deps, opts), 0);
+    assert.equal(fs.existsSync(path.join(dir, 'agents', 'codex', 'config.toml')), applied, JSON.stringify(opts));
+    assert.equal(out.some((l) => l.includes('Codex: [tui] alternate_screen')), applied);
+    assert.equal(fs.existsSync(path.join(dir, 'agents', 'claude')), false, 'Claude Code is not installed: left alone');
+  }
+  assert.equal(parseSetupArgs(['--no-agent-settings'], {}).agentSettings, false);
 });
 
 test('parseSetupArgs: `.service` is dropped from the unit name; path options become absolute', () => {

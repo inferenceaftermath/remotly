@@ -79,12 +79,16 @@ there? `remotly-bridge status` should show `tls: selfsigned`, and the host's fir
 Open the app: tabs and panes of your herdr session appear live; type into the composer, use the
 key row, and approve Claude Code / Codex / pi prompts from the notification. The terminal uses
 your phone's text size by default; A− / A+ in the title bar step it by one point (remembered),
-and Settings has the same control plus a reset. Settings → Appearance → Theme switches between Dark, Light (easiest to
-read in sunlight) and Catppuccin Mocha. Swipe up on the screen to read scrollback (keep
-swiping for older output, swipe past the bottom to return to live). Programs that draw their own
-screen (Claude Code, vim, tmux, less) keep no scrollback in herdr; the bridge notices when one has
-the pane and the default "Automatic" swipe mode then sends swipes to it as mouse-wheel steps, going
-back to the phone's scrollback when it exits. The desktop's screen is usually taller than the phone's,
+the only text-size control. Settings → Appearance → Theme switches between Dark, Light (easiest to
+read in sunlight) and Catppuccin Mocha. Swipe up on the screen to read scrollback: the
+bridge keeps every pane's history (10 000 lines each by default, `scrollback.max_lines`) and the
+phone has all of it as soon as the pane opens, so it scrolls in one piece from the oldest line
+into the live screen, which keeps updating; "Live ↓" brings you back down. `setup` sets Claude
+Code (`"tui": "default"`) and Codex (`[tui] alternate_screen = "never"`) to print into the normal
+screen, so their output is in that history too (`--no-agent-settings` leaves them alone). Programs
+that draw their own screen (vim, tmux, less, an agent left in full-screen mode) keep no scrollback;
+the bridge notices when one has the pane and the default "Automatic" swipe mode then sends swipes
+to it as mouse-wheel steps, going back to the phone's scrollback when it exits. The desktop's screen is usually taller than the phone's,
 so the phone shows a window over it that follows the last row with content; a swipe moves that window
 first and, once it is at the top or bottom edge, goes to the program. The pane menu can pin a pane to one behaviour
 (scrollback, mouse wheel, arrow keys) and remembers the choice. Long-press a word to

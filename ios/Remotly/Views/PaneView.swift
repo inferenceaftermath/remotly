@@ -24,6 +24,9 @@ struct PaneView: View {
     @State private var confirmClose = false
     /// Point size the terminal is drawing with (reported by the view; 0 until it has laid out).
     @State private var fontSizeInUse: Double = 0
+    /// The terminal view's handle ("Live ↓", Copy screen) and whether it is scrolled up from the live bottom.
+    @State private var terminalControl = TerminalControl()
+    @State private var scrolledUp = false
     @FocusState private var composerFocused: Bool
 
     private var pane: Pane? { model.pane(paneId) }
@@ -155,7 +158,7 @@ struct PaneView: View {
     private var overflowMenu: some View {
         Menu {
             Button {
-                UIPasteboard.general.string = (model.history ?? model.grid).plainText()
+                UIPasteboard.general.string = terminalControl.visibleText() // what is on the phone's screen, history or live
                 model.showNotice("copied")
             } label: {
                 Label("Copy screen", systemImage: "doc.on.doc")
@@ -187,19 +190,20 @@ struct PaneView: View {
     // MARK: Terminal
 
     private var terminal: some View {
-        TerminalView(grid: model.history ?? model.grid, theme: ThemeStore.shared.choice, fontSize: $fontSize,
-                     isHistory: model.history != nil,
+        TerminalView(grid: model.grid, history: model.history, historyStyles: model.historyStyles,
+                     theme: ThemeStore.shared.choice, fontSize: $fontSize,
                      fitMode: fitToDevice,
                      forwardScroll: model.effectiveScrollMode(for: paneId) != .scrollback,
+                     altScreen: model.paneAlt[paneId] == true,
+                     control: terminalControl,
                      onDeviceGrid: { cols, rows in if fitToDevice { model.fitPane(cols: cols, rows: rows) } },
-                     onPullTop: { model.loadHistory(lines: 300) },
-                     onNearTop: { model.loadMoreHistory() },
-                     onPullBottom: { model.jumpToLive() },
+                     onPullTop: { model.pulledPastTop() },
+                     onScrolledUp: { scrolledUp = $0 },
                      onScrollLines: { direction, lines, col, row in model.scroll(direction: direction, lines: lines, col: col, row: row) },
                      onEffectiveFontSize: { fontSizeInUse = $0 })
             .background(Theme.bg)
             .overlay {
-                if model.history == nil, model.grid.pane == nil {
+                if model.grid.pane == nil, model.history.isEmpty {
                     Text("Waiting for the first frame…")
                         .font(.system(size: 15))
                         .foregroundStyle(Theme.fg2)
@@ -207,9 +211,9 @@ struct PaneView: View {
                 }
             }
             .overlay(alignment: .bottomTrailing) {
-                if model.history != nil {
-                    // Pulling past the bottom also returns to live; this is the visible cue that the screen is frozen.
-                    Button { model.jumpToLive() } label: {
+                if scrolledUp {
+                    // Scrolled up into the history (the live screen keeps updating below): back to the bottom, following it.
+                    Button { terminalControl.scrollToLive() } label: {
                         Text("Live ↓")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(Theme.onInteractive)
@@ -222,17 +226,12 @@ struct PaneView: View {
                     .accessibilityLabel("Back to live")
                 }
             }
-            .overlay(alignment: .bottom) {
-                if model.isLoadingHistory {
-                    ProgressView().tint(Theme.fg2).padding(.bottom, 48)
-                }
-            }
             .overlay(alignment: .top) {
                 if model.noScrollbackHint { noScrollbackBanner }
             }
     }
 
-    /// A pull for scrollback found nothing above the screen in herdr (the program draws its own screen, or the shell is fresh).
+    /// A pull past the top found no history for the pane (the program draws its own screen, or the shell is fresh).
     private var noScrollbackBanner: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Nothing older here: herdr holds no scrollback for this pane. If a full-screen program is running, swipes can go to it as mouse-wheel steps.")

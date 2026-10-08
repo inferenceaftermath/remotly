@@ -18,6 +18,9 @@ Everything still open, in one place. What shipped is in `CHANGELOG.md`; how to r
 - **Landscape** on both apps.
 - **Android hardware:** the Android test phone has only run the hand-built version code 4, so fit, swipe modes, selection, new
   terminal, tap-to-dismiss, the scrollback hint and A− / A+ are unseen on Android.
+- **Scrollback mirror on devices:** the continuous history view (bridge copy, `scrollback`) is unit-tested; scroll
+  smoothness at 10 000 lines, the anchor while output arrives, and re-wrap after A− / A+ or a fit are still to be seen
+  on a real iPhone and Android phone.
 
 ## Hardening
 
@@ -114,8 +117,7 @@ sessions together with the tests that use them; GitHub Releases only (no npm). T
 ## Product ideas not started
 
 - Rows-fit: herdr's `pane.resize` moves split boundaries, not the PTY, so the phone's row count cannot be applied;
-  needs a PTY-resize API inside herdr (upstream contribution candidate). Scrollback beyond herdr's 999-line `pane.read`
-  cap is unreachable for the same reason.
+  needs a PTY-resize API inside herdr (upstream contribution candidate).
 - Reader mode (`recent_unwrapped` reflowed to the phone width): largely obsolete now that fit makes the program wrap to the phone's columns.
 - Multiple hosts in the UI (the data model already stores one host). The site's pairing mock shows a "‹ Hosts" back
   button that promises this; until it exists the mock (not the app) should lose the button.

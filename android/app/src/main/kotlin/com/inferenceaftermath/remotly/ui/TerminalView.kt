@@ -1,8 +1,9 @@
-// Canvas-drawn terminal: cell grid with JetBrains Mono, horizontal pan when cols exceed the width,
-// vertical pan into history (pull past the top to enter scrollback / fetch more). herdr's live screen is
-// usually taller than this view (a fit keeps herdr's row count), so the view is a window over it that
-// follows the last row with content; in forwarding mode a swipe moves that window first and only what it
-// cannot spend at the top or bottom edge goes to the program as wheel/arrow steps. The font size is the
+// Canvas-drawn terminal: cell grid with JetBrains Mono, horizontal pan when cols exceed the width, and one
+// vertical scroll over the pane's history (the bridge's copy, wrapped to the live grid's width) running
+// straight into the live grid. herdr's live screen is usually taller than this view (a fit keeps herdr's row
+// count), so "the bottom" is the live grid's last row with content; the view follows it while it is there.
+// In forwarding mode the history is hidden and a swipe moves the window over the live screen first; only what
+// it cannot spend at the top or bottom edge goes to the program as wheel/arrow steps. The font size is the
 // phone's text size by default and is changed with the A− / A+ buttons (no pinch: it was fiddly).
 package com.inferenceaftermath.remotly.ui
 
@@ -32,11 +33,14 @@ import com.inferenceaftermath.remotly.core.terminal.wordAt
 import com.inferenceaftermath.remotly.R
 import com.inferenceaftermath.remotly.core.protocol.Style
 import com.inferenceaftermath.remotly.core.terminal.Cell
+import com.inferenceaftermath.remotly.core.terminal.HistoryChange
 import com.inferenceaftermath.remotly.core.terminal.Row
 import com.inferenceaftermath.remotly.core.terminal.RowShift
 import com.inferenceaftermath.remotly.core.terminal.RowShiftDetector
+import com.inferenceaftermath.remotly.core.terminal.ScrollbackLines
 import com.inferenceaftermath.remotly.core.terminal.StyleTable
 import com.inferenceaftermath.remotly.core.terminal.TerminalGrid
+import com.inferenceaftermath.remotly.core.terminal.WrappedHistory
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
@@ -53,12 +57,10 @@ class TerminalView(context: Context) : View(context) {
             selectionPaint.color = value.selection
             invalidate()
         }
-    /** Live mode: the user pulled past the top → the screen should fetch history. */
-    var onScrollback: (() -> Unit)? = null
-    /** History mode: near the top → fetch more (the caller throttles). */
-    var onReachTop: (() -> Unit)? = null
-    /** History mode: the user pulled past the bottom → the screen should return to live. */
-    var onPullBottom: (() -> Unit)? = null
+    /** Pulled past the top with no history above the live screen (the screen shows the no-scrollback hint). */
+    var onPullPastTop: (() -> Unit)? = null
+    /** The view went more than about a row above the bottom (true) or came back (false): the screen shows "Live ↓". */
+    var onScrolledUp: ((Boolean) -> Unit)? = null
     /** A plain tap on the terminal (the screen uses it to put the keyboard away). */
     var onTap: (() -> Unit)? = null
     /** Forwarding mode: the swipe so far is worth `lines` wheel/arrow steps in `direction` at the touched cell (1-based). */
@@ -74,9 +76,12 @@ class TerminalView(context: Context) : View(context) {
             scrollAcc = 0f
             pendingLines = 0
             scroller.forceFinished(true)
+            toBottom = false
             cancelInertia()
             if (!value) endSlide()
+            clearSelection() // the history rows above the live grid come or go
             offsetY = liveBottomY()
+            clampScroll()
             invalidate()
         }
     /** Columns × rows this view can show at the current font; reported whenever it changes (used for `fit`). */
@@ -94,7 +99,9 @@ class TerminalView(context: Context) : View(context) {
     private var lastDeviceGrid = 0 to 0
 
     private var grid: TerminalGrid? = null
-    private var history: List<Row>? = null
+    private var scrollback: ScrollbackLines? = null
+    /** The pane's history wrapped to the live grid's width; shown above the live grid. */
+    private val history = WrappedHistory()
     private var fontScale = 0f // 0 = fit to width
     private val regular: Typeface = resources.getFont(R.font.jetbrains_mono_regular)
     private val bold: Typeface = resources.getFont(R.font.jetbrains_mono_bold)
@@ -106,7 +113,6 @@ class TerminalView(context: Context) : View(context) {
     private var offsetX = 0f
     private var offsetY = 0f
     private var pullUp = 0f
-    private var pullDown = 0f
     private var scrollAcc = 0f
     private var pendingLines = 0 // forwarded scroll not yet sent: > 0 down, < 0 up
     private var pendingCol = 1
@@ -120,6 +126,10 @@ class TerminalView(context: Context) : View(context) {
     private var flingDown = true
     private var flingX = 0f
     private var flingY = 0f
+    /** The scroller is taking the view to the bottom ("Live ↓"): it ends exactly there, wherever the bottom has moved. */
+    private var toBottom = false
+    /** Last value reported to [onScrolledUp]. */
+    private var scrolledUp = false
 
     // Emulated inertia after a fling in forwarding mode (the desktop program has none): lines/s left, fraction carried, lines sent.
     private var inertiaSpeed = 0f
@@ -144,49 +154,182 @@ class TerminalView(context: Context) : View(context) {
 
     // Long-press selection: anchor/focus cells over the rows being shown (live or scrollback).
     private var selection: Selection? = null
+    /**
+     * The live row (fractional) the top of the view stays on after following text up the live screen, until the lines
+     * that left the screen arrive as history; negative while that text is on such lines. Null otherwise.
+     */
+    private var liveAnchor: Float? = null
+    /** The pane is on the alternate screen (a full-screen program): its scrolling adds no history, so it is not followed. */
+    var altScreen = false
+    /** The history snapshot [setScrollback] gets next is still an answer arriving ([ScrollbackLines.answering]); set
+     *  before [setGrid], so a frame that comes with it is not followed either. */
+    var answering = false
     /** 0 = not dragging, 1 = moving the anchor, 2 = moving the focus. */
     private var draggingEnd = 0
     private var detectorSawDown = false
     private var actionMode: ActionMode? = null
     private val selectionPaint = Paint().apply { color = colors.selection }
 
-    private val rows: List<Row> get() = history ?: grid?.lines?.asList() ?: emptyList()
-    private val cols: Int get() = max(grid?.cols ?: 0, history?.maxOfOrNull { it.cols } ?: 0)
+    /** The last live grid's width: a pane opened again shows its history at it before its first frame (as iOS). A new
+     *  view starts from the connection's ([seedWidth]). */
+    private var lastCols = 0
 
-    val isLive: Boolean get() = history == null
+    /** The width to show history at until the first frame, for a view that has had none. */
+    fun seedWidth(cols: Int) {
+        if (lastCols == 0 && cols > 0) lastCols = cols
+    }
+
+    /** History rows above the live grid: none while swipes go to the program, nor before any frame gave a width. */
+    private val historyRows: Int get() = if (forwardScroll || (grid == null && lastCols == 0)) 0 else history.size
+
+    /** What the view scrolls over: the history rows, then the live grid's. A view over both; nothing is copied. */
+    private val rows: List<Row> = object : AbstractList<Row>() {
+        override val size: Int get() = historyRows + (grid?.rows ?: 0)
+        override fun get(index: Int): Row {
+            val h = historyRows
+            return if (index < h) history[index] else grid!!.lines[index - h]
+        }
+    }
+    private val cols: Int get() = grid?.cols ?: lastCols
 
     fun setGrid(g: TerminalGrid?) {
-        val wasBottom = atBottom()
         val old = grid
-        val colsChanged = g?.cols != old?.cols
-        if (g != null && old != null && forwardScroll && history == null && SystemClock.uptimeMillis() - lastForwardedAt < SLIDE_WINDOW_MS) {
+        if (g === old) return
+        val colsChanged = (g?.cols ?: lastCols) != (old?.cols ?: lastCols)
+        if (g != null) lastCols = g.cols
+        if (g != null && old != null && forwardScroll && SystemClock.uptimeMillis() - lastForwardedAt < SLIDE_WINDOW_MS) {
             RowShiftDetector.detect(old, g)?.let { beginSlide(it, old) }
         } else if (g == null || old == null || g.rows != old.rows || colsChanged) {
             endSlide()
         }
-        grid = g
-        if (colsChanged) updateMetrics()
-        if (history == null) {
-            clampScroll()
-            if (wasBottom) offsetY = liveBottomY()
+        if (g != null && old != null && !forwardScroll) followScrolledText(old, g)
+        keepingView {
+            grid = g
+            if (colsChanged) updateMetrics()
+            syncHistory()
         }
         invalidate()
     }
 
-    fun setHistory(h: List<Row>?) {
-        val old = history
-        if (old === h) return
-        endSlide()
-        if ((h == null) != (old == null)) clearSelection() // different rows underneath
-        history = h
-        updateMetrics()
-        when {
-            h == null -> offsetY = liveBottomY() // back to live: the prompt
-            old == null -> offsetY = maxOffsetY() // into history: the newest lines
-            h.size > old.size -> offsetY += (h.size - old.size) * cellH // keep the visible lines in place
+    /**
+     * The live screen scrolled (output): text the user is reading on its rows, or has selected there, moved up with it.
+     * Scrolled up with the top of the view on those rows, the view moves up as far, so the text stays where it was; the
+     * lines that left the screen arrive as history a moment later and go in above it (see [keepingView]). Only the rows
+     * that moved count (an agent's input box and status line below them stay put). A selection on moved rows moves with
+     * its text (off the screen's top: it is let go). Not on the alternate screen, which adds no history, nor while an
+     * answer to a `scrollback` request is arriving: its lines are older output, so the text moves with the screen then.
+     */
+    private fun followScrolledText(old: TerminalGrid, g: TerminalGrid) {
+        if (altScreen || answering || scrollback?.answering == true) return
+        val h = historyRows
+        val top = if (cellH > 0f) offsetY / cellH else 0f
+        val onLive = cellH > 0f && !atBottom() && (liveAnchor != null || top >= h)
+        val selected = selection?.let { it.start.row >= h || it.end.row >= h } == true
+        if (!onLive && !selected) return
+        val rs = RowShiftDetector.detect(old, g) ?: return
+        val shift = rs.shift
+        if (shift <= 0) return
+        if (onLive) {
+            val at = liveAnchor ?: (top - h)
+            if (at < rs.movingRows) {
+                liveAnchor = at - shift
+                offsetY = (h + at - shift) * cellH
+            }
         }
-        clampScroll()
+        selection?.let { s ->
+            fun moves(p: GridPosition) = p.row >= h && p.row - h < rs.movingRows
+            fun move(p: GridPosition) = if (moves(p)) p.copy(row = p.row - shift) else p
+            val moved = Selection(move(s.anchor), move(s.focus))
+            if ((moves(s.anchor) && moved.anchor.row < h) || (moves(s.focus) && moved.focus.row < h)) clearSelection() else selection = moved
+        }
+    }
+
+    /** The pane's history (null: none); lines new since the last call are wrapped and added above the live grid. */
+    fun setScrollback(s: ScrollbackLines?) {
+        if (s === scrollback) return
+        scrollback = s
+        keepingView { syncHistory() }
         invalidate()
+    }
+
+    /** Wraps what is new in the history to the live grid's width (all of it again for another width). */
+    private fun syncHistory(): HistoryChange {
+        val width = cols.takeIf { it > 0 } ?: return HistoryChange.NONE // kept as it is until a frame says how wide to wrap
+        return history.sync(scrollback, width)
+    }
+
+    /**
+     * Runs [change] (a new grid, new history lines, another width) keeping what the user sees: at the bottom the view
+     * stays at the bottom; scrolled up, the rows in view stay put as lines are added below them and move with lines
+     * trimmed above them, a re-wrap keeps the same line at the top, and a new copy of the history keeps the offset. With
+     * the top of the view on the live rows, the same live row stays at the top.
+     */
+    private inline fun keepingView(change: () -> HistoryChange) {
+        val wasBottom = atBottom()
+        val anchor = liveAnchor
+        val h0 = historyRows
+        val top = if (cellH > 0f) offsetY / cellH else 0f
+        val line = if (top < h0) history.lineAt(top.toInt()) else null
+        val intoLine = if (line != null) top - history.firstRowOf(line) else 0f
+        val cols0 = history.cols
+        val c = change()
+        val h1 = historyRows
+        when {
+            wasBottom -> offsetY = liveBottomY()
+            // the text followed up the live screen: the lines that left it are in now, just above the same live row (or
+            // among them, for text that left the screen too, where it then stays)
+            anchor != null && c.any && scrollback?.answering != true -> offsetY = (h1 + anchor) * cellH
+            // the same live row at the top: lines appended are the ones that left the screen
+            line == null -> offsetY = (h1 + top - h0) * cellH
+            c.rewrapped -> {
+                // the row holding the same part of the line (its first cell's place in the line at the new width), the
+                // same distance into that row
+                val row = intoLine.toInt()
+                val moved = if (cols0 > 0 && history.cols > 0) (row.toLong() * cols0 / history.cols).toInt() else row
+                offsetY = (history.firstRowOf(line) + min(moved, max(0, history.rowsOf(line) - 1)) + (intoLine - row)) * cellH
+            }
+            c.rebuilt -> Unit // another copy: same offset, clamped
+            else -> offsetY -= c.dropped * cellH
+        }
+        if (h0 > 0 || h1 > 0) {
+            if (c.rebuilt) clearSelection() else if (c.any) shiftSelection(h0, c.dropped, h1 - h0)
+        }
+        if (c.any || wasBottom) liveAnchor = null
+        clampScroll()
+    }
+
+    /** History rows came or went: a selection on history rows moves with them ([dropped] above), on live rows by [liveShift]. */
+    private fun shiftSelection(h0: Int, dropped: Int, liveShift: Int) {
+        val s = selection ?: return
+        fun move(p: GridPosition) = p.copy(row = if (p.row < h0) p.row - dropped else p.row + liveShift)
+        val moved = Selection(move(s.anchor), move(s.focus))
+        if (moved.start.row < 0) clearSelection() else selection = moved
+    }
+
+    /** Back to the bottom (the "Live ↓" button), gliding over at most a few screens. */
+    fun scrollToBottom() {
+        liveAnchor = null
+        scroller.forceFinished(true)
+        cancelInertia()
+        flingHandoff = false
+        val target = liveBottomY()
+        val reach = max(height, 1) * 3f
+        if (target - offsetY > reach) offsetY = target - reach
+        flingMovesY = true
+        toBottom = true
+        scroller.startScroll(offsetX.toInt(), offsetY.toInt(), 0, (target - offsetY).toInt(), SCROLL_TO_BOTTOM_MS)
+        postInvalidateOnAnimation()
+    }
+
+    /** The rows in view as plain text, one per line, trailing blanks trimmed ("Copy screen"). */
+    fun visibleText(): String {
+        val rs = rows
+        if (rs.isEmpty() || cellH <= 0f || height <= 0) return ""
+        // rows at least half in view
+        val first = ceil(offsetY / cellH - 0.5f).toInt().coerceIn(0, rs.size - 1)
+        val last = ((offsetY + height) / cellH - 0.5f).toInt().coerceIn(first, rs.size - 1)
+        val lines = (first..last).map { rs[it].text() }
+        return lines.dropLastWhile { it.isEmpty() }.joinToString("\n")
     }
 
     fun setFontScale(scale: Float) {
@@ -203,9 +346,13 @@ class TerminalView(context: Context) : View(context) {
         // `height` is already the new one here. Judge "at the bottom" by the height the offset was set for: when the
         // keyboard opens the view gets shorter, the bottom moves further down, and the old offset would otherwise read
         // as "scrolled up" and the last rows would stay hidden. A first layout (nothing shown yet) starts at the bottom.
+        // Scrolled up, the same row stays at the top: rotation can change the font size (fitting the columns to the
+        // width), and the offset is in pixels of the old one (as on iOS).
         val wasBottom = oldh <= 0 || atBottom(oldh)
+        val row = if (cellH > 0f) offsetY / cellH else 0f
         updateMetrics()
-        if (wasBottom) offsetY = liveBottomY()
+        offsetY = if (wasBottom) liveBottomY() else row * cellH
+        clampScroll()
     }
 
     // ------------------------------------------------------------ metrics
@@ -250,15 +397,14 @@ class TerminalView(context: Context) : View(context) {
     private fun maxOffsetY(viewHeight: Int = height) = max(0f, contentHeight() - viewHeight)
 
     /**
-     * Where "the bottom" is: in history the last line; live, the last row with anything on it. herdr's
+     * Where "the bottom" is: the live grid's last row with anything on it (below the history rows). herdr's
      * grid is taller than this view (a fit keeps herdr's row count), so a fresh shell (prompt on row 1,
      * 60 blank rows below) must show its top, while Claude Code (status bar on the last row) shows its bottom.
      */
     private fun liveBottomY(viewHeight: Int = height): Float {
-        val g = grid
-        if (history != null || g == null) return maxOffsetY(viewHeight)
+        val g = grid ?: return maxOffsetY(viewHeight)
         val last = g.lines.indexOfLast { !it.isEmpty }
-        return min(maxOffsetY(viewHeight), max(0f, (last + 1) * cellH - viewHeight))
+        return min(maxOffsetY(viewHeight), max(0f, (historyRows + last + 1) * cellH - viewHeight))
     }
 
     private fun atBottom(viewHeight: Int = height) = offsetY >= liveBottomY(viewHeight) - 1f
@@ -272,10 +418,15 @@ class TerminalView(context: Context) : View(context) {
         clampScroll()
     }
 
-    /** Vertical range: down to the last row with content (live) or the last line (history); blank rows below are not scrollable. */
+    /** Vertical range: from the oldest history row down to the live grid's last row with content; blank rows below are not scrollable. */
     private fun clampScroll() {
         offsetX = offsetX.coerceIn(0f, maxOffsetX())
         offsetY = offsetY.coerceIn(0f, liveBottomY())
+        val up = !forwardScroll && liveBottomY() - offsetY > cellH
+        if (up != scrolledUp) {
+            scrolledUp = up
+            post { onScrolledUp?.invoke(up) } // not from inside the screen's update or a draw
+        }
     }
 
     /** Whether the window cannot move further that way, so a swipe there is for the program. */
@@ -352,7 +503,8 @@ class TerminalView(context: Context) : View(context) {
         val firstCol = (offsetX / cellW).toInt().coerceAtLeast(0)
         val lastCol = ((offsetX + width) / cellW).toInt() + 1
         val table = styles
-        if (slideOffset != 0f && slideMovingRows > 0 && history == null) {
+        val h = historyRows
+        if (slideOffset != 0f && slideMovingRows > 0 && h == 0) {
             // The moving region (rows 0 until m) is drawn displaced by slideOffset and clipped to its own box, with
             // the rows that scrolled out still showing next to it; the rows below it stay put.
             val m = min(slideMovingRows, rs.size)
@@ -370,7 +522,8 @@ class TerminalView(context: Context) : View(context) {
             canvas.restore()
             return
         }
-        for (y in first..last) drawRow(canvas, rs[y], y * cellH - offsetY, firstCol, lastCol, table)
+        val historyTable = history.styles
+        for (y in first..last) drawRow(canvas, rs[y], y * cellH - offsetY, firstCol, lastCol, if (y < h) historyTable else table)
         selection?.let { drawSelection(canvas, it, first, last) }
     }
 
@@ -464,9 +617,10 @@ class TerminalView(context: Context) : View(context) {
         override fun onDown(e: MotionEvent): Boolean {
             scroller.forceFinished(true)
             flingHandoff = false
+            toBottom = false
             cancelInertia() // the finger grabbed the content
             pullUp = 0f
-            pullDown = 0f
+            liveAnchor = null // the finger decides where the view is now
             clearSelection()
             return true
         }
@@ -498,21 +652,11 @@ class TerminalView(context: Context) : View(context) {
                 invalidate()
                 return true
             }
-            when {
-                distanceY < 0 && before <= 0f -> {
-                    pullUp -= distanceY
-                    if (pullUp > cellH * 2) {
-                        pullUp = 0f
-                        if (history == null) onScrollback?.invoke() else onReachTop?.invoke()
-                    }
-                }
-                history != null && distanceY < 0 && offsetY < cellH * 6 -> onReachTop?.invoke()
-                history != null && distanceY > 0 && before >= maxOffsetY() -> {
-                    pullDown += distanceY
-                    if (pullDown > cellH * 3) {
-                        pullDown = 0f
-                        onPullBottom?.invoke()
-                    }
+            if (distanceY < 0 && before <= 0f) {
+                pullUp -= distanceY
+                if (pullUp > cellH * 2) {
+                    pullUp = 0f
+                    if (historyRows == 0) onPullPastTop?.invoke()
                 }
             }
             invalidate()
@@ -529,7 +673,7 @@ class TerminalView(context: Context) : View(context) {
             } else {
                 // The window flings; in forwarding mode what is left when it reaches the edge continues as wheel steps.
                 flingMovesY = true
-                flingHandoff = forwardScroll && history == null
+                flingHandoff = forwardScroll
                 flingDown = towardBottom
                 flingX = e2.x
                 flingY = e2.y
@@ -763,6 +907,10 @@ class TerminalView(context: Context) : View(context) {
         // A fling released against an edge in forwarding mode only moves X (Y was started at 0..0); taking Y from the
         // scroller then showed the top of herdr's taller grid and hid the last rows until re-watch.
         if (flingMovesY) offsetY = scroller.currY.toFloat()
+        if (toBottom && scroller.isFinished) {
+            toBottom = false
+            offsetY = liveBottomY()
+        }
         clampScroll()
         if (flingHandoff && atEdge(flingDown)) {
             // The window reached the edge of the live screen with speed left: the rest of the fling goes to the program.
@@ -790,5 +938,6 @@ class TerminalView(context: Context) : View(context) {
         const val MAX_SCALE = MAX_FONT_SP / BASE_SP
         /** A frame this soon after a forwarded scroll step may slide into place. */
         private const val SLIDE_WINDOW_MS = 1200L
+        private const val SCROLL_TO_BOTTOM_MS = 350
     }
 }

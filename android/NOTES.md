@@ -44,16 +44,21 @@
   typed character (`ctrl+x`). `^C` has its own key. Alt is not on the key row (v1).
 - **Key names** follow protocol §5 exactly; `home/end/pageup/pagedown` go through `keys` and the bridge
   translates them.
-- **Scrollback.** Pulling past the top of the live screen fetches `history lines:300`; reaching the top
-  again doubles the request up to herdr's cap of 999 (`has_more` gates it). History rows are shown
-  bottom-aligned; "Jump to live" returns to the frame grid. Frames keep flowing meanwhile. The live screen is
-  herdr's (taller than the phone: a fit keeps herdr's rows), so the view is a window over it, scrollable down to
-  the last row with content and pinned to the bottom while it is there; in wheel / arrow mode a swipe moves the
+- **Scrollback.** After every watch (and the re-watch after a reconnect) `FlowConnection` sends `scrollback`
+  with the epoch and next number it holds; the bridge answers with what is new (or the whole copy, `reset`) and
+  then pushes lines as they leave the screen. Copies live in memory per pane (the last 8 panes of the host,
+  fewer when together they would pass 100 000 lines: `ScrollbackStores`), styles remapped to ids that outlive the connection (`HistoryStyles`). A gap, another
+  epoch or an `ok` that does not match asks once for the whole copy. A bridge without it (`error unsupported`)
+  gets one `history lines:999` per watch, less the live screen's rows. `TerminalView` scrolls one list: the
+  history wrapped to the grid's width (`WrappedHistory`: only new lines' rows are counted, all again for another
+  width, and rows are made only for the lines drawn) and then the live grid; "Live ↓" shows while it is more than a row above the bottom. The live screen is
+  herdr's (taller than the phone: a fit keeps herdr's rows), so the bottom is its last row with content and the
+  view stays there while it is there; in wheel / arrow mode the history is hidden and a swipe moves the
   window first and only what it cannot spend at an edge becomes steps (a fling that reaches an edge hands the
   rest over as inertia). Never let the `OverScroller` drive Y when it was started with a 0…0 range: that once
   jumped the window to the top of the grid and hid the last rows.
-- **Font sizing.** Default "fit to width" (cols × advance = view width, clamped 7–16 sp); pinch sets an
-  explicit multiplier of 14 sp that is persisted; non-ASCII cells are drawn one by one at their grid
+- **Font sizing.** Default "fit to width" (cols × advance = view width, clamped 7–16 sp); A− / A+ in the
+  header set an explicit multiplier of 14 sp that is persisted; non-ASCII cells are drawn one by one at their grid
   position so fallback-font glyphs (CJK, emoji, powerline) stay aligned; wide cells are centred in two
   cells.
 
@@ -89,9 +94,7 @@ sets for the whole build) and the Compose compiler plugin, compileSdk 37, target
   the owner creates the keystore; never reuse other projects' keys.
 - Haptics, pull-to-refresh on the pane list (material3's PullToRefresh is still experimental in 1.3),
   Alt modifier key, long-press arrows → PgUp/PgDn (dedicated keys exist instead).
-- Selection/copy beyond "copy line" (long-press) and "copy screen" (menu).
 - On-device verification of the M5/M6 DoD (real phone, real bridge, FCM in Doze) — requires H7/H8.
-- Reader mode (`history unwrapped:true` reflowed to phone width) — stretch.
 
 ## Design pass 2026-09-08
 

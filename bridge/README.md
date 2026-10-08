@@ -108,6 +108,7 @@ Created with defaults by `setup` (or the first `serve`). Every key:
 | `push.fcm.service_account_path` | `<config dir>/secrets/fcm-service-account.json` | Firebase service account with `firebase.messaging` scope (mode 0600). |
 | `push.relay_url` | `"https://relay.remotly.dev"` | Push relay (`../relay/README.md`) used for each platform whose local credentials above are not configured: the bridge posts the notification there and the relay, which holds the app's APNs key and Firebase service account, forwards it. `""` disables it (no push for platforms without local secrets). |
 | `approvals.strict_verify` | `true` | Before sending approval keys, read the pane and require the agent's dialog signature (`src/approvals/agents.json`) to match. The app can override per action with `force`. |
+| `scrollback.max_lines` | `10000` | Lines of scrollback the bridge keeps per pane (1000–100000; the oldest go first). Each pane's copy also holds at most `max_lines` × 400 characters (colour codes included), so lines longer than that on average are kept fewer. Phones download all of it when they open a pane. |
 
 State files: `devices.json` (0600; token hashes only), `tls/` (key, cert, fingerprint), `remotly.sock` (control socket).
 
@@ -127,6 +128,11 @@ State files: `devices.json` (0600; token hashes only), `tls/` (key, cert, finger
   watched pane (≈ 0.4 ms per read at idle). `terminal/ansi.ts` parses SGR into styled runs with correct cell widths,
   `differ.ts` finds changed rows, `encode.ts` emits frames with a per-connection style table. Frames are coalesced to
   ≤ 1 per 33 ms; a full frame is sent on watch start, on resize and every 10 s.
+- herdr hands out at most the last 999 rows of a pane, so the bridge keeps its own copy of every pane's scrollback
+  (`server/scrollback.ts`, `terminal/scrollback.ts`): it checks `pane.list` twice a second, reads a pane whose rows above
+  the screen changed (and every 10 s anyway; right after a frame for a watched pane), and appends the logical lines
+  (`recent_unwrapped`) that left the screen, lined up with the last ones it holds so a resize or reflow adds nothing
+  twice. `scrollback` sends a phone the whole copy, then each new line (protocol §4).
 - The exact grid comes from the pane's PTY (`pane.process_info` → `/proc/<pid>/fd/0` → `stty size`); herdr's layout
   rectangle is the fallback.
 - Approvals (`approvals/approve.ts`): `pane.get` must still be `blocked` with the same `prompt_id`

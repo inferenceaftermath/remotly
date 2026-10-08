@@ -15,9 +15,11 @@ import { PaneWatcher } from '../herdr/watcher.ts';
 import type { Logger } from '../log.ts';
 import { parseScreen } from '../terminal/ansi.ts';
 import { diffRows } from '../terminal/differ.ts';
-import { encodeFrame, encodeHistory, StyleTable } from '../terminal/encode.ts';
+import { encodeFrame, encodeHistory, encodeScrollback, StyleTable } from '../terminal/encode.ts';
 import type { Row } from '../terminal/types.ts';
 import type { Hub, Viewer } from './hub.ts';
+import type { ScrollbackUpdate } from './scrollback.ts';
+import type { ScrollbackCopy } from '../terminal/scrollback.ts';
 import { PROTOCOL, type ErrorCode } from './protocol.ts';
 
 export const FRAME_MIN_INTERVAL_MS = 33;
@@ -29,7 +31,26 @@ export const HELLO_TIMEOUT_MS = 5_000;
 /** Close code for a socket that sent no `hello` in time: a stall, not a bad token, so clients reconnect (protocol §1). */
 export const HELLO_TIMEOUT_CLOSE_CODE = 4408;
 export const MAX_HISTORY_LINES = 999;
+/**
+ * Unsent bytes on a socket past which scrollback lines wait for the phone to catch up (a slow link), until half of it is
+ * left. With a chunk on top it stays under the 512 KiB at which frames are skipped, so history never holds the screen up.
+ */
+export const SCROLLBACK_BACKLOG_BYTES = 256 * 1024;
 const MAX_TEXT_BYTES = 64 * 1024;
+
+/**
+ * A phone's subscription to one pane's history: the lines up to `next` under `epoch` are on its socket (`epoch` null:
+ * none yet). `owed`: the request's `ok` (`id`) is still to be sent, once the lines have caught up with the copy.
+ */
+interface ScrollbackSub {
+  pane: string;
+  epoch: string | null;
+  next: number;
+  id: string | undefined;
+  owed: boolean;
+  sent: number;
+  resumed: boolean;
+}
 const MAX_KEYS = 32;
 /** Wheel lines per `scroll` request; the apps coalesce a swipe into a handful of these. */
 const MAX_SCROLL_LINES = 50;
@@ -93,6 +114,13 @@ export class Session implements Viewer {
   private readonly now: () => number;
   private helloTimer: NodeJS.Timeout | null;
   private disposed = false;
+  /** The pane whose history this phone is sent (its last `scrollback` request), and how far it has been sent. */
+  private scrollbackSub: ScrollbackSub | null = null;
+  /** `drainScrollback` is running (one at a time). */
+  private scrollbackSending = false;
+  private readonly onScrollback = (u: ScrollbackUpdate): void => {
+    if (u.pane === this.scrollbackSub?.pane) this.sendScrollback();
+  };
   private readonly onHerdrState = (state: 'up' | 'down'): void => {
     if (!this.watch) return;
     if (state === 'down') this.watch.watcher.stop();
@@ -128,6 +156,7 @@ export class Session implements Viewer {
     this.hub.link.on('state', this.onHerdrState);
     this.hub.link.on('snapshot', this.onSnapshot);
     this.hub.fitter.on('fitted', this.onFitted);
+    this.hub.scrollback.on('update', this.onScrollback);
   }
 
   get deviceId(): string | null {
@@ -211,7 +240,9 @@ export class Session implements Viewer {
    * `watch` and `unwatch` run one at a time, in arrival order. Handlers are otherwise concurrent, and two
    * `startWatch`es in flight would each pass `stopWatch()` and the later one overwrite `this.watch`, leaving the
    * first watcher and its full-frame timer running (and feeding another pane's screen into the current watch);
-   * an `unwatch` overtaking a `watch` would leave the socket watching a pane nobody looks at.
+   * an `unwatch` overtaking a `watch` would leave the socket watching a pane nobody looks at. `scrollback` takes the
+   * same queue: it sets which pane's lines this phone is sent, as watch and unwatch end it, so it must keep their order.
+   * Its lines go out afterwards, outside the queue (`sendScrollback`): a long answer to a slow phone holds up no watch.
    */
   private watchControl: Promise<void> = Promise.resolve();
 
@@ -239,6 +270,7 @@ export class Session implements Viewer {
         if (this.watch?.pane !== pane) return this.error(id, 'not_watching', `not watching ${pane}`);
         await this.leave(this.watch.pane);
         this.stopWatch();
+        if (this.scrollbackSub?.pane === pane) this.endScrollback();
         this.ok(id);
       });
     },
@@ -249,6 +281,7 @@ export class Session implements Viewer {
     // lifecycle also stops a fit re-applying after a `leave` (unwatch/viewing) released it.
     fit: (id, m) => this.inWatchOrder(() => this.fit(id, m)),
     history: (id, m) => this.history(id, m),
+    scrollback: (id, m) => this.inWatchOrder(() => this.scrollback(id, m)),
     keys: (id, m) => this.keys(id, m),
     scroll: (id, m) => this.scroll(id, m),
     'pane.create': (id, m) => this.createPane(id, m),
@@ -413,6 +446,7 @@ export class Session implements Viewer {
     // the new one). The current watcher is stopped further down, only once the new size is in hand, so a failure
     // before that leaves it running rather than dropping it (a same-pane re-watch, e.g. a zoom toggle, that fails).
     if (this.watch && this.watch.pane !== pane) await this.leave(this.watch.pane);
+    if (this.scrollbackSub && this.scrollbackSub.pane !== pane) this.endScrollback(); // another pane's lines are no longer wanted
     if (this.disposed) return; // the socket closed while leaving the old pane: take nothing new
     // `watch {zoom:true}`: fill the desktop tab with this pane while the phone looks at it (§4). Zoomed
     // first so the size below is the zoomed pane's; a failure (old herdr) leaves `zoomed` out of the reply.
@@ -590,6 +624,8 @@ export class Session implements Viewer {
     const minInterval = w.watcher.boosted ? BOOST_FRAME_MIN_INTERVAL_MS : FRAME_MIN_INTERVAL_MS;
     if (elapsed >= minInterval) this.flush();
     else if (!w.flushTimer) w.flushTimer = setTimeout(() => this.flush(), minInterval - elapsed);
+    // rows may have scrolled off the top: fold them into the bridge's copy right away rather than at the next tick
+    this.hub.scrollback.poke(w.pane);
   }
 
   private flush(): void {
@@ -623,9 +659,10 @@ export class Session implements Viewer {
     const requested = typeof m['lines'] === 'number' && Number.isFinite(m['lines']) ? Math.floor(m['lines']) : 200;
     const n = Math.min(Math.max(requested, 1), MAX_HISTORY_LINES);
     const source = m['unwrapped'] === true ? 'recent_unwrapped' : 'recent';
-    // herdr returns N-1 lines for lines=N (docs/herdr-findings.md §2), so ask for one more. `pane.get`
-    // says how many lines herdr actually holds above the screen: 0 for a program on the alternate
-    // screen (Claude Code, vim, tmux) or a fresh shell — then `recent` is just the screen again and the
+    // One row more than asked, as apps that predate `scrollback` have always been sent; herdr counts the screen's blank
+    // bottom rows in N without returning them (docs/herdr-findings.md §2), so older output is there when herdr says the
+    // read was cut. `pane.get` says how many lines herdr actually holds above the screen: 0 for a program on the
+    // alternate screen (Claude Code, vim, tmux) or a fresh shell — then `recent` is just the screen again and the
     // phone should say so instead of showing a frozen copy of the live view.
     const [{ read }, info] = await Promise.all([
       this.hub.link.request<{ read: PaneReadResult }>('pane.read', {
@@ -639,9 +676,128 @@ export class Session implements Viewer {
     ]);
     const scrollback = info?.pane?.scroll?.max_offset_from_bottom ?? null;
     const rows_ = parseScreen(read.text);
-    const has_more = rows_.length >= n && scrollback !== 0;
+    const has_more = (read.truncated === true || rows_.length >= n) && scrollback !== 0;
     this.log.info('history', { pane, source, requested: n, returned: rows_.length, scrollback });
     this.send(encodeHistory({ id: id ?? '', pane, rows_, has_more, scrollback, table: this.styles }));
+  }
+
+  /**
+   * `scrollback {pane, epoch?, from?}` (§4): the bridge's copy of the pane's history, then every line it gains while
+   * this phone stays on the pane. A phone that still holds the copy's `epoch` names the next line it needs (`from`) and
+   * gets only what came after; anything else gets the whole copy, marked `reset`. This turn of the watch queue only
+   * subscribes the phone; `sendScrollback` sends the lines and, once they have caught up with the copy, the `ok`.
+   */
+  private async scrollback(id: string | undefined, m: Msg): Promise<void> {
+    const pane = this.paneArg(m);
+    // The subscription is the latest request's: an answer still going out ends here (with its `ok`), and a refused
+    // request leaves none (the phone asks again).
+    this.endScrollback();
+    const epoch = m['epoch'];
+    if (epoch !== undefined && (typeof epoch !== 'string' || epoch.length > 64)) return this.error(id, 'bad_request', 'epoch must be a string');
+    const from = m['from'];
+    if (from !== undefined && (typeof from !== 'number' || !Number.isSafeInteger(from) || from < 0)) {
+      return this.error(id, 'bad_request', 'from must be a non-negative integer');
+    }
+    if (!this.hub.link.isUp) return this.error(id, 'herdr_down', 'herdr is not reachable');
+    if (!(await this.hub.link.ensurePane(pane))) return this.error(id, 'unknown_pane', `no pane ${pane}`);
+    const copy = await this.hub.scrollback.current(pane);
+    if (this.disposed) return;
+    if (!copy) return this.error(id, 'unknown_pane', `no pane ${pane}`);
+    const resumed = epoch === copy.epoch && typeof from === 'number' && from >= copy.base && from <= copy.next;
+    this.scrollbackSub = { pane, epoch: resumed ? copy.epoch : null, next: resumed ? from : copy.base, id, owed: true, sent: 0, resumed };
+    this.sendScrollback();
+  }
+
+  /** Ends the subscription. An answer still going out stops there, its `ok` saying how far it got. */
+  private endScrollback(): void {
+    const sub = this.scrollbackSub;
+    if (!sub) return;
+    this.scrollbackSub = null;
+    if (sub.owed) this.closeAnswer(sub, this.hub.scrollback.copyOf(sub.pane));
+  }
+
+  /** The `ok` of a `scrollback` request: the epoch and the next line number of what this phone has been sent. */
+  private closeAnswer(sub: ScrollbackSub, copy: ScrollbackCopy | null): void {
+    sub.owed = false;
+    this.log.info('scrollback', { pane: sub.pane, lines: sub.sent, resumed: sub.resumed });
+    this.ok(sub.id, { epoch: sub.epoch ?? copy?.epoch, next: sub.next, max_lines: copy?.maxLines });
+  }
+
+  /**
+   * Sends the subscribed phone what it lacks of its pane's copy: the lines after the last one sent, or the whole copy
+   * (`reset`) when the copy started over or dropped lines the phone never got. A chunk at a time, each only once the
+   * socket holds no more than SCROLLBACK_BACKLOG_BYTES unsent (a slow phone), so lines pile up in the copy, not on the
+   * socket. Once caught up it sends the request's `ok`; later lines follow as the copy gains them.
+   */
+  private sendScrollback(): void {
+    if (this.scrollbackSending) return;
+    this.scrollbackSending = true;
+    void this.drainScrollback()
+      .catch((err: unknown) => this.log.warn('scrollback.send_failed', { error: err instanceof Error ? err.message : String(err) }))
+      .finally(() => {
+        this.scrollbackSending = false;
+        if (this.scrollbackBehind()) this.sendScrollback(); // lines that came after the last look at the copy
+      });
+  }
+
+  private scrollbackBehind(): boolean {
+    const sub = this.scrollbackSub;
+    if (!sub || this.disposed || this.ws.readyState !== this.ws.OPEN) return false;
+    const copy = this.hub.scrollback.copyOf(sub.pane);
+    return copy === null || sub.owed || copy.epoch !== sub.epoch || copy.next > sub.next;
+  }
+
+  private async drainScrollback(): Promise<void> {
+    for (;;) {
+      const sub = this.scrollbackSub;
+      if (!sub || this.disposed || this.ws.readyState !== this.ws.OPEN) return;
+      const copy = this.hub.scrollback.copyOf(sub.pane);
+      if (!copy) {
+        // the pane is gone: nothing more will come
+        this.scrollbackSub = null;
+        if (sub.owed) this.closeAnswer(sub, null);
+        return;
+      }
+      const continues = sub.epoch === copy.epoch && sub.next >= copy.base;
+      if (continues && sub.next >= copy.next) {
+        if (sub.owed) this.closeAnswer(sub, copy);
+        return;
+      }
+      if (this.ws.bufferedAmount > SCROLLBACK_BACKLOG_BYTES) {
+        // backed up: wait, then look at the copy afresh (what came meanwhile goes out with the rest)
+        await this.scrollbackRoom(sub);
+        continue;
+      }
+      const part = continues ? copy.since(sub.next) : copy.since(copy.base);
+      const chunks = encodeScrollback({ pane: sub.pane, epoch: copy.epoch, start: part.start, lines: part.lines, reset: !continues, table: this.styles });
+      try {
+        for (let first = true; ; first = false) {
+          if (!first && !(await this.scrollbackRoom(sub))) break;
+          // made only now, right before it is sent: making a chunk takes its new style definitions off the table
+          const next = chunks.next();
+          if (next.done) break;
+          const msg = next.value;
+          this.send(msg);
+          sub.epoch = msg.epoch;
+          sub.next = msg.start + msg.lines.length;
+          sub.sent += msg.lines.length;
+        }
+      } finally {
+        chunks.return(undefined);
+      }
+    }
+  }
+
+  /**
+   * Before a chunk: wait while the socket holds more than SCROLLBACK_BACKLOG_BYTES unsent (until half of it is left),
+   * else let other work in. False when the subscription ended or the socket closed meanwhile.
+   */
+  private async scrollbackRoom(sub: ScrollbackSub): Promise<boolean> {
+    const live = (): boolean => this.scrollbackSub === sub && !this.disposed && this.ws.readyState === this.ws.OPEN;
+    if (this.ws.bufferedAmount > SCROLLBACK_BACKLOG_BYTES) {
+      while (live() && this.ws.bufferedAmount > SCROLLBACK_BACKLOG_BYTES / 2) await new Promise((r) => setTimeout(r, 25));
+    } else await new Promise((r) => setImmediate(r));
+    return live();
   }
 
   private async keys(id: string | undefined, m: Msg): Promise<void> {
@@ -912,6 +1068,8 @@ export class Session implements Viewer {
     this.hub.removeViewer(this);
     this.hub.link.off('state', this.onHerdrState);
     this.hub.link.off('snapshot', this.onSnapshot);
+    this.hub.scrollback.off('update', this.onScrollback);
+    this.scrollbackSub = null;
     if (this.device) this.log.info('session.close', { device_id: this.device.id });
   }
 }

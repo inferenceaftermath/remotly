@@ -69,14 +69,15 @@ The golden-frame test locates `shared/fixtures/frames` relative to its own sourc
    entry). Scan it in the app, or switch to "Enter manually".
 2. The pane list groups panes by workspace › tab; blocked panes float to the top with Approve /
    Deny buttons. Pull down to reconnect.
-3. Open a pane: the terminal mirrors the desktop at the desktop's size (pinch to change the font,
-   pan horizontally if it is wider than the phone). The clock button loads 500 lines of scrollback
-   ("Older" fetches up to 999, herdr's cap); "Jump to live" returns. The key row sends Esc, Tab,
+3. Open a pane: the terminal mirrors the desktop at the desktop's size (A− / A+ in the header change
+   the text size; pan horizontally if it is wider than the phone). The pane's history (the bridge's copy of its
+   scrollback, 10 000 lines unless the bridge's `scrollback.max_lines` (config.json) says otherwise, up to 100 000, wrapped to
+   the live screen's width) sits above the live screen in one scroll; scrolled up, the live screen keeps updating
+   below and "Live ↓" returns. The key row sends Esc, Tab,
    arrows, Enter, Backspace, Home/End/PgUp/PgDn, Shift+Tab, Del and ^C; Ctrl is sticky for one
    key. The composer sends the whole (multi-line) text as one `prompt`; the menu's "Raw text mode"
    sends `text` verbatim instead. With "Zoom on desktop while viewing" (Settings, default on) the
-   bridge zooms the pane on the desktop while it is open here and restores the split when you leave;
-   the menu's "Zoom on desktop" toggles it by hand.
+   bridge zooms the pane on the desktop while it is open here and restores the split when you leave.
 4. While the pane is blocked an approval bar offers Approve / Approve for session / Deny / Deny with feedback /
    Interrupt and shows the `approval.result` outcome; after `signature_mismatch` a "Send anyway"
    button repeats the action with `force:true`.
@@ -86,7 +87,7 @@ The golden-frame test locates `shared/fixtures/frames` relative to its own sourc
    banners whose prompt is no longer live are cleared when the app connects.
 
 Settings shows the host URL and pinned fingerprint, bridge and herdr versions, notification
-permission, font-size reset and "Forget this host" (removes the Keychain token; pair again).
+permission, the switches above and "Forget this host" (removes the Keychain token; pair again).
 
 ## Known limitations
 
