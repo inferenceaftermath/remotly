@@ -121,6 +121,13 @@ class TerminalView(context: Context) : View(context) {
     private val scroller = OverScroller(context)
     /** The running fling moves Y (false: horizontal only, Y is pinned). */
     private var flingMovesY = false
+    /**
+     * Where the scroller's last step left [offsetY], and how far the content has moved under the running scroller since
+     * it started: rows added or dropped above the view, text followed up the live screen. The scroller goes on from
+     * where that put the view instead of taking it back, so a fling keeps its speed while output arrives (as on iOS).
+     */
+    private var flungY = 0f
+    private var flingShift = 0f
     /** Forwarding: hand what is left of the fling to the program when the window reaches the edge it is heading for. */
     private var flingHandoff = false
     private var flingDown = true
@@ -317,6 +324,7 @@ class TerminalView(context: Context) : View(context) {
         if (target - offsetY > reach) offsetY = target - reach
         flingMovesY = true
         toBottom = true
+        startFollowing()
         scroller.startScroll(offsetX.toInt(), offsetY.toInt(), 0, (target - offsetY).toInt(), SCROLL_TO_BOTTOM_MS)
         postInvalidateOnAnimation()
     }
@@ -677,7 +685,11 @@ class TerminalView(context: Context) : View(context) {
                 flingDown = towardBottom
                 flingX = e2.x
                 flingY = e2.y
-                scroller.fling(offsetX.toInt(), offsetY.toInt(), -velocityX.toInt(), -velocityY.toInt(), 0, maxOffsetX().toInt(), 0, liveBottomY().toInt())
+                startFollowing()
+                // Y unbounded: the edges are [clampScroll]'s, so a bottom that moves down while it flies (output
+                // arriving) is reached as on iOS, not the one there was at the start.
+                scroller.fling(offsetX.toInt(), offsetY.toInt(), -velocityX.toInt(), -velocityY.toInt(), 0, maxOffsetX().toInt(),
+                    -FLING_REACH, liveBottomY().toInt() + FLING_REACH)
             }
             postInvalidateOnAnimation()
             return true
@@ -901,23 +913,35 @@ class TerminalView(context: Context) : View(context) {
         return true
     }
 
+    /** A fling or glide starts from [offsetY] as it is (see [flungY]). */
+    private fun startFollowing() {
+        flungY = offsetY
+        flingShift = 0f
+    }
+
     override fun computeScroll() {
         if (!scroller.computeScrollOffset()) return
         offsetX = scroller.currX.toFloat()
         // A fling released against an edge in forwarding mode only moves X (Y was started at 0..0); taking Y from the
         // scroller then showed the top of herdr's taller grid and hid the last rows until re-watch.
-        if (flingMovesY) offsetY = scroller.currY.toFloat()
+        if (flingMovesY) {
+            flingShift += offsetY - flungY
+            offsetY = scroller.currY + flingShift
+        }
         if (toBottom && scroller.isFinished) {
             toBottom = false
             offsetY = liveBottomY()
         }
         clampScroll()
+        flungY = offsetY
         if (flingHandoff && atEdge(flingDown)) {
             // The window reached the edge of the live screen with speed left: the rest of the fling goes to the program.
             val linesPerSecond = scroller.currVelocity / cellH
             scroller.forceFinished(true)
             flingHandoff = false
             startInertia(if (flingDown) linesPerSecond else -linesPerSecond, flingX, flingY)
+        } else if (flingMovesY && !toBottom && atEdge(flingDown) && scroller.currX == scroller.finalX) {
+            scroller.forceFinished(true) // held at the edge it was heading for: the rest of the fling would only spin
         }
         postInvalidateOnAnimation()
     }
@@ -939,5 +963,7 @@ class TerminalView(context: Context) : View(context) {
         /** A frame this soon after a forwarded scroll step may slide into place. */
         private const val SLIDE_WINDOW_MS = 1200L
         private const val SCROLL_TO_BOTTOM_MS = 350
+        /** Past either edge, more than any fling travels. */
+        private const val FLING_REACH = 1_000_000
     }
 }

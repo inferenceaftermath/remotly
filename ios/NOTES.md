@@ -129,7 +129,8 @@ Interpretations of DESIGN.md taken here (mirror them on Android if they are kept
 - "Fitting…" clears on the first frame after the `fit` reply, or after 3 s when the program does not redraw.
 - Blocked panes appear only under "Needs you", not again in their tab's section.
 - `CADisableMinimumFrameDurationOnPhone` in Info.plist: Apple's opt-in for frame rates above 60 Hz on ProMotion
-  iPhones; the terminal redraws the rows in view itself at every step of a scroll through the history.
+  iPhones. The terminal draws its rows into tiles of about 256 points that the scroll view moves (`TerminalGridUIView`),
+  so a scroll through the history draws nothing per frame and keeps up with the display.
 
 ## Review pass
 

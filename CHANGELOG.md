@@ -7,6 +7,15 @@ there to the App Store and Google Play by hand (`promote.yml`; `docs/DELIVERY.md
 
 ## Unreleased
 
+### Phone apps — smooth scrolling
+
+- iPhone: scrolling the terminal moves rows that are already drawn (in strips about a third of a screen tall, kept for
+  what is on screen and a strip above and below it), where it used to draw every row on screen again at every step of
+  the scroll; it keeps up with the display now, 120 Hz on ProMotion iPhones. Box drawing, arrows, Greek, Cyrillic and
+  other characters the font draws exactly a cell wide are drawn a stretch at a time instead of one by one.
+- Both apps: a fling keeps its speed when output arrives meanwhile. Lines added below the view, or dropped above it,
+  used to stop the fling on the iPhone and pull it back on Android.
+
 ### Bridge 0.4.0 — scrollback in one piece
 
 - The bridge keeps its own copy of every pane's scrollback, whether a phone is connected or not: twice a second it asks

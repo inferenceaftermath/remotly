@@ -273,6 +273,9 @@ public struct WrappedHistory: Sendable {
     public private(set) var revision = 0
     /// The rows are the `history` fallback's, not wrapped here (a width change leaves them as they are).
     public private(set) var isUnwrapped = false
+    /// Changes whenever the rows are counted afresh (`reset`, `rewrap`, `setUnwrapped`, `clear`, and `follow` when it
+    /// missed a change): a row number (`firstRowNumber` + the row) names the same row only while this stays the same.
+    public private(set) var numbering = 0
     /// An answer to a `scrollback` request is still arriving: lines added now are older output, not lines that just
     /// left the screen.
     public var answering = false
@@ -283,6 +286,9 @@ public struct WrappedHistory: Sendable {
 
     /// Rows held, oldest first.
     public var rowCount: Int { rowEnd - rowBase }
+    /// The number of the first row held. Rows keep their numbers while lines are appended and dropped at the front (a view
+    /// can keep what it drew for them), until `numbering` changes.
+    public var firstRowNumber: Int { rowBase }
     /// Lines held (store numbers `firstLine` on).
     public var lineCount: Int { starts.count }
     public var isEmpty: Bool { rowEnd == rowBase }
@@ -297,6 +303,7 @@ public struct WrappedHistory: Sendable {
     public mutating func rewrap(from store: ScrollbackStore, cols: Int) {
         self.cols = max(1, cols)
         isUnwrapped = false
+        numbering += 1
         lines = store.lines
         starts = FrontTrimmed()
         rowBase = 0
@@ -327,6 +334,7 @@ public struct WrappedHistory: Sendable {
     /// The `history` fallback: these rows as they are, one line each (no wrapping, nothing added later).
     public mutating func setUnwrapped(_ newRows: [[WireRun]], cols: Int) {
         generation += 1
+        numbering += 1
         self.cols = max(1, cols)
         isUnwrapped = true
         lines = FrontTrimmed(newRows)
@@ -339,6 +347,7 @@ public struct WrappedHistory: Sendable {
 
     public mutating func clear() {
         generation += 1
+        numbering += 1
         isUnwrapped = false
         answering = false
         lines = FrontTrimmed()

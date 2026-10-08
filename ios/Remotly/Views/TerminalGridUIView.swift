@@ -1,11 +1,13 @@
-// UIKit grid renderer: one NSAttributedString draw per same-style run of ASCII cells, one per
-// non-ASCII or wide cell (centred in its cell box so fallback fonts cannot drift the columns).
-// The pane's history rows (the bridge's scrollback copy, wrapped to the grid's columns) sit above
-// the live grid in one column of rows: history row i is row i, live row y is row history + y.
-// Redraws only live rows whose cells changed, and only ever the rows on screen. The view is only
-// ever viewport-sized: the scroll view pins it to the visible area and sets `origin`, so a
-// 10 000-line history never becomes one giant layer (Core Animation stops rendering backing stores
-// beyond the GPU texture limit — the screen would simply go blank).
+// UIKit grid renderer. The pane's history rows (the bridge's scrollback copy, wrapped to the grid's columns) sit above
+// the live grid in one column of rows: history row i is row i, live row y is row history + y. The view spans the
+// whole content but draws nothing itself: tiles of about 256 points of rows (subviews) are drawn once and kept for the
+// rows on screen and a tile's height above and below, so the scroll view moves them like any native list. A frame of
+// scrolling draws nothing; a tile coming into view, or rows whose cells change, are drawn. Tiles are keyed by row number
+// (`WrappedHistory.firstRowNumber` on), so lines appended or dropped at the front keep what was drawn for the rows that
+// stay. No backing store is ever the size of the content (Core Animation stops showing those past the GPU's texture
+// limit). Text: one NSAttributedString draw per same-style stretch of characters the font draws exactly one cell wide
+// (ASCII, box drawing, …), one per other or wide character (centred in its cell box so fallback fonts cannot drift the
+// columns).
 import FlowKit
 import UIKit
 
@@ -89,6 +91,7 @@ struct TerminalMetrics {
     let boldItalic: UIFont
     let cellWidth: CGFloat
     let lineHeight: CGFloat
+    private let cellFit: CellFit
 
     init(size: CGFloat) {
         let pointSize = max(4, size)
@@ -100,6 +103,7 @@ struct TerminalMetrics {
         boldItalic = TerminalMetrics.italicVariant(of: bold)
         cellWidth = ("M" as NSString).size(withAttributes: [.font: regular]).width
         lineHeight = ceil(regular.lineHeight)
+        cellFit = CellFit()
     }
 
     /// A true italic when the family has one; JetBrains Mono ships here as Regular and Bold only, so its slant is
@@ -131,10 +135,21 @@ struct TerminalMetrics {
             .font: font(for: a),
             .foregroundColor: foreground,
             .ligature: 0,
+            .kern: 0, // no kerning pairs, even in a fallback font: a stretch drawn at once keeps to its cells
         ]
         if a.contains(.underline) { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
         if a.contains(.strikethrough) { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
         return attrs
+    }
+
+    /// Whether `text` (one cell's character) is drawn by `font` exactly one cell wide, so it can share one draw with its
+    /// neighbours and still land on the grid: printable ASCII always; otherwise one character from a script that neither
+    /// joins nor reshapes (Latin, Greek, Cyrillic, punctuation, arrows, box drawing, blocks, shapes, braille…), measured
+    /// once per font.
+    func fitsCell(_ text: String, font: UIFont) -> Bool {
+        let utf8 = text.utf8
+        if utf8.count == 1, let byte = utf8.first, (0x20...0x7E).contains(byte) { return true }
+        return cellFit.fits(text, font: font, cellWidth: cellWidth)
     }
 
     /// Font used in fit mode when no explicit size is set: the phone's body text size (Dynamic Type; 17 pt
@@ -152,29 +167,103 @@ struct TerminalMetrics {
     }
 }
 
+/// `TerminalMetrics.fitsCell`'s measurements.
+@MainActor
+fileprivate final class CellFit {
+    private var known: [UIFont: [String: Bool]] = [:]
+
+    func fits(_ text: String, font: UIFont, cellWidth: CGFloat) -> Bool {
+        if let hit = known[font]?[text] { return hit }
+        let fits = CellFit.stays(text) && abs((text as NSString).size(withAttributes: [.font: font]).width - cellWidth) < 0.01
+        if known[font, default: [:]].count > 4096 { known[font] = [:] }
+        known[font, default: [:]][text] = fits
+        return fits
+    }
+
+    /// One Unicode scalar from a block whose characters keep their shape next to any neighbour (no joining, no marks, no
+    /// zero-width or direction controls).
+    private static func stays(_ text: String) -> Bool {
+        let scalars = text.unicodeScalars
+        guard scalars.count == 1, let v = scalars.first?.value else { return false }
+        switch v {
+        case 0x00A1...0x024F, 0x0370...0x03FF, 0x0400...0x04FF, 0x2010...0x2027, 0x2030...0x205E, 0x2070...0x209F,
+             0x20A0...0x20BF, 0x2100...0x23FF, 0x2460...0x27BF, 0x2800...0x28FF, 0x2900...0x2BFF:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+/// A tile of the content: `rowsPerTile` rows from a row number that is a multiple of it, by one column band; drawn once,
+/// then moved by the scroll view with the rest of the content.
+private struct TileKey: Hashable {
+    let band: Int
+    let column: Int
+}
+
+private final class TerminalTile: UIView {
+    weak var owner: TerminalGridUIView?
+    var key = TileKey(band: 0, column: 0)
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configure()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configure()
+    }
+
+    private func configure() {
+        isOpaque = true
+        isUserInteractionEnabled = false
+        contentMode = .redraw
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard let owner, let ctx = UIGraphicsGetCurrentContext() else { return }
+        owner.drawContent(rect.offsetBy(dx: frame.minX, dy: frame.minY), origin: frame.origin, in: ctx)
+    }
+}
+
 final class TerminalGridUIView: UIView {
     private(set) var grid = TerminalGrid(cols: 80, rows: 24)
     var theme = TerminalTheme.of(ThemeStore.shared.choice) {
         didSet {
             guard theme !== oldValue else { return }
-            backgroundColor = theme.background
-            setNeedsDisplay()
+            painted = [:]
+            for view in selectionViews { view.backgroundColor = theme.selection }
+            for tile in spareTiles { tile.backgroundColor = theme.background }
+            for tile in tiles.values {
+                tile.backgroundColor = theme.background
+                tile.setNeedsDisplay()
+            }
         }
     }
     /// History rows above the live grid, oldest first (none while swipes go to the program).
     private(set) var history = WrappedHistory()
     /// Styles of the history rows' runs (their ids outlive the connection; the live grid's do not).
-    var historyStyles = HistoryStyles()
+    var historyStyles = HistoryStyles() {
+        didSet { if historyStyles.styles.count < oldValue.styles.count { redrawTiles() } } // a new table: ids name other styles
+    }
     var metrics = TerminalMetrics(size: 12) {
-        didSet { if metrics.size != oldValue.size { setNeedsDisplay() } }
+        didSet {
+            guard metrics.size != oldValue.size else { return }
+            painted = [:]
+            redrawTiles() // and `layoutTiles` gives them the new row height
+            showSelection()
+        }
     }
-    /// Content point (cols × cellWidth wide; history rows, then live rows, each lineHeight tall) shown at this view's top-left.
-    var origin: CGPoint = .zero {
-        didSet { if origin != oldValue { setNeedsDisplay() } }
+    /// The part of the content on screen (this view spans the whole content: content coordinates are its own). The
+    /// scroll view sets it as it scrolls; the tiles follow.
+    var visibleRect: CGRect = .zero {
+        didSet { if visibleRect != oldValue { layoutTiles() } }
     }
-    /// Long-press selection (anchor, focus cells) drawn as a translucent overlay; nil when nothing is selected.
+    /// Long-press selection (anchor, focus cells) shown as a translucent overlay; nil when nothing is selected.
     var selection: (anchor: GridPosition, focus: GridPosition)? {
-        didSet { setNeedsDisplay() }
+        didSet { showSelection() }
     }
 
     var selectionText: String? {
@@ -187,14 +276,31 @@ final class TerminalGridUIView: UIView {
     /// Top of the live grid in content coordinates.
     var liveTop: CGFloat { CGFloat(history.rowCount) * metrics.lineHeight }
 
+    /// The row number (`WrappedHistory.firstRowNumber` on) of live row 0.
+    private var liveBase: Int { history.firstRowNumber + history.rowCount }
+
     func setHistory(_ newHistory: WrappedHistory) {
-        if newHistory.generation != history.generation || newHistory.cols != history.cols { madeRows = [:] }
+        let old = history
         history = newHistory
-        setNeedsDisplay()
+        if newHistory.generation != old.generation || newHistory.cols != old.cols { madeRows = [:] }
+        if newHistory.numbering != old.numbering || newHistory.cols != old.cols {
+            redrawTiles() // counted afresh: a row number names another row now
+        } else {
+            // Lines appended (or a shorter copy): the live rows below the history took other numbers.
+            let oldEnd = old.firstRowNumber + old.rowCount
+            let newEnd = liveBase
+            if newEnd != oldEnd { invalidate(rows: min(oldEnd, newEnd)..<Int.max) }
+            // Lines dropped at the front: the tiles stay with their rows; the rows that left are blank now.
+            if newHistory.firstRowNumber != old.firstRowNumber {
+                invalidate(rows: min(old.firstRowNumber, newHistory.firstRowNumber)..<max(old.firstRowNumber, newHistory.firstRowNumber))
+                placeTiles()
+            }
+        }
+        setNeedsLayout()
     }
 
     /// The rows of the history lines drawn lately, by line number: a line's rows are made once, not for each of its rows
-    /// in every frame (they stay the same until the lines are replaced or wrapped at another width).
+    /// in every tile (they stay the same until the lines are replaced or wrapped at another width).
     private var madeRows: [Int: [[WireRun]]] = [:]
 
     /// History row `y`'s runs (placed from its column 0).
@@ -209,6 +315,161 @@ final class TerminalGridUIView: UIView {
             madeRows[at.line] = rows
         }
         return at.rowInLine < rows.count ? rows[at.rowInLine] : []
+    }
+
+    /// Each style's text attributes and background under the current theme and text size.
+    private var painted: [Style: (attributes: [NSAttributedString.Key: Any], background: UIColor?)] = [:]
+
+    private func paint(_ style: Style) -> (attributes: [NSAttributedString.Key: Any], background: UIColor?) {
+        if let hit = painted[style] { return hit }
+        let colors = theme.colors(for: style)
+        let look = (attributes: metrics.attributes(for: style, foreground: colors.foreground), background: colors.background)
+        if painted.count > 1024 { painted = [:] }
+        painted[style] = look
+        return look
+    }
+
+    // MARK: Tiles
+
+    private struct TileGeometry: Equatable {
+        var rows: Int
+        var lineHeight: CGFloat
+        var width: CGFloat
+        var gridWidth: CGFloat
+    }
+
+    private var tiles: [TileKey: TerminalTile] = [:]
+    private var spareTiles: [TerminalTile] = []
+    private var tileGeometry: TileGeometry?
+
+    /// Tiles about 256 points tall and up to 512 wide (bands of columns on a grid wider than that): at 3× one is under 5 MB.
+    private var currentGeometry: TileGeometry {
+        let line = metrics.lineHeight
+        let gridWidth = CGFloat(grid.cols) * metrics.cellWidth
+        return TileGeometry(rows: max(4, Int(256 / max(1, line))), lineHeight: line, width: min(gridWidth, 512), gridWidth: gridWidth)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layoutTiles()
+    }
+
+    /// Tiles for the rows on screen and a tile's height above and below them; the others go.
+    private func layoutTiles() {
+        let geometry = currentGeometry
+        if geometry != tileGeometry {
+            tileGeometry = geometry
+            repaintTiles()
+        }
+        var wanted = Set<TileKey>()
+        let line = geometry.lineHeight
+        if line > 0, geometry.width > 0, totalRows > 0, visibleRect.width > 0, visibleRect.height > 0 {
+            let area = visibleRect.insetBy(dx: 0, dy: -CGFloat(geometry.rows) * line)
+            let firstRow = max(0, Int(floor(area.minY / line)))
+            let lastRow = min(totalRows - 1, Int(ceil(area.maxY / line)))
+            let firstColumn = max(0, Int(floor(area.minX / geometry.width)))
+            let lastColumn = min(Int(ceil(geometry.gridWidth / geometry.width)) - 1, Int(floor(area.maxX / geometry.width)))
+            if firstRow <= lastRow, firstColumn <= lastColumn {
+                let base = history.firstRowNumber
+                for band in (base + firstRow) / geometry.rows...(base + lastRow) / geometry.rows {
+                    for column in firstColumn...lastColumn { wanted.insert(TileKey(band: band, column: column)) }
+                }
+            }
+        }
+        UIView.performWithoutAnimation {
+            for (key, tile) in tiles where !wanted.contains(key) {
+                tiles[key] = nil
+                if spareTiles.count < 2 {
+                    tile.isHidden = true
+                    spareTiles.append(tile)
+                } else {
+                    tile.removeFromSuperview()
+                }
+            }
+            for key in wanted where tiles[key] == nil {
+                let tile = spareTiles.popLast() ?? TerminalTile()
+                tile.owner = self
+                tile.key = key
+                tile.backgroundColor = theme.background
+                tile.frame = tileFrame(key)
+                tile.setNeedsDisplay()
+                if tile.superview !== self { addSubview(tile) }
+                tile.isHidden = false
+                tiles[key] = tile
+            }
+        }
+    }
+
+    /// Where tile `key` sits now: its rows keep their numbers while the history's first row number changes.
+    private func tileFrame(_ key: TileKey) -> CGRect {
+        let geometry = tileGeometry ?? currentGeometry
+        let x = CGFloat(key.column) * geometry.width
+        return CGRect(x: x, y: CGFloat(key.band * geometry.rows - history.firstRowNumber) * geometry.lineHeight,
+                      width: max(0, min(geometry.width, geometry.gridWidth - x)), height: CGFloat(geometry.rows) * geometry.lineHeight)
+    }
+
+    private func placeTiles() {
+        UIView.performWithoutAnimation {
+            for (key, tile) in tiles { tile.frame = tileFrame(key) }
+        }
+    }
+
+    /// Every tile placed and drawn afresh (its rows are other rows now, or are drawn otherwise), then the tiles laid out
+    /// for what is on screen.
+    private func redrawTiles() {
+        repaintTiles()
+        setNeedsLayout()
+    }
+
+    private func repaintTiles() {
+        placeTiles()
+        for tile in tiles.values { tile.setNeedsDisplay() }
+    }
+
+    /// Rows `rows` (row numbers, as the tiles count them) drawn again where tiles hold them.
+    private func invalidate(rows: Range<Int>) {
+        guard let geometry = tileGeometry, !rows.isEmpty else { return }
+        for (key, tile) in tiles {
+            let first = key.band * geometry.rows
+            let lo = max(rows.lowerBound, first)
+            let hi = min(rows.upperBound, first + geometry.rows)
+            guard lo < hi else { continue }
+            tile.setNeedsDisplay(CGRect(x: 0, y: CGFloat(lo - first) * geometry.lineHeight, width: tile.bounds.width,
+                                        height: CGFloat(hi - lo) * geometry.lineHeight))
+        }
+    }
+
+    // MARK: Selection overlay
+
+    /// The selection's first row, its full rows between, and its last row: plain coloured views above the tiles.
+    private var selectionViews: [UIView] = []
+
+    private func showSelection() {
+        UIView.performWithoutAnimation {
+            var rects: [CGRect] = []
+            // Hidden while a slide moves the rows under it (as it was never drawn mid-slide).
+            if let selection, grid.cols > 0, slideOffset == 0 || slideMovingRows == 0 {
+                let (start, end) = ordered(selection)
+                let w = metrics.cellWidth
+                let h = metrics.lineHeight
+                func add(rows r0: Int, _ r1: Int, cols c0: Int, _ c1: Int) {
+                    guard r1 >= r0, c1 >= c0 else { return }
+                    rects.append(CGRect(x: CGFloat(c0) * w, y: CGFloat(r0) * h, width: CGFloat(c1 - c0 + 1) * w,
+                                        height: CGFloat(r1 - r0 + 1) * h))
+                }
+                if start.row == end.row {
+                    add(rows: start.row, start.row, cols: start.col, end.col)
+                } else {
+                    add(rows: start.row, start.row, cols: start.col, grid.cols - 1)
+                    add(rows: start.row + 1, end.row - 1, cols: 0, grid.cols - 1)
+                    add(rows: end.row, end.row, cols: 0, end.col)
+                }
+            }
+            for (i, view) in selectionViews.enumerated() {
+                view.isHidden = i >= rects.count
+                if i < rects.count { view.frame = rects[i] }
+            }
+        }
     }
 
     // MARK: Slide (a scrolled frame glides into place instead of jumping)
@@ -244,6 +505,7 @@ final class TerminalGridUIView: UIView {
             slideOffset = min(0, slideOffset) - CGFloat(k) * line
         }
         if leavingRows.count > m { leavingRows = leavingAbove ? Array(leavingRows.suffix(m)) : Array(leavingRows.prefix(m)) }
+        invalidate(rows: liveBase..<liveBase + max(slideMovingRows, m))
         slideMovingRows = m
         slideVelocity = abs(slideOffset) / max(0.03, duration)
         if displayLink == nil {
@@ -252,16 +514,17 @@ final class TerminalGridUIView: UIView {
             displayLink = link
             lastSlideTick = 0
         }
-        setNeedsDisplay()
+        showSelection()
     }
 
     func endSlide() {
         displayLink?.invalidate()
         displayLink = nil
         guard slideOffset != 0 || !leavingRows.isEmpty else { return }
+        invalidate(rows: liveBase..<liveBase + slideMovingRows)
         slideOffset = 0
         leavingRows = []
-        setNeedsDisplay()
+        showSelection()
     }
 
     @objc private func slideTick(_ link: CADisplayLink) {
@@ -274,34 +537,33 @@ final class TerminalGridUIView: UIView {
             return
         }
         slideOffset -= slideOffset > 0 ? step : -step
-        let region = CGRect(x: 0, y: liveTop - origin.y, width: bounds.width, height: CGFloat(slideMovingRows) * metrics.lineHeight)
-        setNeedsDisplay(region.intersection(bounds))
+        invalidate(rows: liveBase..<liveBase + slideMovingRows)
     }
 
-    /// Bounding box of the selection in this view's coordinates (full width when it spans rows).
+    /// Bounding box of the selection in this view's (content) coordinates (full width when it spans rows).
     func selectionRect() -> CGRect? {
         guard let selection else { return nil }
         let (start, end) = ordered(selection)
         let single = start.row == end.row
         let x0 = single ? CGFloat(start.col) * metrics.cellWidth : 0
         let x1 = single ? CGFloat(end.col + 1) * metrics.cellWidth : CGFloat(grid.cols) * metrics.cellWidth
-        return CGRect(x: x0 - origin.x, y: CGFloat(start.row) * metrics.lineHeight - origin.y, width: x1 - x0,
+        return CGRect(x: x0, y: CGFloat(start.row) * metrics.lineHeight, width: x1 - x0,
                       height: CGFloat(end.row - start.row + 1) * metrics.lineHeight)
     }
 
-    /// Cell (history and live rows counted together) under a point in this view's coordinates; columns clamp to the
-    /// grid, rows outside the content are nil.
+    /// Cell (history and live rows counted together) under a point in this view's (content) coordinates; columns clamp
+    /// to the grid, rows outside the content are nil.
     func cell(at point: CGPoint) -> GridPosition? {
         guard metrics.cellWidth > 0, metrics.lineHeight > 0, totalRows > 0, grid.cols > 0 else { return nil }
-        let row = Int(floor((point.y + origin.y) / metrics.lineHeight))
+        let row = Int(floor(point.y / metrics.lineHeight))
         guard row >= 0, row < totalRows else { return nil }
-        let col = Int(floor((point.x + origin.x) / metrics.cellWidth))
+        let col = Int(floor(point.x / metrics.cellWidth))
         return GridPosition(row: row, col: min(max(col, 0), grid.cols - 1))
     }
 
-    /// Centre of a cell in this view's coordinates.
+    /// Centre of a cell in this view's (content) coordinates.
     func cellCenter(_ p: GridPosition) -> CGPoint {
-        CGPoint(x: (CGFloat(p.col) + 0.5) * metrics.cellWidth - origin.x, y: (CGFloat(p.row) + 0.5) * metrics.lineHeight - origin.y)
+        CGPoint(x: (CGFloat(p.col) + 0.5) * metrics.cellWidth, y: (CGFloat(p.row) + 0.5) * metrics.lineHeight)
     }
 
     private func ordered(_ s: (anchor: GridPosition, focus: GridPosition)) -> (GridPosition, GridPosition) {
@@ -367,8 +629,8 @@ final class TerminalGridUIView: UIView {
         let line = metrics.lineHeight
         guard line > 0, totalRows > 0, grid.cols > 0 else { return "" }
         // rows at least half in view
-        let first = max(0, Int(ceil(origin.y / line - 0.5)))
-        let last = min(totalRows - 1, Int(floor((origin.y + bounds.height) / line - 0.5)))
+        let first = max(0, Int(ceil(visibleRect.minY / line - 0.5)))
+        let last = min(totalRows - 1, Int(floor(visibleRect.maxY / line - 0.5)))
         guard first <= last else { return "" }
         // trailing blank rows dropped, as on Android
         var lines = text(from: GridPosition(row: first, col: 0), to: GridPosition(row: last, col: grid.cols - 1)).components(separatedBy: "\n")
@@ -387,9 +649,19 @@ final class TerminalGridUIView: UIView {
     }
 
     private func configure() {
-        isOpaque = true
-        backgroundColor = theme.background
-        contentMode = .redraw
+        // No drawing of its own (no backing store the size of the content): the scroll view's background shows where no
+        // tile is, the tiles and the selection views draw the rest.
+        isOpaque = false
+        backgroundColor = nil
+        selectionViews = (0..<3).map { _ in
+            let view = UIView()
+            view.isUserInteractionEnabled = false
+            view.isHidden = true
+            view.backgroundColor = theme.selection
+            view.layer.zPosition = 1 // above the tiles
+            addSubview(view)
+            return view
+        }
     }
 
     /// The live grid's size (the history rows above it take `liveTop`).
@@ -397,57 +669,56 @@ final class TerminalGridUIView: UIView {
         CGSize(width: CGFloat(grid.cols) * metrics.cellWidth, height: CGFloat(grid.rows) * metrics.lineHeight)
     }
 
-    /// Replaces the grid and invalidates only the rows that differ.
+    /// Replaces the grid and draws again only the rows that differ.
     func update(grid newGrid: TerminalGrid) {
         let old = grid
         grid = newGrid
+        let base = liveBase
         if old.cols != newGrid.cols || old.rows != newGrid.rows {
             endSlide()
-            setNeedsDisplay()
+            invalidate(rows: base..<Int.max)
+            setNeedsLayout() // other rows (and, for other columns, other tiles)
+            showSelection()
             return
         }
-        for y in 0..<newGrid.rows where old.cells[y] != newGrid.cells[y] {
-            let rect = rowRect(y)
-            if rect.intersects(bounds) { setNeedsDisplay(rect) }
+        // Style ids that name another style now (a reconnect empties the table and the next frame fills it again, under
+        // the same cells): rows using them are drawn again too.
+        var restyled = Set<Int>()
+        if old.styles != newGrid.styles {
+            for (id, style) in old.styles where newGrid.styles[id] != style { restyled.insert(id) }
+            for id in newGrid.styles.keys where old.styles[id] == nil { restyled.insert(id) }
+        }
+        for y in 0..<newGrid.rows {
+            let row = newGrid.cells[y]
+            guard old.cells[y] != row || (!restyled.isEmpty && row.contains(where: { restyled.contains($0.styleId) })) else { continue }
+            // with the rows beside it: a glyph reaching past its row box is drawn into them
+            invalidate(rows: base + y - 1..<base + y + 2)
         }
     }
 
-    /// Live row `y` in this view's coordinates.
-    private func rowRect(_ y: Int) -> CGRect {
-        CGRect(x: 0, y: liveTop + CGFloat(y) * metrics.lineHeight - origin.y, width: bounds.width, height: metrics.lineHeight)
-    }
-
-    override func draw(_ rect: CGRect) {
-        guard let ctx = UIGraphicsGetCurrentContext() else { return }
+    /// Draws the content within `rect` (content coordinates) into a tile's context, whose top-left is content point
+    /// `origin`. Rows are drawn from one above `rect` (a glyph reaching below its row shows as it would anywhere else).
+    fileprivate func drawContent(_ rect: CGRect, origin: CGPoint, in ctx: CGContext) {
         ctx.setFillColor(theme.background.cgColor)
-        ctx.fill(rect)
+        ctx.fill(rect.offsetBy(dx: -origin.x, dy: -origin.y))
         let lineHeight = metrics.lineHeight
         guard lineHeight > 0 else { return }
-        // Work in content coordinates: shift the context so content row y sits at y × lineHeight.
-        let contentRect = rect.offsetBy(dx: origin.x, dy: origin.y)
-        let visibleX = contentRect.minX...contentRect.maxX
+        let visibleX = rect.minX...rect.maxX
         ctx.saveGState()
         ctx.translateBy(x: -origin.x, y: -origin.y)
         let historyCount = history.rowCount
         if historyCount > 0 {
-            // Only the rows on screen, straight from their runs: the cost of a frame does not grow with the history.
-            let first = max(0, Int(floor(contentRect.minY / lineHeight)))
-            let last = min(historyCount - 1, Int(ceil(contentRect.maxY / lineHeight)))
+            // Only the rows in the tile, straight from their runs: the cost of a tile does not grow with the history.
+            let first = max(0, Int(floor(rect.minY / lineHeight)) - 1)
+            let last = min(historyCount - 1, Int(ceil(rect.maxY / lineHeight)))
             if first <= last {
                 for y in first...last { drawRuns(historyRow(y), top: CGFloat(y) * lineHeight, in: ctx, visibleX: visibleX) }
             }
         }
         // The live grid below them, in its own coordinates (live row y at y × lineHeight).
         let top = liveTop
-        ctx.saveGState()
         ctx.translateBy(x: 0, y: top)
-        drawLive(gridRect: contentRect.offsetBy(dx: 0, dy: -top), in: ctx, visibleX: visibleX)
-        ctx.restoreGState()
-        if slideOffset == 0 || slideMovingRows == 0 {
-            let first = max(0, Int(floor(contentRect.minY / lineHeight)))
-            let last = min(totalRows - 1, Int(ceil(contentRect.maxY / lineHeight)))
-            if first <= last { drawSelection(first: first, last: last, in: ctx) }
-        }
+        drawLive(gridRect: rect.offsetBy(dx: 0, dy: -top), in: ctx, visibleX: visibleX)
         ctx.restoreGState()
     }
 
@@ -455,7 +726,7 @@ final class TerminalGridUIView: UIView {
     private func drawLive(gridRect: CGRect, in ctx: CGContext, visibleX: ClosedRange<CGFloat>) {
         let lineHeight = metrics.lineHeight
         guard grid.rows > 0 else { return }
-        let first = max(0, Int(floor(gridRect.minY / lineHeight)))
+        let first = max(0, Int(floor(gridRect.minY / lineHeight)) - 1)
         let last = min(grid.rows - 1, Int(ceil(gridRect.maxY / lineHeight)))
         guard first <= last else { return }
         if slideOffset != 0, slideMovingRows > 0 {
@@ -478,27 +749,12 @@ final class TerminalGridUIView: UIView {
         }
     }
 
-    private func drawSelection(first: Int, last: Int, in ctx: CGContext) {
-        guard let selection else { return }
-        let (start, end) = ordered(selection)
-        let lo = max(first, start.row)
-        let hi = min(last, end.row)
-        guard lo <= hi else { return }
-        ctx.setFillColor(theme.selection.cgColor)
-        for y in lo...hi {
-            let c0 = y == start.row ? start.col : 0
-            let c1 = y == end.row ? end.col : grid.cols - 1
-            guard c1 >= c0 else { continue }
-            ctx.fill(CGRect(x: CGFloat(c0) * metrics.cellWidth, y: CGFloat(y) * metrics.lineHeight,
-                            width: CGFloat(c1 - c0 + 1) * metrics.cellWidth, height: metrics.lineHeight))
-        }
-    }
-
     private func drawRow(_ y: Int, in ctx: CGContext, visibleX: ClosedRange<CGFloat>) {
         drawCells(grid.cells[y], top: CGFloat(y) * metrics.lineHeight, in: ctx, visibleX: visibleX)
     }
 
-    /// One row of cells with its top edge at `top` (grid coordinates).
+    /// One row of cells with its top edge at `top` (grid coordinates): a same-style stretch of characters that fit their
+    /// cells (`TerminalMetrics.fitsCell`) in one draw, any other character centred in its cell box.
     private func drawCells(_ row: [Cell], top: CGFloat, in ctx: CGContext, visibleX: ClosedRange<CGFloat>) {
         let cols = row.count
         let cellWidth = metrics.cellWidth
@@ -506,26 +762,26 @@ final class TerminalGridUIView: UIView {
         while x < cols {
             let cell = row[x]
             if cell.width == 0 { x += 1; continue }
+            let style = grid.style(cell.styleId)
+            let font = metrics.font(for: style.attributes)
             var end = x + max(cell.width, 1)
-            let grouped = cell.width == 1 && TerminalGridUIView.isPlainASCII(cell.text)
+            let grouped = cell.width == 1 && metrics.fitsCell(cell.text, font: font)
             if grouped {
-                while end < cols, row[end].width == 1, row[end].styleId == cell.styleId,
-                      TerminalGridUIView.isPlainASCII(row[end].text) {
+                while end < cols, row[end].width == 1, row[end].styleId == cell.styleId, metrics.fitsCell(row[end].text, font: font) {
                     end += 1
                 }
             }
             let originX = CGFloat(x) * cellWidth
             let width = CGFloat(end - x) * cellWidth
             if originX + width < visibleX.lowerBound || originX > visibleX.upperBound { x = end; continue } // off-screen columns
-            let style = grid.style(cell.styleId)
-            let colors = theme.colors(for: style)
-            if let bg = colors.background {
+            let look = paint(style)
+            if let bg = look.background {
                 ctx.setFillColor(bg.cgColor)
                 ctx.fill(CGRect(x: originX, y: top, width: width, height: metrics.lineHeight))
             }
             let text = grouped ? row[x..<end].map(\.text).joined() : cell.text
             if !text.allSatisfy({ $0 == " " }) {
-                let attributed = NSAttributedString(string: text, attributes: metrics.attributes(for: style, foreground: colors.foreground))
+                let attributed = NSAttributedString(string: text, attributes: look.attributes)
                 if grouped {
                     attributed.draw(at: CGPoint(x: originX, y: top))
                 } else {
@@ -538,8 +794,8 @@ final class TerminalGridUIView: UIView {
     }
 
     /// One history row (runs placed from its column 0) with its top edge at `top`, drawn as `drawCells` draws cells but
-    /// straight from the runs, so a row on screen costs no cell array: printable ASCII in one draw, other narrow
-    /// characters each centred in its cell, a wide character centred in its two.
+    /// straight from the runs, so a row costs no cell array: a stretch of characters that fit their cells in one draw,
+    /// any other narrow character centred in its cell, a run with wide characters centred in its cells.
     private func drawRuns(_ runs: [WireRun], top: CGFloat, in ctx: CGContext, visibleX: ClosedRange<CGFloat>) {
         let cellWidth = metrics.cellWidth
         for run in runs where run.w > 0 {
@@ -547,36 +803,43 @@ final class TerminalGridUIView: UIView {
             let width = CGFloat(run.w) * cellWidth
             if originX + width < visibleX.lowerBound || originX > visibleX.upperBound { continue } // off-screen columns
             let style = historyStyles.style(run.s)
-            let colors = theme.colors(for: style)
-            if let bg = colors.background {
+            let look = paint(style)
+            if let bg = look.background {
                 ctx.setFillColor(bg.cgColor)
                 ctx.fill(CGRect(x: originX, y: top, width: width, height: metrics.lineHeight))
             }
             if run.t.allSatisfy({ $0 == " " }) { continue }
-            let attributes = metrics.attributes(for: style, foreground: colors.foreground)
             let utf8 = run.t.utf8
             if utf8.count == run.w, utf8.allSatisfy({ (0x20...0x7E).contains($0) }) {
-                NSAttributedString(string: run.t, attributes: attributes).draw(at: CGPoint(x: originX, y: top))
+                NSAttributedString(string: run.t, attributes: look.attributes).draw(at: CGPoint(x: originX, y: top))
             } else if run.t.count == run.w {
+                let font = metrics.font(for: style.attributes)
+                var stretch = ""
+                var stretchX = originX
                 var x = originX
+                func drawStretch() {
+                    if !stretch.allSatisfy({ $0 == " " }) {
+                        NSAttributedString(string: stretch, attributes: look.attributes).draw(at: CGPoint(x: stretchX, y: top))
+                    }
+                    stretch = ""
+                }
                 for character in run.t {
-                    if character != " " {
-                        let glyph = NSAttributedString(string: String(character), attributes: attributes)
+                    let text = String(character)
+                    if metrics.fitsCell(text, font: font) {
+                        if stretch.isEmpty { stretchX = x }
+                        stretch += text
+                    } else {
+                        drawStretch()
+                        let glyph = NSAttributedString(string: text, attributes: look.attributes)
                         glyph.draw(at: CGPoint(x: x + max(0, (cellWidth - glyph.size().width) / 2), y: top))
                     }
                     x += cellWidth
                 }
+                drawStretch()
             } else {
-                let glyph = NSAttributedString(string: run.t, attributes: attributes)
+                let glyph = NSAttributedString(string: run.t, attributes: look.attributes)
                 glyph.draw(at: CGPoint(x: originX + max(0, (width - glyph.size().width) / 2), y: top))
             }
         }
-    }
-
-    /// One printable ASCII character: safe to concatenate because SF Mono advances are uniform.
-    private static func isPlainASCII(_ text: String) -> Bool {
-        let utf8 = text.utf8
-        guard utf8.count == 1, let byte = utf8.first else { return false }
-        return (0x20...0x7E).contains(byte)
     }
 }
