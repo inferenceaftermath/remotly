@@ -56,7 +56,10 @@
   view stays there while it is there; in wheel / arrow mode the history is hidden and a swipe moves the
   window first and only what it cannot spend at an edge becomes steps (a fling that reaches an edge hands the
   rest over as inertia). Never let the `OverScroller` drive Y when it was started with a 0…0 range: that once
-  jumped the window to the top of the grid and hid the last rows.
+  jumped the window to the top of the grid and hid the last rows. While it drives Y, what moved the content under it
+  (rows added or dropped above, text followed up the live screen) is carried along (`flingShift`), and a fling's Y
+  has no bounds of its own (`clampScroll` is the edge, so a bottom that moves down meanwhile is still reached): output
+  arriving mid-fling neither stops nor pulls back the fling (iOS assigns `contentOffset`, which keeps the deceleration).
 - **Font sizing.** Default "fit to width" (cols × advance = view width, clamped 7–16 sp); A− / A+ in the
   header set an explicit multiplier of 14 sp that is persisted; non-ASCII cells are drawn one by one at their grid
   position so fallback-font glyphs (CJK, emoji, powerline) stay aligned; wide cells are centred in two

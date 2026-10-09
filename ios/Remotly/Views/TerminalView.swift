@@ -354,7 +354,10 @@ final class TerminalScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
         let userScrolling = isTracking || isDragging || isDecelerating
         if let top = pendingTop, bounds.height > 0 {
             pendingTop = nil
-            if !stickToBottom { setContentOffset(CGPoint(x: contentOffset.x, y: min(maxOffsetY, max(0, top))), animated: false) }
+            // Assigned, not `setContentOffset(_:animated:)`, which stops a fling: the rows move under the decelerating
+            // view and it carries on from there. Left alone when nothing moved, which is most frames.
+            let y = min(maxOffsetY, max(0, top))
+            if !stickToBottom, abs(contentOffset.y - y) > 0.25 { contentOffset = CGPoint(x: contentOffset.x, y: y) }
         } else if !stickToBottom, !userScrolling, !animatingToLive, contentOffset.y > maxOffsetY {
             setContentOffset(CGPoint(x: contentOffset.x, y: maxOffsetY), animated: false) // the content got shorter (a reset)
         }
@@ -367,11 +370,11 @@ final class TerminalScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
         positionContent()
     }
 
-    /// The grid view is viewport-sized and pinned to the visible area; it draws the rows under `contentOffset`.
+    /// The grid view spans the content (its tiles move with it); it is told which part is on screen.
     private func positionContent() {
-        let frame = CGRect(origin: contentOffset, size: bounds.size)
+        let frame = CGRect(origin: .zero, size: contentSize)
         if content.frame != frame { content.frame = frame }
-        content.origin = contentOffset
+        content.visibleRect = bounds
         reportScrolledUp()
     }
 
@@ -557,9 +560,9 @@ final class TerminalScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
     /// Coalesce steps so a fast swipe is a few `scroll` requests, not one per touch sample.
     private func queueSteps(_ steps: Int, at point: CGPoint) {
         pendingSteps += steps
-        // `content.origin` is the grid point under the view's top-left (the window's offset over the live screen), so the cell is the real one on the desktop.
-        pendingCell = (col: max(0, Int((point.x - contentOffset.x + content.origin.x) / content.metrics.cellWidth)) + 1,
-                       row: max(0, Int((point.y - contentOffset.y + content.origin.y) / content.metrics.lineHeight)) + 1)
+        // `point` is in content coordinates (no history rows while forwarding: the live grid's), so the cell is the real one on the desktop.
+        pendingCell = (col: max(0, Int(point.x / content.metrics.cellWidth)) + 1,
+                       row: max(0, Int(point.y / content.metrics.lineHeight)) + 1)
         guard !flushScheduled else { return }
         flushScheduled = true
         Task { @MainActor [weak self] in

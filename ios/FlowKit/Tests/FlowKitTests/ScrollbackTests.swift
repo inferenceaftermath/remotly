@@ -336,4 +336,28 @@ final class ScrollbackTests: XCTestCase {
         XCTAssertEqual(wrapped.line(atRow: 4)?.rowInLine, 1)
         XCTAssertEqual(wrapped.rows(ofLine: 2).count, wrapped.rowCount(ofLine: 2))
     }
+
+    func testRowNumbersStayWhileLinesComeAndGo() {
+        var store = ScrollbackStore(maxLines: 3)
+        var wrapped = WrappedHistory(cols: 4)
+        _ = store.apply(message(start: 0, ["abcdef", "x"], reset: true))
+        wrapped.reset(from: store, cols: 4)
+        let numbering = wrapped.numbering
+        XCTAssertEqual(wrapped.firstRowNumber, 0)
+        XCTAssertEqual(wrapped.rowCount, 3)
+        guard case .changed(let appended, let dropped) = store.apply(message(start: 2, ["12", "34"])) else { return XCTFail("expected changed") }
+        wrapped.follow(store, appended: appended, dropped: dropped)
+        // "abcdef" (two rows) left the front: the rows still held keep their numbers, so a view keeps what it drew
+        XCTAssertEqual(wrapped.firstRowNumber, 2)
+        XCTAssertEqual(wrapped.numbering, numbering)
+        XCTAssertEqual(rowTexts(allRows(wrapped)), ["x", "12", "34"])
+        wrapped.rewrap(from: store, cols: 1)
+        XCTAssertNotEqual(wrapped.numbering, numbering, "counted afresh: the old numbers say nothing")
+        XCTAssertEqual(wrapped.firstRowNumber, 0)
+        let rewrapped = wrapped.numbering
+        wrapped.clear()
+        XCTAssertNotEqual(wrapped.numbering, rewrapped)
+        wrapped.setUnwrapped([[]], cols: 4)
+        XCTAssertNotEqual(wrapped.numbering, rewrapped + 1)
+    }
 }
