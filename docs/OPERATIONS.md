@@ -26,6 +26,7 @@ remotly-bridge devices revoke <device_id>
 remotly-bridge push-test <device_id>
 systemctl --user status remotly-bridge
 journalctl --user -u remotly-bridge -f -o cat      # JSON lines; `| jq` for filtering
+systemctl --user status remotly-bridge-herdr       # the herdr service setup installs (herdr itself; see "herdr" below)
 ```
 
 `REMOTLY_CONFIG_DIR` and `REMOTLY_SYSTEMD_UNIT` select another instance (`bridge/README.md` "Install").
@@ -122,6 +123,115 @@ journalctl --user -u remotly-bridge -f -o cat      # JSON lines; `| jq` for filt
 - The bridge follows herdr's default socket (`~/.config/herdr/herdr.sock`). If herdr is restarted or upgraded the bridge
   reconnects every 2 s (`herdr.state` events in the journal; phones show a banner). herdr protocol is pinned to 19 in
   `doctor` — after a herdr upgrade run `doctor` and the bridge tests before trusting approvals.
+- `setup` (bridge ≥ 0.5.0) installs `remotly-bridge-herdr.service` (macOS: the agent `dev.remotly.remotly-bridge-herdr`),
+  `herdr server` for that session (behind `env -u HERDR_SESSION -u HERDR_SOCKET_PATH XDG_CONFIG_HOME=~/.config`: herdr reads the first two
+  before its default session and takes its directory from `XDG_CONFIG_HOME`, else `HOME`; a user manager that imported a
+  shell's environment, or a drop-in, may carry any of them, so the two are dropped and the directory is pinned to the one
+  the bridge looks under), so a reboot — on a Mac,
+  the login after it — brings herdr back by itself; `doctor`
+  says whether it would. A herdr started from a terminal before the service existed keeps running until then — to hand over now:
+  `env -u HERDR_SESSION -u HERDR_SOCKET_PATH XDG_CONFIG_HOME=~/.config /path/to/herdr [--session NAME] server stop; systemctl --user start remotly-bridge-herdr` (setup prints it: from inside a herdr pane a bare `herdr server stop` would follow the pane's `HERDR_SOCKET_PATH` to that pane's own session — `--session NAME` is not fooled — and the pane's `XDG_CONFIG_HOME` to that herdr's directory; the prefix is the unit's own, and the `herdr` is the one the unit runs, by its path: setup may have found it off this shell's PATH). On a Mac the restart that loads a rewritten plist is `launchctl bootout …; sleep 2; launchctl bootstrap …` (a `kickstart -k` respawns the definition launchd loaded), and setup prints that one; a disabled agent launchd would not bootstrap again, so for one the line printed turns it on (`bootout`, then `enable && bootstrap`) and says so. (that ends the panes' processes; herdr restores the
+  layout, and the agents with `resume_agents_on_restore`). Stopping or restarting the unit does the same. Under the
+  service, skip `herdr update --handoff` (a live upgrade that hands the panes to a new process): the service manager
+  sees its process exit and starts the unit again — systemd ends the processes it left behind first. Stop the unit,
+  update herdr, start it. `Restart=always`: a `herdr server stop` alone comes back after 2 s. Opt out with
+  `setup --no-herdr-service` or `systemctl --user disable --now remotly-bridge-herdr`; later setups respect that. The
+  panes' shells inherit the service's environment, not a terminal's: agents under `~/.local/bin` must be on PATH
+  through the shell's rc files (or set herdr `shell_mode = "login"`). Two bridge instances following the same session
+  (two `--unit`s) share one herdr service: the first bridge's `<unit>-herdr` is the session's, and a second bridge
+  following the same session installs none while that unit starts it at boot — enabled, loaded from its file (or, on
+  a Mac, standing unbootstrapped until the next login, as setup's own does after a setup over a herdr started by
+  hand), no drop-in of its own, its `herdr` there (setup and doctor name it; two already there, each from before the
+  other followed the session, are reported with the line that keeps one — by setup and by `doctor`, and every start or
+  restart of setup's own unit either prints beside the others turns each of them off first, since their
+  `Restart=always` would bring their herdr back against ours; for a disabled unit of setup's that line is the full
+  hand-over, theirs off and ours enabled and restarted). Another bridge's unit that runs the session without being
+  its provider (disabled without `--now`), and a unit of your own found running the herdr that answers (Linux: the
+  listener's process from `/proc/net/unix` — two listeners under one path, an old socket keeping its address, and
+  nothing is claimed — its unit from the process's cgroup — `herdr.service`, a `systemd-run` unit, a desktop app's
+  transient unit under KDE; a terminal under GNOME is a scope; macOS: `lsof -U` for the
+  processes on the socket, the one whose executable is `herdr` among several — and among several herdrs the server
+  by its arguments, or none when they cannot be told apart — then `launchctl list` for the job the process or one of
+  its ancestors is the main process of; a GUI app's `application.…` label is a terminal's), are stopped through the
+  manager in those lines — `herdr server stop` alone could have it back against the unit — and the lines say the
+  unit is stopped as a whole ("and whatever else X runs"); only a unit that neither brings herdr back (`Restart=no`;
+  launchd's KeepAlive is taken as yes) nor may start it at boot, and either has herdr for its main process (a plain
+  `systemd-run`) or is a desktop app's transient `app-…` unit whose main process is a terminal emulator (konsole's
+  under KDE), is a terminal's kind, with herdr's own stop line — a wrapper that may start herdr again (a shell loop,
+  under whatever unit name) is stopped as a unit however `Restart=` reads. Whether such a unit of your own
+  starts herdr at boot too is read from the manager: enabled, it is a second starter, said as such with the line that
+  keeps one (naming the setup-owned unit or units that start the session after that run: this bridge's, another
+  bridge's provider, or both); `disabled`, `enabled-runtime` (gone with this boot) or `transient` with nothing of
+  yours starting it (no `WantedBy`/`RequiredBy`/`UpheldBy`/`BoundBy`/`TriggeredBy`/`OnFailureOf`/`OnSuccessOf` — a
+  timer or socket of yours counts; on a Mac the label disabled), it is not; anything else (`static`, wanted or
+  triggered by a unit of yours, started when another of yours fails, an agent's own `RunAtLoad`) is its own
+  arrangement — setup and doctor then say the race may happen, print the keep-one line, and never claim the unit
+  takes over at boot. No line printed claims more than it does: what triggers or upholds such a unit (`TriggeredBy`:
+  a timer, a socket, a path; `UpheldBy`) is stopped with it — stopped alone, the timer would start it again — and
+  named among what the line ends (a unit is stopped as a whole: "and whatever else herdr.timer and herdr.service
+  run"), a trigger's own triggers followed as far as they go, as is what the manager stops along with it or with a
+  trigger of it (a unit that requires it — `Requires=`, `Requisite=` — or is bound to it, a part of it, what it
+  propagates its stop to: "and desk.service, which the manager stops with it (and whatever depends on those)"; a
+  masked unit that still runs included) — and what the manager stops along with setup's own unit when it stops or
+  restarts (a unit of yours with `PartOf=` or `Requires=` on it), or when it starts (one with `Conflicts=` on it), is
+  named in every line that starts, restarts or stops ours, the "off" line for a unit left from an earlier session
+  included;
+  what is enabled among them is disabled in the same line (`systemctl --user disable --now herdr.timer
+  herdr.service`), what is not is only stopped (a `disable` of a static or transient unit undoes nothing, and may
+  fail); the keep-one line disables only what is enabled, and when nothing is — a `static` unit, a disabled one a
+  target of yours wants (`Wants=` in a drop-in of `default.target`, say: a disable of the unit does not undo that; its
+  own enablement link under `~/.config/systemd/user/default.target.wants/` is what `systemctl --user disable`
+  removes, and is told apart; the same link under any other persistent load path — `/etc/systemd/user` from a
+  `systemctl --global enable`, a vendor's `/usr/lib/systemd/user` — is not, beside a local one or alone), one started
+  when a unit of yours fails, a trigger of its own arrangement, or what pulls a trigger in — it says so instead ("keep X from starting
+  yourself (…: no line here turns it off)", "which no line here undoes"). A masked unit of yours starts nowhere. The
+  same goes for
+  another bridge's herdr unit for the session: its provider's triggers go in the lines that turn it off, and one that
+  is not enabled but a timer or target of yours may start (on a Mac: whose label another plist declares too) is a
+  possible starter at boot — turned off in the hand-over lines as far as a line can, said with a keep-one line of its
+  own, and no take-over at boot is claimed beside it. `doctor` names the unit that runs the herdr answering on the
+  socket only once herdr has answered (whatever else might hold the path is not attributed).
+  Names of your units in those lines are quoted for the shell where needed. One setup at a time per session: a kernel lock (`flock`, held by a child process — `flock(1)` on
+  Linux, perl's flock on a Mac, as the update lock — and let go by the kernel should setup die) on
+  `~/.local/state/remotly/locks/herdr-<key>.lock` (under the home, so every setup of yours meets the same file
+  whatever its `TMPDIR`; the file stays, nothing to clean up), waited for up to a minute, then an error naming it;
+  without `flock`/`perl` setups go unserialised, and setup says so. So two first installs at once do not both become
+  the session's provider. A masked herdr unit name whose mask hides a unit file in another of the manager's load
+  paths (`systemctl --user show -p UnitPath`, read as `show` prints lists — a path with a space in it quoted — or the
+  documented set when the manager does not answer: `~/.local/share/systemd/user`, `/etc/xdg/systemd/user`,
+  `/etc/systemd/user`, …) is a unit setup did not write: setup and doctor say so and print no unmask line (it would
+  expose that unit); a mask over nothing is your choice, with the unmask line. When the first bridge is moved to another
+  session, its unit goes with it and the second bridge has no service until its own setup runs again (setup says so
+  when it rewrites the unit; the second bridge's doctor says so too). The line that turns a disabled unit on (`on:  …`) stops a herdr running outside
+  it for the session first, and restarts the unit when it is running another session — `enable --now` would leave it
+  so (a start is nothing to an active unit; launchd's `bootstrap` fails on a loaded agent). A first install on
+  systemd stopped between writing the unit and enabling it (a `.pending` file beside the unit marks the gap) is finished by the
+  next setup — unless another bridge's service took the session meanwhile: then the unit stays disabled, the marker goes, and the
+  hand-over line is printed. A new bridge is not given a `--unit` ending
+  in `-herdr` or `-update`: those are the names setup derives for a bridge's herdr service and updater (bridge
+  `alpha-herdr` and bridge `alpha`'s herdr unit would be one file, written over by turns), and a unit of setup's of
+  either kind is never written over as a bridge, nor is a file under such a name that cannot be read or is not a
+  bridge unit setup can tell (the Description and `node main.ts serve` every release has written; on a Mac the unit's
+  label and exactly those arguments); a bridge installed under such a name before keeps working. The unit file
+  starts with a `written by remotly-bridge setup` line, and setup's own unit is exactly what it writes — that line, its
+  one `ExecStart` (the `env` command above), nothing more or less; any other file under the name, edited or not, is
+  yours: never rewritten, enabled or disabled. Its own it rewrites on every setup, so an edit to the file does not
+  last — and a drop-in of your own on it (`systemctl --user edit remotly-bridge-herdr`, or one in any other load path
+  systemd merges) makes the unit yours in setup's eyes, whatever it sets: left alone from then on, doctor says so, and
+  it keeps the `herdr`, session and directory it had when you took it (remove the drop-in and run setup again to hand
+  it back). Hardly any directive is harmless — a `Nice`, a `Limit*`, a `StandardOutput=file:` can each decide whether the
+  start succeeds — so setup vouches for none. The exception is a type-level drop-in under one of the system's load
+  paths (`/usr/lib/systemd/user/service.d/*.conf`, `/etc/systemd/user/service.d/`, …: root's to write; Fedora ships
+  two for every user service): every service runs under it, the bridge's own included, so it counts only when it is
+  more than that baseline — anything but timeouts and failure modes, memory-pressure handling (`ManagedOOM*`, which
+  Fedora sets for every user service), scheduling weights (`Nice`, `CPUWeight`, `IOWeight`, `OOMScoreAdjust`), stop
+  behaviour and logging (so `Exec*`, `Condition*`, `Environment`, `Restart*` — a `Restart=on-failure` would leave a
+  `herdr server stop` down for good — a cap such as `MemoryMax`, `TasksMax`, `CPUQuota` or `Limit*` — the bridge
+  fitting under it says nothing of herdr — anything naming a unit such as `Conflicts=`, anything unknown), or a
+  specifier that differs per unit (`%n`, `%p`, `%i`, `%c`, …) — or cannot be read. The same file under your own load paths (`~/.config/systemd/user/service.d/`) is yours, and so is the unit
+  then. On a Mac the plist
+  likewise has to be exactly what setup wrote (a `LimitLoadToSessionType` or a `Disabled` added makes it yours). On a Mac the same goes for a label that another
+  plist declares (another file name in `~/Library/LaunchAgents`, or `/Library/LaunchAgents`; XML or binary).
 - The bridge only reads and subscribes until a phone sends input; watching a pane costs ≈ 25 reads/s (~1 % of a core).
 
 ## Troubleshooting

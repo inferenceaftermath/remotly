@@ -25,7 +25,8 @@ Google. Nothing to copy. A host that has credentials of its own (you built the a
 
 ## 3. Prepare your host (Linux or macOS)
 
-1. **herdr ≥ 0.8.0** running as you: `curl -fsSL https://herdr.dev/install.sh | sh`, then `herdr`. Optional:
+1. **herdr ≥ 0.8.0** installed as you: `curl -fsSL https://herdr.dev/install.sh | sh` (step 3 starts it, and installs a
+   user service that starts it again after a reboot; `herdr` in a terminal attaches to it). Optional:
    `resume_agents_on_restore` in `~/.config/herdr/config.toml`, so a host reboot brings the agents back too.
 2. **Tailscale** on the host, logged in. Linux: `curl -fsSL https://tailscale.com/install.sh | sh`, `sudo tailscale up`.
    macOS: the Tailscale app from <https://tailscale.com/download/mac> (or `brew install --cask tailscale`), logged in
@@ -37,10 +38,12 @@ Google. Nothing to copy. A host that has credentials of its own (you built the a
    curl -fsSL https://remotly.dev/install.sh | sh
    ```
    This puts the bridge under `~/.local/share/remotly` (with its own Node 24 when the system has none), a
-   `remotly-bridge` command in `~/.local/bin`, and runs `remotly-bridge setup`: it checks herdr and Tailscale (a failing
-   check prints its fix and the setup continues by itself once you have applied it — e.g. when Tailscale refuses
-   certificate requests: on Linux `sudo tailscale set --operator=$USER`, on macOS log in to the Tailscale app as the
-   user who runs the bridge), requests the certificate, installs the
+   `remotly-bridge` command in `~/.local/bin`, and runs `remotly-bridge setup`: it installs a user service for herdr
+   (`remotly-bridge-herdr`: `herdr server`, started now if herdr is not running, and again after every reboot — at
+   login on a Mac; a herdr you started from a terminal keeps running and the service takes over then), checks herdr and Tailscale
+   (a failing check prints its fix and the setup continues by itself once you have applied it — e.g. when Tailscale
+   refuses certificate requests: on Linux `sudo tailscale set --operator=$USER`, on macOS log in to the Tailscale app as
+   the user who runs the bridge), requests the certificate, installs the
    `remotly-bridge` user service — a systemd user unit with linger on Linux, so it survives logout and reboot; a
    launchd agent on macOS, which starts when you log in to the Mac — waits for it to come up, and prints one pairing QR.
    Upgrades arrive by themselves (a daily `remotly-bridge-update.timer` on Linux, the `dev.remotly.remotly-bridge-update`
