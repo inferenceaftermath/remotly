@@ -1173,14 +1173,25 @@ const PERL_FLOCK = `use Fcntl qw(:flock); open(my $f, '>>', $ARGV[0]) or exit 2;
 
 /**
  * Takes the lock: a kernel lock (flock) on the file, held by a child process — `flock(1)` on Linux, perl's flock
- * elsewhere, as the install's update lock is — for as long as this process holds it, and let go by the kernel should
+ * where there is none (a Linux without util-linux's) and on a Mac, as the install's update lock is; flock(2) under both,
+ * so holders through either tool meet — for as long as this process holds it, and let go by the kernel should
  * either die: no stale lock to judge, none to take over, and no two holders. Waits up to `waitMs` for another holder,
  * then throws. null when there is nothing to run the lock with (no flock, no perl): setups go unserialised, said.
  */
 export async function lockSession(lockFile: string, opts: { platform?: string; waitMs?: number } = {}): Promise<SessionLock | null> {
   const secs = String(Math.max(0.1, (opts.waitMs ?? 60_000) / 1000));
   fs.mkdirSync(path.dirname(lockFile), { recursive: true });
-  const [cmd, args]: [string, string[]] = (opts.platform ?? process.platform) === 'linux' ? ['flock', ['-w', secs, lockFile, '-c', 'echo locked; exec cat']] : ['perl', ['-e', PERL_FLOCK, lockFile, secs]];
+  const perl: [string, string[]] = ['perl', ['-e', PERL_FLOCK, lockFile, secs]];
+  const tools: [string, string[]][] = (opts.platform ?? process.platform) === 'linux' ? [['flock', ['-w', secs, lockFile, '-c', 'echo locked; exec cat']], perl] : [perl];
+  for (const [cmd, args] of tools) {
+    const got = await lockWith(cmd, args, lockFile);
+    if (got !== null) return got;
+  }
+  return null;
+}
+
+/** The lock through one tool: the child that holds it, null when the tool is not there (ENOENT), the error otherwise. */
+function lockWith(cmd: string, args: string[], lockFile: string): Promise<SessionLock | null> {
   const child = spawnProcess(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
   // Once held, nothing here keeps this process alive (a setup that ends without releasing — it cannot, but should it —
   // exits, the pipe closes, the child reads EOF and the kernel lets go). While waiting for the lock the pipes are what
@@ -1337,7 +1348,7 @@ function herdrServiceInstaller(deps: SetupDeps, sm: ServiceManager, opts: SetupO
     try {
       // From here to the enable, one setup at a time per session: two at once would each find no provider and both install one.
       lock = await lockSession(sessionLockPath(deps.home ?? path.dirname(path.dirname(path.dirname(deps.unitDir))), cfg, session.session), { platform: deps.platform ?? 'linux' });
-      if (lock === null) deps.out(`  · herdr service: setups are not serialised on this host (nothing to run a lock with: no ${(deps.platform ?? 'linux') === 'linux' ? 'flock' : 'perl'})`);
+      if (lock === null) deps.out(`  · herdr service: setups are not serialised on this host (nothing to run a lock with: no ${(deps.platform ?? 'linux') === 'linux' ? 'flock, no perl' : 'perl'})`);
       const lost = (): boolean => lock !== null && !lock.held(); // the child that holds the lock is gone: nothing more is written or enabled under it
       const standing = await sm.enabledState(unit);
       if (standing.unreadable) {

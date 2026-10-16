@@ -192,7 +192,7 @@ systemctl --user status remotly-bridge-herdr       # the herdr service setup ins
   own, and no take-over at boot is claimed beside it. `doctor` names the unit that runs the herdr answering on the
   socket only once herdr has answered (whatever else might hold the path is not attributed).
   Names of your units in those lines are quoted for the shell where needed. One setup at a time per session: a kernel lock (`flock`, held by a child process — `flock(1)` on
-  Linux, perl's flock on a Mac, as the update lock — and let go by the kernel should setup die) on
+  Linux, perl's flock on a Mac and on a Linux without `flock(1)`, as the update lock — and let go by the kernel should setup die) on
   `~/.local/state/remotly/locks/herdr-<key>.lock` (under the home, so every setup of yours meets the same file
   whatever its `TMPDIR`; the file stays, nothing to clean up), waited for up to a minute, then an error naming it;
   without `flock`/`perl` setups go unserialised, and setup says so. So two first installs at once do not both become

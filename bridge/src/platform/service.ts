@@ -299,7 +299,7 @@ export interface ManagerDeps {
   sleep?: (ms: number) => Promise<void>;
   /** The environment the user manager's load paths follow (`XDG_DATA_HOME`, `XDG_RUNTIME_DIR`); default the process's. */
   env?: NodeJS.ProcessEnv;
-  /** systemd: where `systemctl --global enable` links live (`/etc/systemd/user`), which a user-level `disable` leaves; tests point it elsewhere. */
+  /** The system's directory of user units — systemd: where `systemctl --global enable` links live (`/etc/systemd/user`), which a user-level `disable` leaves; launchd: `/Library/LaunchAgents`, loaded at every user's login; tests point it elsewhere. */
   globalUnitDir?: string;
 }
 
@@ -1107,7 +1107,7 @@ export function launchdManager(deps: ManagerDeps): ServiceManager {
    * declares their labels, so timerState does not look).
    */
   const otherPlist = async (label: string): Promise<{ file: string | null } | { unreadable: string }> => {
-    for (const dir of [deps.unitDir, '/Library/LaunchAgents']) {
+    for (const dir of [deps.unitDir, deps.globalUnitDir ?? '/Library/LaunchAgents']) {
       let names: string[];
       try {
         names = fs.readdirSync(dir).filter((n) => n.endsWith('.plist')).sort();

@@ -469,7 +469,8 @@ test('launchdManager: the herdr agent — enabledState like the timer\'s (not-fo
     'launchctl print-disabled gui/501': [ok(`disabled services = {\n\t"${label}" => disabled\n}\n`), ok('disabled services = {\n}\n'), fail('Bad request', 1)],
     [`launchctl print gui/501/${label}`]: [ok(`gui/501/${label} = {\n\tstate = running\n\targuments = {\n\t\t/opt/homebrew/bin/herdr\n\t\tserver\n\t}\n\tpid = 777\n}\n`), ok(`gui/501/${label} = {\n\tstate = running\n\tpid = 777\n}\n`), fail(`Could not find service "${label}" in domain for user gui: 501`, 113), EIO],
   });
-  const sm = launchdManager({ exec, unitDir, user: 'alice', uid: 501, home: dir, sleep: async () => undefined });
+  const everyone = path.join(dir, 'Library-LaunchAgents'); // stands in for /Library/LaunchAgents (a Mac's holds real plists: the count below is of ours)
+  const sm = launchdManager({ exec, unitDir, globalUnitDir: everyone, user: 'alice', uid: 501, home: dir, sleep: async () => undefined });
   assert.equal(sm.unitName('remotly-bridge-herdr'), label);
   assert.equal(sm.unitPath('remotly-bridge-herdr'), plist);
   assert.deepEqual(await sm.state('remotly-bridge-herdr'), { load: 'loaded', active: 'active', sub: 'running', pid: 777, args: ['/opt/homebrew/bin/herdr', 'server'] }, 'the arguments launchd spawned the process with, when print shows them');
@@ -501,10 +502,17 @@ test('launchdManager: the herdr agent — enabledState like the timer\'s (not-fo
   assert.deepEqual(await sm.enabledState('remotly-bridge-herdr'), { state: 'not-found' }, 'plutil unanswered (the fake says nothing of it)');
   assert.equal(calls.filter((c) => c === `/usr/bin/plutil -extract Label raw -o - ${binary}`).length, 1, 'plutil is asked of every other plist (it reads one as launchd does); unanswered, the text is read as XML here');
   const { exec: exec2, calls: calls2 } = fakeExec({ [`/usr/bin/plutil -extract Label raw -o - ${binary}`]: [ok(`${label}\n`), ok(`${label}.other\n`)], 'launchctl print-disabled gui/501': ok('disabled services = {\n}\n') });
-  const sm2 = launchdManager({ exec: exec2, unitDir, user: 'alice', uid: 501, home: dir, sleep: async () => undefined });
+  const sm2 = launchdManager({ exec: exec2, unitDir, globalUnitDir: everyone, user: 'alice', uid: 501, home: dir, sleep: async () => undefined });
   assert.deepEqual(await sm2.enabledState('remotly-bridge-herdr'), { state: `defined by ${binary}` }, 'a binary plist declaring the label');
   assert.deepEqual(await sm2.enabledState('remotly-bridge-herdr'), { state: 'not-found' }, 'a binary plist declaring another');
   assert.equal(calls2.filter((c) => c.startsWith('/usr/bin/plutil')).length, 2);
+  // A plist for every user (/Library/LaunchAgents) declaring the label: launchd loads it at login too; the user's own directory is looked through first.
+  fs.mkdirSync(everyone, { recursive: true });
+  const shared = path.join(everyone, 'site-herdr.plist');
+  fs.writeFileSync(shared, `<plist version="1.0"><dict><key>Label</key><string>${label}</string></dict></plist>\n`);
+  assert.deepEqual(await sm2.enabledState('remotly-bridge-herdr'), { state: `defined by ${shared}` }, 'declared for every user');
+  fs.rmSync(shared);
+  assert.deepEqual(await sm2.enabledState('remotly-bridge-herdr'), { state: 'not-found' });
   // A plist this user cannot read (root's, mode 0600 — launchd loads it at login all the same): whether it declares the label is not known, and nothing is vouched for.
   if (process.getuid?.() !== 0) {
     const sealed = path.join(unitDir, 'sealed.plist');
@@ -517,7 +525,7 @@ test('launchdManager: the herdr agent — enabledState like the timer\'s (not-fo
   fs.rmdirSync(path.join(unitDir, 'a-directory.plist'));
   // plutil not running at all (a PATH is not the question: it is asked by its path) leaves the label's standing open: nothing is vouched for.
   const { exec: exec3 } = fakeExec({ [`/usr/bin/plutil -extract Label raw -o - ${binary}`]: fail('spawn /usr/bin/plutil ENOENT', null), 'launchctl print-disabled gui/501': ok('disabled services = {\n}\n') });
-  const sm3 = launchdManager({ exec: exec3, unitDir, user: 'alice', uid: 501, home: dir, sleep: async () => undefined });
+  const sm3 = launchdManager({ exec: exec3, unitDir, globalUnitDir: everyone, user: 'alice', uid: 501, home: dir, sleep: async () => undefined });
   assert.deepEqual(await sm3.enabledState('remotly-bridge-herdr'), { state: '', unreadable: '/usr/bin/plutil did not run (spawn /usr/bin/plutil ENOENT): whether another plist declares the label cannot be told' });
   fs.rmSync(binary);
   fs.writeFileSync(plist, 'plist');

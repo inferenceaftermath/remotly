@@ -1952,7 +1952,8 @@ test('herdr service: a running unit rewritten for another session than it runs (
 test('readProcessConfigHome: the directory from a process\'s environment on Linux (XDG_CONFIG_HOME when absolute, else HOME/.config); null when it cannot be read, and on any other platform', () => {
   const own = readProcessConfigHome(process.pid, 'linux');
   const xdg = process.env.XDG_CONFIG_HOME;
-  assert.equal(own, xdg !== undefined ? (path.isAbsolute(xdg) ? xdg : null) : process.env.HOME ? path.join(process.env.HOME, '.config') : null, 'this process, as /proc has it');
+  const fromEnv = xdg !== undefined ? (path.isAbsolute(xdg) ? xdg : null) : process.env.HOME ? path.join(process.env.HOME, '.config') : null;
+  assert.equal(own, process.platform === 'linux' ? fromEnv : null, process.platform === 'linux' ? 'this process, as /proc has it' : 'no /proc to read on this host');
   assert.equal(readProcessConfigHome(process.pid, 'darwin'), null);
   assert.equal(readProcessConfigHome(2 ** 22 - 1, 'linux'), null, 'no such process');
 });
@@ -3045,7 +3046,7 @@ test('herdr service: one setup per session at a time — a kernel lock (flock) h
   const locked = herdrDeps({ script: herdrDown() }, 'work');
   locked.touchHerdr();
   assert.equal(await runSetup(locked.deps, OPTS), 0);
-  assert.ok(fs.existsSync(lockOf(locked, 'work')), 'the lock file, under the home');
+  assert.ok(fs.existsSync(lockOf(locked, 'work')), 'the lock file, under the home (on a host without flock(1) — a Mac running the Linux fakes — perl took it)');
   const lockHeld = await lockSession(lockOf(locked, 'work'), { waitMs: 200 });
   locked.out.length = 0;
   assert.equal(await runSetup(locked.deps, { ...OPTS, wait: false }), 0, 'a setup that cannot get the lock: the herdr service step fails, nothing else');
