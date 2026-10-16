@@ -8,7 +8,8 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ver="$(node -p "require('$root/bridge/package.json').version")"
 tag="bridge-v$ver"
-work="${E2E_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/remotly-e2e.XXXXXX")}"
+tmp="${TMPDIR:-/tmp}"
+work="${E2E_WORK:-$(mktemp -d "${tmp%/}/remotly-e2e.XXXXXX")}" # TMPDIR ends in a slash on macOS: one slash, as setup writes the path into the herdr unit
 unit="remotly-e2e-$$" # this run's own name: a session of the host's own, or another run, never shares it
 os="$(uname -s)"
 
@@ -164,7 +165,15 @@ grep -q '^tls:      selfsigned' "$work/status.log" || fail "status: expected a s
 grep -q "^listen:   0.0.0.0:$port" "$work/status.log" || fail "status: LAN mode listens on every interface, on the configured port"
 "$bridge" doctor | tee "$work/doctor.log" || true
 grep -q 'doctor: no hard failures' "$work/doctor.log" || fail "doctor found hard failures"
-grep -qE "herdr runs outside the herdr service .*$unit-herdr.*, which is enabled and takes over at the next (boot|login)" "$work/doctor.log" || fail "doctor does not tell the stand-in herdr from the service's"
+# The stand-in runs "from a terminal": the service, enabled and not running, takes over at the next boot. On a GitHub macOS
+# runner every process of a job runs under the runner's own launchd agent, so there the stand-in runs under a unit of the
+# user's that may start herdr at login too: doctor offers the hand-over instead of promising the take-over (and says so,
+# softly, in a line of its own).
+case "$os" in
+    Darwin) takeover="( and takes over at the next login| — hand over to it now)" ;;
+    *) takeover=" and takes over at the next boot" ;;
+esac
+grep -qE "herdr runs outside the herdr service .*$unit-herdr.*, which is enabled$takeover" "$work/doctor.log" || fail "doctor does not tell the stand-in herdr from the service's"
 grep -qE "unit $unit(\.service)? active|agent dev\.remotly\.$unit active" "$work/doctor.log" || fail "doctor does not see the service active"
 
 log "a second setup over a running service is idempotent (re-renders the unit, restarts, stays healthy)"
