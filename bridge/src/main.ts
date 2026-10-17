@@ -20,9 +20,9 @@ import { RelayClient } from './push/relay.ts';
 import { startHttpServer } from './server/http.ts';
 import { tailscaleHints } from './platform/hints.ts';
 import { LOCK_FD_ENV, confirmCommand } from './platform/lock.ts';
-import { serviceManagerFor, serviceUnitDir, type ServiceManager } from './platform/service.ts';
+import { herdrConfigHome, herdrUnit, serviceManagerFor, serviceUnitDir, type ServiceManager } from './platform/service.ts';
 import { presenceFrom, waitForTailscale } from './server/tailscale-wait.ts';
-import { HERDR_INSTALL, classifyTailnet, parseSetupArgs, reconcileHerdrEnv, runSetup, stableNodePath, type SetupDeps } from './setup.ts';
+import { classifyTailnet, describeHerdr, executableFile, HERDR_INSTALL, HERDR_UNIT_STATES_SETUP_OWNS, herdrArgv, herdrSessionFor, herdrStopCommand, herdrUnitFile, lintedPlist, listOf, otherHerdrUnits, parseSetupArgs, pidListeningOn, readProcessArgs, readProcessComm, readProcessConfigHome, readProcessUnit, reconcileHerdrEnv, runSetup, shellWord, stableNodePath, TERMINAL_APPS, keepOne, offPlan, otherPlan, startsHow, stopsEnd, unitSourceCheck, type OffPlan, type OtherHerdrUnit, type SetupDeps, type SetupOptions } from './setup.ts';
 import crypto from 'node:crypto';
 import { UploadStore } from './server/uploads.ts';
 import { Hub } from './server/hub.ts';
@@ -37,10 +37,13 @@ export const VERSION: string = pkg.version;
 const USAGE = `remotly-bridge ${VERSION}
 usage: remotly-bridge <command>
   setup [--ttl N] [--no-pair] [--no-wait] [--lan] [--keep-mode] [--keep-stopped] [--no-auto-update]
-        [--no-agent-settings] [--unit NAME] [--config-dir DIR] [--herdr-session NAME] [--herdr-socket PATH]
-                              check herdr and Tailscale, set Claude Code and Codex to keep their output in the
-                              scrollback, get the certificate, install and start the user service and the daily
-                              update timer, print one pairing QR for all your phones (what install.sh runs)
+        [--no-agent-settings] [--no-herdr-service] [--unit NAME] [--config-dir DIR] [--herdr-session NAME]
+        [--herdr-socket PATH]
+                              install a user service for herdr (back after a reboot — at login on a Mac) and start
+                              it when herdr is not running, check herdr and Tailscale, set Claude Code and Codex to
+                              keep their output in the scrollback, get the certificate, install and start the
+                              bridge's user service and the daily update timer, print one pairing QR for all your
+                              phones (what install.sh runs)
   serve                       run the daemon (what the user service runs)
   pair [--manual] [--ttl N]   create a single-use pairing code; prints a QR unless --manual
   devices list                list paired devices
@@ -394,16 +397,217 @@ async function doctor(): Promise<void> {
     return;
   }
 
+  // herdr, and the service setup installs for it (`<unit>-herdr`): with one, "start herdr" means what its state calls
+  // for, and whether herdr is back after a reboot is the unit's standing (enabled), not whether it runs now. The unit
+  // counts only when it is setup's (the file it wrote: herdrUnitFile) and for the session the bridge follows — both
+  // what a running one serves (its process's arguments: launchd tells them, /proc on Linux) and what its file starts
+  // next; a bridge moved to another session, or to a socket that is no session, leaves the old unit behind until the
+  // next setup, or until it is restarted.
+  // The socket as `serve` follows it, not as this shell carries it: config.json's herdr.socket / herdr.session win over
+  // a pane's HERDR_SOCKET_PATH / HERDR_SESSION (reconcileHerdrEnv, as setup does before writing the unit) — else doctor
+  // run from a pane of another session would hold the unit to that session.
+  reconcileHerdrEnv({} as SetupOptions, process.env, config.herdr);
   const sock = resolveSocketPath(config.herdr);
-  if (!fs.existsSync(sock)) bad(`herdr socket missing: ${sock}`, `start herdr (run \`herdr\`); not installed yet? ${HERDR_INSTALL}`);
+  const session = herdrSessionFor(sock, os.homedir());
+  const cfg = herdrConfigHome(os.homedir()); // what the unit pins; the same session name under another directory is another socket
+  const want = session?.session ? `session ${session.session}` : 'the default session';
+  const hu = herdrUnit(unitOf());
+  const huName = sm.unitName(hu);
+  const hst = await sm.state(hu);
+  const standing = await sm.enabledState(hu); // asked on its own: a masked systemd unit is not "loaded" to `state`
+  const hidden = standing.state === 'masked' ? await sm.maskHides(hu) : null; // a mask over a unit file in another load path: a unit setup did not write, which unmasking would expose
+  const masked = standing.state === 'masked' && hidden === null;
+  const svc = hst !== null && hst.load === 'loaded' ? hst : null;
+  // When an enabled unit starts: at login on a Mac; at boot under a systemd user manager with linger, at login without
+  // (the manager itself starts then — the linger check further down says so and how to turn it on).
+  const boot = sm.kind === 'launchd' ? 'login' : (await sm.persistenceCheck(hu)).ok ? 'boot' : 'login (linger is off, so the user manager starts then)';
+  const renderFor = (a: { herdrPath: string; session?: string; configHome?: string }): string => sm.renderHerdrUnit({ unit: unitOf(), herdrPath: a.herdrPath, session: a.session, configHome: a.configHome ?? '' });
+  const file = await lintedPlist(herdrUnitFile(sm.unitPath(hu), huName, renderFor), sm.unitPath(hu), sm, spawn);
+  const owned = file.kind === 'owned' ? file.args : null;
+  const gone = owned !== null && !executableFile(owned.herdrPath) ? owned.herdrPath : null; // the herdr the file starts is not there to run (moved since setup wrote it): the next start fails, whatever runs now
+  // Not setup's, whatever the manager makes of the name: something else at the path (a symlink, another file — setup
+  // leaves those alone even when nothing is loaded), a standing setup does not take over (`linked`, `static`, a label
+  // another plist declares — the same test setup applies), a loaded unit without a file of ours, one loaded from
+  // another path, or one with a drop-in changing what it runs.
+  const foreign =
+    hidden !== null
+      ? `masked, and the mask hides ${hidden}`
+      : masked
+        ? null // the mask itself (a link to /dev/null at the unit's path) is the user's choice, said below, not a unit taking the name
+        : file.kind === 'foreign'
+          ? file.why
+          : !standing.unreadable && !HERDR_UNIT_STATES_SETUP_OWNS.has(standing.state)
+            ? standing.state
+            : svc === null
+              ? null
+              : file.kind === 'absent'
+                ? `no file at ${sm.unitPath(hu)}`
+                : unitSourceCheck(await sm.source(hu), sm.unitPath(hu), sm.name);
+  const argv = svc?.active === 'active' ? (svc.args ?? (svc.pid ? await readProcessArgs(svc.pid, process.platform, spawn) : null)) : null;
+  const programOff = svc?.program !== undefined && argv !== null && svc.program !== argv[0]; // launchd runs `program` with the arguments as argv (a Program key): not what the arguments say
+  let parsedNow = argv === null || programOff ? null : herdrArgv(argv);
+  if (parsedNow !== null && parsedNow.configHome === undefined && svc?.pid) {
+    const dir = readProcessConfigHome(svc.pid, process.platform); // a process's own arguments carry no directory: its environment does
+    if (dir !== null) parsedNow = { ...parsedNow, configHome: dir };
+  }
+  const runsNow: typeof owned | 'unknown' = argv === null ? (svc?.active === 'active' ? owned : null) : (parsedNow ?? 'unknown'); // what the unit runs now (the file stands in when the process cannot be read); 'unknown': a process that is not herdr's shape
+  const sameSessionName = (a: typeof owned | 'unknown'): boolean => session !== null && a !== null && a !== 'unknown' && (a.session ?? '') === (session.session ?? '');
+  const sameSession = (a: typeof owned | 'unknown'): boolean => sameSessionName(a) && (a as { configHome?: string }).configHome === cfg;
+  // The unit's process serves the session name, under a directory that could not be read: not established as the one the bridge follows, not said to be another.
+  const dirUnknownNow = svc?.active === 'active' && sameSessionName(runsNow) && (runsNow as { configHome?: string }).configHome === undefined;
+  const nowOk = svc?.active !== 'active' || sameSession(runsNow);
+  const nextOk = sameSession(owned) && gone === null; // what the next start runs
+  const serves = foreign === null && nowOk && nextOk;
+  const describe = (a: typeof owned | 'unknown'): string => (a === 'unknown' ? `something that cannot be told from its process (${programOff ? `program ${svc?.program}, arguments ` : ''}${(argv ?? []).join(' ')})` : `${describeHerdr(a, cfg)}${a !== null && a.configHome === undefined ? ' under a directory that cannot be told from its process' : ''}`);
+  const offSession = [...(nowOk ? [] : [`runs ${describe(runsNow)}`]), ...(nextOk ? [] : [`starts ${describe(owned)} at ${boot}`])].join(' and ');
+  const svcLogs = `if it stops again: ${sm.hints.logs(hu, 30)}`;
+  const unmaskThenSetup = `${sm.hints.unmask(standing.masked ?? [huName])}, then remotly-bridge setup`;
+  // The restart printed for the herdr unit: one that runs its file as it is now (setup rewrites it on every run and
+  // never restarts a running herdr unit, so on a Mac the loaded definition may be older than the plist — `kickstart`
+  // would respawn that); a failed unit's start-rate limit cleared first (systemd); a disabled agent that launchd would
+  // not bootstrap again turned on, since nothing else runs its file.
+  const stopHerdr = herdrStopCommand(session?.session, cfg, owned?.herdrPath ?? 'herdr'); // through the herdr the unit runs when there is one (its path may be off this shell's PATH); else whatever `herdr` the shell finds, as the user would type
+  // Other bridges' enabled herdr units for this very session (one provider per session is the rule — setup installs
+  // none beside one; two already there are each from before the other followed it): with none of ours here they are
+  // what starts herdr at boot; with ours disabled, turning ours on beside them would make two; with ours enabled too,
+  // they race at boot. So every start or restart of ours printed beside them turns them off first (their
+  // Restart=always would bring their herdr back against ours) — and for a disabled unit of ours that line is the
+  // hand-over setup prints: theirs off, ours on and restarted (a restart of ours alone would run it against theirs).
+  const others = session !== null ? await otherHerdrUnits(sm, unitOf(), session.session, cfg) : [];
+  const shared = others.filter((o) => o.role === 'provider');
+  const possibles = others.filter((o) => o.role === 'possible'); // another bridge's unit, not enabled, that a timer or target of the user's own may start: turned off with its timer in the hand-over lines as far as a line can, said with the keep-one line, and no take-over at boot is claimed beside it
+  const runners = others.filter((o) => o.role === 'runner'); // running the session without being its provider (disabled without --now, say): stopped through the manager in the hand-over lines
+  const plans = new Map<string, OffPlan>(); // how each is turned off: now, from the next boot, and what no line undoes
+  for (const o of others) plans.set(o.unit, await otherPlan(sm, o));
+  const planOf = (o: OtherHerdrUnit): OffPlan => plans.get(o.unit) as OffPlan;
+  const laterOf = (o: OtherHerdrUnit): string => planOf(o).later ?? sm.hints.disable(o.unit);
+  const notes = (os: OtherHerdrUnit[]): string => os.map((o) => (planOf(o).unheld.length > 0 ? ` (${sm.unitName(o.unit)}: ${planOf(o).unheld.join('; ')} — which no line here undoes)` : '')).join('');
+  const many = shared.length > 1;
+  const sharedName = listOf(shared.map((s) => `${sm.unitName(s.unit)} (bridge unit ${s.bridge}'s)`));
+  const sharedUnits = listOf(shared.map((s) => sm.unitName(s.unit)));
+  const withOurs = svc !== null && foreign === null; // ours is setup's and loaded
+  const beside = shared.length > 0 && withOurs; // … beside their provider
+  const theirsFirst = withOurs && others.length > 0 ? `${[...shared.map((s) => planOf(s).now), ...possibles.map((p) => planOf(p).now), ...runners.map((r) => sm.hints.stop(r.unit))].join('; ')}; ` : '';
+  const theirsToo = theirsFirst ? stopsEnd(others.map(planOf), ', and ', ' now') : ''; // each unit those lines stop as a whole, a timer among them, and what the manager stops with them
+  // What runs the herdr that answers, when it is a service of the user's own (Linux: the socket's listener and its
+  // cgroup, a terminal being a scope; macOS: lsof and launchctl list — a client of the socket may be named by its path
+  // there, so the bridge's own unit counts as nobody's): the hand-over stops it through the manager — a `herdr server
+  // stop` alone would have its Restart=always bring it back — and whether it starts herdr at boot too is asked of the
+  // manager (enabled: yes; disabled and nothing pulling it in: no; else its own arrangement, said as a possibility).
+  const answering = fs.existsSync(sock) ? await pidListeningOn(sock, process.platform, spawn) : null;
+  const underUnit = answering === null ? null : await readProcessUnit(answering, process.platform, spawn);
+  const candidate = underUnit !== null && underUnit !== huName && underUnit !== unit && !others.some((o) => sm.unitName(o.unit) === underUnit) ? { name: underUnit, ...(await sm.startsAtBoot(underUnit)), ...(await sm.unitFacts(underUnit)) } : null;
+  // A terminal's kind (no supervisor): one that neither brings herdr back nor may start it at boot, and has herdr for its main process (a plain systemd-run) or is a desktop app's transient unit (app-…, under KDE) whose main process is a terminal emulator. Anything else — a wrapper that may start herdr again, whatever Restart= reads — is stopped as a unit.
+  const terminalApp = candidate !== null && candidate.transient === true && /^app-/.test(candidate.name) && candidate.mainPid !== null && candidate.mainPid !== answering ? TERMINAL_APPS.has((await readProcessComm(candidate.mainPid, process.platform, spawn)) ?? '') : false;
+  const supervisor = candidate !== null && !(candidate.restarts === false && candidate.atBoot === false && (candidate.mainPid === answering || terminalApp)) ? candidate : null;
+  const supMayStart = supervisor !== null && supervisor.atBoot !== false; // enabled, or its own arrangement (static, pulled in, an agent's RunAtLoad)
+  const mayStart = supMayStart || possibles.length > 0; // something besides setup's units may start the session at boot: no take-over at boot is claimed
+  // How the supervisor is turned off: with its triggers and upholders (the unit alone, they would start it again), each named where the line says what it ends; what pulls it in is named as not undone.
+  const supPlan = supervisor === null ? null : await offPlan(sm, supervisor.name, supervisor);
+  const stopOutside = supPlan === null ? stopHerdr : supPlan.now;
+  const outsideWhere = supervisor === null ? '' : ` (under ${supervisor.name}, a unit setup did not write${supervisor.atBoot === true ? `, enabled: it starts herdr at ${boot} on its own terms` : ''}${supervisor.activators.length + supervisor.pullers.length > 0 ? `; ${startsHow(supervisor)}` : ''}${supervisor.atBoot === null ? `; whether it starts herdr at ${boot} is its own arrangement` : ''})`;
+  const outsideToo = supPlan === null ? '' : stopsEnd([supPlan], ', and ', '', 'else '); // units stopped as a whole, and what the manager stops with them
+  // The setup-owned units that start the session at boot: this bridge's, when enabled; the providers shared with it.
+  const starters = [...(withOurs && standing.state === 'enabled' ? [{ name: huName, off: sm.hints.disable(hu) }] : []), ...shared.map((s) => ({ name: sm.unitName(s.unit), off: laterOf(s) }))];
+  const startersOff = starters.map((s) => s.off).join('; ');
+  const startersWho = listOf(starters.map((s) => s.name));
+  const restartSvc = standing.state === 'disabled' ? (beside ? sm.hints.enableRestart(hu) : sm.hints.restartDisabled(hu)) : svc?.active === 'failed' ? sm.hints.resetAndRestart(hu) : sm.hints.reloadRestart(hu);
+  // What the manager stops along with setup's unit when it stops or restarts (a unit of the user's with PartOf= or Requires= on it), and what it stops when ours starts (Conflicts=): named in every line that starts, restarts or stops it.
+  const ownDeps = svc !== null && svc.load === 'loaded' ? await sm.dependents(huName) : { stopped: [], conflicting: [] };
+  const stoppedWithOurs = (units: string[]): string => (units.length === 0 ? '' : `, and ${listOf(units)}, which the manager stops with ${huName} (and whatever depends on those)`);
+  const ownEnds = stoppedWithOurs([...new Set([...ownDeps.stopped, ...ownDeps.conflicting])]);
+  const ownStarts = stoppedWithOurs(ownDeps.conflicting);
+  const restartNote =
+    standing.state === 'disabled' && beside
+      ? `; turns this unit on as the session's one and ${sharedUnits} off (two enabled would race at ${boot})`
+      : beside
+        ? `; turns ${sharedUnits} off first, since two services for ${want} would race at ${boot}`
+        : standing.state === 'disabled' && sm.hints.restartNeedsEnabled
+          ? '; turns the agent on, since a disabled one is bootstrapped only once enabled'
+          : '';
+  // The lines that put the unit on the session the bridge follows: setup rewrites the file; a restart starts what the
+  // file says — after stopping the herdr that answers for that session when one does (it runs outside the unit and
+  // holds the socket: the unit's replacement could not bind it, and would start against it forever).
+  const realign = (answers: boolean): string => `${nextOk ? '' : 'remotly-bridge setup   (rewrites the unit)'}${nextOk || nowOk ? '' : '; then '}${nowOk ? '' : `${theirsFirst}${answers ? `${stopOutside}; ` : ''}${restartSvc}   (ends the panes it runs${answers ? ` and this herdr's${outsideToo}` : ''}${beside ? ` and ${sharedUnits}'${many ? '' : 's'}` : ''}${ownEnds} and starts ${want}${restartNote})`}`;
+  // A unit under the service's name that setup did not write is said on its own, whatever herdr does: setup leaves it alone, and nothing below speaks for it.
+  if (foreign !== null) bad(`the herdr service name ${huName} is taken by a unit setup did not write (${foreign}); whether it starts herdr at ${boot} is its own arrangement, and setup leaves it alone`, `${sm.hints.cat(hu)}   and ${sm.hints.status(hu)}`, false);
+  // Two (or more) enabled for the session, ours among them — starting it at boot (they race for the socket, and the
+  // loser restarts against the winner), or running it now with a file for another (the setup line below rewrites that
+  // file, and then they race): said whether herdr answers or not.
+  // A setup-owned unit that starts the session at boot (ours enabled, a provider shared with this bridge) beside a unit of the user's own that runs herdr and may start it at boot too: said whether herdr's process is on the session the file names or not (the hand-over lines turn that unit off first).
+  // Another bridge's unit for the session, not enabled, that a timer or target of the user's own may start: beside a setup-owned starter it may race at boot too, said with the line that keeps one (the timer goes with it; what no line undoes is said).
+  if (starters.length > 0) for (const p of possibles) bad(`herdr service ${sm.unitName(p.unit)} (bridge unit ${p.bridge}'s) is not enabled, but ${startsHow(p)}: if that starts ${want} at ${boot} too, it and the herdr service ${startersWho} race for the socket there`, `keep one, from the next ${boot}:  ${keepOne(sm.unitName(p.unit), planOf(p), startersOff)}`, false);
+  if (beside && standing.state === 'enabled' && (nextOk || (nowOk && svc?.active === 'active'))) bad(nextOk ? `${many ? shared.length + 1 : 'two'} herdr services for ${want}: ${listOf([huName, ...shared.map((s) => `${sm.unitName(s.unit)} (bridge unit ${s.bridge}'s)`)])}, ${many ? 'all' : 'both'} enabled — at ${boot} they race for the socket` : `${many ? shared.length + 1 : 'two'} herdr services enabled for ${want}: ${listOf([`${huName} (which runs it now; its file starts ${describe(owned)}, until setup rewrites it)`, ...shared.map((s) => `${sm.unitName(s.unit)} (bridge unit ${s.bridge}'s)`)])}`, `keep one, from the next ${boot}:  ${shared.map(laterOf).join('; ')}   (what runs now keeps running)${notes(shared)}`, false);
+  const startHerdr =
+    session === null
+      ? 'start herdr yourself (run `herdr`): the bridge follows a socket that is not a herdr session under ~/.config/herdr, so no service starts it'
+      : masked
+        ? `${unmaskThenSetup}   (the herdr service ${huName} is masked)`
+        : !svc || foreign !== null
+          ? 'start herdr (run `herdr`)'
+          : gone !== null
+            ? `remotly-bridge setup   (rewrites ${huName}, which starts ${gone}: not an executable file now)`
+          : !serves
+            ? `${realign(false)}   (${huName} ${offSession}, not the one the bridge follows)`
+            : svc.active === 'failed'
+              ? `${theirsFirst}${restartSvc}   (the herdr service failed${ownEnds ? `; a restart ends nothing of its own${ownEnds}` : ''}${theirsToo ? `; ends ${theirsToo.slice(', and '.length)}` : ''}${restartNote}; ${svcLogs})`
+              : svc.active === 'inactive' && standing.state === 'disabled'
+                ? `${theirsFirst}${sm.hints.enableNow(hu)}   (the herdr service, disabled${beside ? `; turns it on as the session's one and ${sharedUnits} off` : ''}${theirsToo ? `; ends ${theirsToo.slice(', and '.length)}` : ''}${ownStarts ? `; ends nothing of its own${ownStarts}` : ''}; ${svcLogs})`
+                : svc.active === 'inactive'
+                  ? `${theirsFirst}${sm.hints.start(hu)}   (the herdr service${theirsToo ? `; ends ${theirsToo.slice(', and '.length)}` : ''}${ownStarts ? `; ends nothing of its own${ownStarts}` : ''}${restartNote}; ${svcLogs})`
+                  : `${theirsFirst}${restartSvc}   (the herdr service is ${svc.active}; a restart ends its panes' processes${ownEnds}${theirsToo}${restartNote}; ${svcLogs})`;
+  let herdrAnswers = false;
+  if (!fs.existsSync(sock)) bad(`herdr socket missing: ${sock}`, (svc && foreign === null) || masked ? startHerdr : `${startHerdr}; not installed yet? ${HERDR_INSTALL}`);
   else {
     try {
       const pong = await new HerdrClient({ socketPath: sock }).request<{ version: string; protocol: number }>('ping', {}, 3000);
+      herdrAnswers = true;
       if (pong.protocol === 19) ok(`herdr ${pong.version} protocol ${pong.protocol} at ${sock}`);
       else bad(`herdr ${pong.version} protocol ${pong.protocol} (built against 19)`, 'update herdr or the bridge so the protocol versions match', false);
     } catch (err) {
-      bad(`herdr ping failed: ${(err as Error).message}`, 'start herdr (run `herdr`); a stale socket from an old session is replaced when it starts');
+      bad(`herdr ping failed: ${(err as Error).message}`, `${startHerdr}; a stale socket from an old session is replaced when it starts`);
     }
+  }
+  if (herdrAnswers) {
+    // (Said only once herdr answered: the socket's listener is attributed to a unit of the user's own as herdr's supervisor, and that holds for herdr, not for whatever else might hold the path.)
+    if (supervisor !== null && supPlan !== null && supMayStart && starters.length > 0) bad(`herdr runs under ${supervisor.name}, a unit setup did not write${supervisor.activators.length + supervisor.pullers.length > 0 ? ` (${startsHow(supervisor)})` : ''}${supervisor.atBoot === true ? ` and enabled too: at ${boot} it and the herdr service ${startersWho} race for the socket` : `: if it starts herdr at ${boot} too, it and the herdr service ${startersWho} race for the socket there`}`, `keep one, from the next ${boot}:  ${keepOne(supervisor.name, supPlan, startersOff)}`, false);
+    // Does herdr come back after a reboot: the service for this session is enabled (it starts herdr at boot; which
+    // process answered is not established here), or not — herdr started from a terminal with no service, or one that
+    // is not enabled (`--no-herdr-service` leaves a running one so). A service enabled but not running is the normal
+    // state after a setup over a herdr started by hand: it takes over at the next boot.
+    const pid = svc?.pid ? ` (pid ${svc.pid})` : '';
+    const handOver = `${theirsFirst}${stopOutside}; ${svc?.active === 'inactive' ? sm.hints.start(hu) : restartSvc}   (ends this herdr's panes${outsideToo}${theirsToo}${svc?.active === 'inactive' ? ownStarts : ownEnds}; herdr restores the layout${theirsToo ? 's' : ''}${restartNote})`;
+    // A standing that is neither enabled nor disabled (the ones setup does not own were said above as taken): what it means for the next boot, and the line that helps.
+    const oddStanding = (state: string): [string, string] =>
+      state === 'enabled-runtime'
+        ? ['enabled until the next boot only', shared.length > 0 ? `${shared.map(laterOf).join('; ')}; ${sm.hints.enable(hu)}   (makes it permanent and the session's one; ${sharedName} start${many ? '' : 's'} ${want} at ${boot} otherwise, and two would race)` : `${sm.hints.enable(hu)}   (makes it permanent)`]
+        : [`${state || 'of unknown standing'}: whether it starts at ${boot} is that unit's own arrangement`, `${sm.hints.cat(hu)}   and ${sm.hints.status(hu)}`];
+    // Who started the herdr that answered — a terminal, a unit of the user's own under another name — is not known
+    // here: "runs outside the service" is all that is said of it, and nothing about its coming back unless a service
+    // of setup's is in place for it.
+    // Another bridge unit's herdr service for this very session (one provider per session: setup installs none here then).
+    const taken = foreign !== null; // said above; not setup's to speak for — nor is what it does at boot
+    if (taken) bad(`no service of setup's is established as starting herdr: the name ${huName} is taken (above); whether this herdr comes back after a reboot is that unit's own arrangement`, `free the name ${huName}, then remotly-bridge setup`, false);
+    else if (session === null) bad(`herdr runs outside any service of setup's: the bridge follows ${sock}, not a herdr session under ~/.config/herdr, so setup installs none for it, and whether it comes back after a reboot is not established here${svc && owned ? ` (${huName} starts its own session; off:  ${sm.hints.disableNow(hu)}${ownDeps.stopped.length > 0 ? `, which stops ${listOf(ownDeps.stopped)} with it, and whatever depends on those` : ''})` : ''}`, 'start that herdr yourself after a reboot, or follow a session instead:  remotly-bridge setup --herdr-session NAME', false);
+    else if (hst === null || standing.unreadable) bad(`cannot tell whether herdr comes back after a reboot: ${standing.unreadable ?? `${sm.hints.query(hu)} gave no answer`}`, `ask again:  ${sm.hints.status(hu)}`, false);
+    else if (svc && dirUnknownNow && foreign === null) bad(`herdr service ${huName} runs ${want} under a directory that cannot be told from its process (its environment could not be read), so whether the herdr that answers is its own is not established${nextOk ? '' : `; its file starts ${describe(owned)} at ${boot}`}`, nextOk ? `${theirsFirst}${restartSvc}   (starts ${want} under ${path.join(cfg, 'herdr')} for certain; ends its panes${ownEnds}${restartNote})` : realign(true), false);
+    else if (svc && foreign === null && gone !== null) bad(`herdr service ${huName} starts ${gone} at ${boot}, which is not an executable file now (herdr moved since setup?)${svc.active === 'active' ? `; the one it runs${pid} goes on until it exits` : ''}`, 'remotly-bridge setup   (rewrites the unit for the herdr found now)', false);
+    else if (svc && !serves) bad(`herdr service ${huName} ${offSession}, not the one the bridge follows (${want}); this herdr runs outside it`, realign(true), false);
+    else if (svc?.active === 'active' && standing.state === 'enabled') ok(`herdr service ${huName} active${pid}: starts herdr at ${boot}`);
+    else if (svc?.active === 'active' && standing.state === 'disabled') ok(`herdr service ${huName} active${pid} but disabled (your choice): not started at ${boot}${shared.length > 0 ? `, when ${sharedName} start${many ? '' : 's'} ${want} instead` : ''}; on:  ${shared.length > 0 ? `${shared.map(laterOf).join('; ')}; ${sm.hints.enable(hu)}   (this unit the session's at ${boot}; nothing stops now)${notes(shared)}` : sm.hints.enableNow(hu)}`);
+    else if (svc?.active === 'active') bad(`herdr service ${huName} is active${pid} but ${oddStanding(standing.state)[0]}`, oddStanding(standing.state)[1], false);
+    else if (masked) ok(`herdr service ${huName} is masked (your choice; on:  ${unmaskThenSetup}); this herdr runs outside it`);
+    else if (!svc && shared.length > 0) ok(`herdr service ${sharedName} start${many ? '' : 's'} ${want} at ${boot}, shared with this bridge`);
+    else if (!svc) bad(`no herdr service of setup's: herdr runs outside one${outsideWhere}${supervisor === null ? ', and whether it comes back after a reboot is not established here' : ''}`, `remotly-bridge setup   (installs ${huName}, which starts herdr at ${boot}${supervisor !== null && supPlan !== null && supMayStart ? `; then keep one of the two:  ${keepOne(supervisor.name, supPlan, sm.hints.disable(hu))}` : ''}${possibles.map((p) => `; then keep one of the two, this or ${sm.unitName(p.unit)} (bridge unit ${p.bridge}'s, not enabled, but ${startsHow(p)}):  ${keepOne(sm.unitName(p.unit), planOf(p), sm.hints.disable(hu))}`).join('')})`, false);
+    else if (standing.state === 'disabled' && shared.length > 0) ok(`herdr service ${huName} is disabled (your choice); ${sharedName} start${many ? '' : 's'} ${want} at ${boot}, shared with this bridge — this unit the session's one instead:  ${theirsFirst}${stopOutside}; ${sm.hints.enableNow(hu)}   (ends every pane of ${want}${outsideToo}${theirsToo}${ownStarts}; herdr restores the layouts)`);
+    // Turned on while this herdr holds the socket, the unit would start against it (and again, and again): the hand-over stops it first, as setup's on-line does.
+    else if (standing.state === 'disabled') ok(`herdr service ${huName} is disabled (your choice); this herdr runs outside it${outsideWhere} — on, taking over now:  ${theirsFirst}${stopOutside}; ${sm.hints.enableNow(hu)}   (ends this herdr's panes${outsideToo}${theirsToo}${ownStarts}; herdr restores the layout${theirsToo ? 's' : ''})`);
+    else if (standing.state === 'enabled' && svc.active === 'inactive') ok(`herdr runs outside the herdr service ${huName}${outsideWhere}, which is enabled${mayStart ? ' — hand over to it now' : ` and takes over at the next ${boot} — now`}:  ${handOver}`);
+    else if (standing.state === 'enabled') bad(`herdr runs outside the herdr service ${huName}, which is enabled (so it starts herdr at ${boot}) but ${svc.active} now`, `${sm.hints.logs(hu, 30)}; hand over:  ${handOver}`, false);
+    else bad(`herdr runs outside the herdr service ${huName}, which is ${oddStanding(standing.state)[0]}`, oddStanding(standing.state)[1], false);
+  } else if (standing.unreadable) {
+    // herdr does not answer, and what stands under the service's name is unknown: said here, so the start line above is not the whole story.
+    bad(`cannot tell whether a herdr service of setup's starts herdr at ${boot}: ${standing.unreadable}`, `ask again:  ${sm.hints.status(hu)}`, false);
   }
 
   const tsRun = await spawn('tailscale', ['status', '--json']);

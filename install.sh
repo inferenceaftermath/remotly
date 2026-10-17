@@ -9,8 +9,9 @@ trap 'echo "install.sh: the script arrived incomplete (download cut short); noth
 #   curl -fsSL https://remotly.dev/install.sh | sh
 #
 # Installs or upgrades the bridge under ~/.local/share/remotly/app, a private Node 24 runtime beside it when the
-# system has none, a `remotly-bridge` launcher in ~/.local/bin, then runs `remotly-bridge setup` (herdr and Tailscale
-# checks, certificate, the user service — a systemd user unit on Linux, a launchd agent on macOS — pairing QR).
+# system has none, a `remotly-bridge` launcher in ~/.local/bin, then runs `remotly-bridge setup` (a user service for
+# herdr so it comes back after a reboot, herdr and Tailscale checks, certificate, the bridge's user service — systemd
+# user units on Linux, launchd agents on macOS — pairing QR).
 # Re-running upgrades in place; config and paired devices stay. Arguments go to setup: `sh -s -- --lan`, `sh -s -- --no-pair`.
 #
 # Environment: REMOTLY_VERSION=0.1.0 (default: latest release)   REMOTLY_HOME (default ~/.local/share/remotly)
