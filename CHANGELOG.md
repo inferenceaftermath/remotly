@@ -41,6 +41,13 @@ there to the App Store and Google Play by hand (`promote.yml`; `docs/DELIVERY.md
 - Both apps: a fling keeps its speed when output arrives meanwhile. Lines added below the view, or dropped above it,
   used to stop the fling on the iPhone and pull it back on Android.
 
+### Delivery
+
+- App version 0.1.2 on both platforms (`MARKETING_VERSION` in `ios/project.yml`, `versionName` in
+  `android/app/build.gradle.kts`): Apple approved 0.1.1, which closes that version's train, so the TestFlight lane
+  refused every 0.1.1 build from then on (as it did 0.1.0 after the first release); `promote.yml` submits 0.1.2 from
+  here on.
+
 ### Bridge 0.4.0 — scrollback in one piece
 
 - The bridge keeps its own copy of every pane's scrollback, whether a phone is connected or not: twice a second it asks
