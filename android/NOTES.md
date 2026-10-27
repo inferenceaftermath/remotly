@@ -67,8 +67,10 @@
 
 ## Dependencies (why each)
 
-- Jetpack Compose BOM 2025.01.01 (ui, foundation, material3), activity-compose, lifecycle-runtime-compose,
+- Jetpack Compose BOM 2026.09.00 (ui, foundation, material3), activity-compose, lifecycle-runtime-compose,
   core-ktx: UI, `collectAsStateWithLifecycle`, `NotificationCompat`, `enableEdgeToEdge`.
+- material-icons-core 1.7.8, pinned outside the BOM: `Icons.Filled.*` (Close, Refresh, …). Material 3 used to pull it
+  in; since the icons left the BOM it does not, and the artifact has no newer release.
 - kotlinx-serialization-json 1.11.0: wire models; sealed-interface polymorphism on `t`.
 - kotlinx-coroutines 1.11.0: flows and request/reply.
 - OkHttp 4.12.0: WebSocket with ping interval, `/pair`, custom `X509TrustManager` for pinning.

@@ -113,6 +113,7 @@ dependencies {
     implementation(libs.compose.ui)
     implementation(libs.compose.foundation)
     implementation(libs.compose.material3)
+    implementation(libs.compose.material.icons.core) // Icons.Filled.*: no longer transitive through material3
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.datastore.preferences)
     implementation(libs.camerax.core)
