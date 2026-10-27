@@ -1,5 +1,6 @@
 // Pair with a bridge (shared/design/DESIGN.md §4.8): scan the QR from `remotly-bridge pair`, or type URL + code
-// (+ fingerprint for a self-signed certificate).
+// (+ fingerprint for a self-signed certificate). A code the bridge refuses pauses the viewfinder (FlowKit's ScanGate)
+// instead of going out again on the next camera frame.
 import AVFoundation
 import FlowKit
 import SwiftUI
@@ -19,7 +20,7 @@ struct PairingView: View {
     @State private var showFingerprint = false
     @State private var isPairing = false
     @State private var errorText: String?
-    @State private var lastScanned: String?
+    @State private var gate = ScanGate()
 
     private enum Mode: Hashable { case scan, manual }
 
@@ -66,7 +67,10 @@ struct PairingView: View {
                     .card(radius: 14)
                 }
             }
-            .onChange(of: mode) { _, _ in errorText = nil }
+            .onChange(of: mode) { _, _ in
+                errorText = nil
+                gate.resume()
+            }
         }
         .tint(Theme.interactive)
     }
@@ -91,6 +95,24 @@ struct PairingView: View {
                 }
             }
                 .aspectRatio(4 / 3, contentMode: .fit)
+                .overlay {
+                    if let message = gate.paused {
+                        VStack(spacing: 8) {
+                            Text(message)
+                                .font(.system(size: 14))
+                                .foregroundStyle(Theme.blocked)
+                                .multilineTextAlignment(.center)
+                            Text("Tap to scan again")
+                                .font(.system(size: 15))
+                                .foregroundStyle(Theme.fg2)
+                        }
+                        .padding(24)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Theme.bg.opacity(0.6))
+                        .contentShape(Rectangle())
+                        .onTapGesture { gate.resume() }
+                    }
+                }
                 .clipShape(RoundedRectangle(cornerRadius: 18))
                 .overlay(CornerBrackets().stroke(Theme.accent, style: StrokeStyle(lineWidth: 3, lineCap: .round)))
                 .padding(.horizontal, 16)
@@ -157,14 +179,16 @@ struct PairingView: View {
     // MARK: Actions
 
     private func handleScan(_ code: String) {
-        guard !model.isDemo, !isPairing, code != lastScanned else { return }
-        lastScanned = code
-        guard let payload = QRPayload(string: code) else {
+        guard !model.isDemo, !isPairing else { return }
+        switch gate.scanned(code) {
+        case .pair(let payload):
+            model.showNotice("pairing with \(payload.hostName)…")
+            pair(payload, scanned: true)
+        case .notice:
             model.showNotice("Not a Remotly pairing code")
-            return
+        case .ignore:
+            break
         }
-        model.showNotice("pairing with \(payload.hostName)…")
-        pair(payload)
     }
 
     /// Same checks and words as Android before anything is sent.
@@ -189,19 +213,19 @@ struct PairingView: View {
         pair(payload)
     }
 
-    private func pair(_ payload: QRPayload) {
+    private func pair(_ payload: QRPayload, scanned: Bool = false) {
         isPairing = true
         Task {
             do {
                 try await model.pair(with: payload)
+                gate.succeeded()
                 // Approval alerts need notification permission; ask now, while the user is in the flow,
                 // instead of relying on the Settings screen being discovered.
                 _ = await model.requestNotifications()
             } catch {
                 let text = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                if mode == .scan {
-                    model.showNotice(text)
-                    lastScanned = nil // the same code may be scanned again after the failure
+                if scanned {
+                    gate.failed(text) // shown over the viewfinder; the same code is not sent again until a tap
                 } else {
                     errorText = text
                 }
