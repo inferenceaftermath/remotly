@@ -254,7 +254,12 @@ platforms, nowhere else. The bar behind the composer is `bg`.
 - **Scan QR:** the camera preview in a radius-18 viewfinder, 4 : 3, with four `accent` corner brackets (26 pt long, 3 pt
   thick, 12 pt inset, 6 pt outer radius). Below, centred: "Point the camera at the code on your host's screen." in sans
   15 `fg2`, then `$ remotly-bridge pair` in mono 12.5 `fg3`. A valid code pairs at once (toast `pairing with <host>…`);
-  a foreign QR shows the plain toast "Not a Remotly pairing code".
+  a foreign QR shows the plain toast "Not a Remotly pairing code" (at most once per 2.4 s while it is in view). A code
+  the bridge refuses pauses the viewfinder: a `bg` 60 % wash over the preview, inside the brackets, with the error in
+  rose sans 14 and "Tap to scan again" in sans 15 `fg2`. The camera reads a code that stays in view several times a
+  second and five refusals lock the phone out for 15 minutes, so the same code is not sent again while paused; a tap
+  scans it again, a different code in view scans at once, and switching segments ends the pause. The camera keeps
+  running while a request is in flight and while paused.
 - **Enter code:** fields on `panel` with a `line` border, radius 12, padding 12, sans 15 (`fg`, placeholder `fg3`;
   the placeholder stays the field's accessibility label once it holds a value):
   "Host URL (e.g. 100.101.102.103:7460)", "Pairing code (8 characters)" (mono, capitals), "Host name (optional)"; then a
@@ -263,8 +268,8 @@ platforms, nowhere else. The bar behind the composer is `bg`.
   `interactive` fill, "Pair" in sans 16 semibold `onInteractive`, radius 14, 40 % opacity while the URL or code is
   empty. Tapping Pair validates before anything is sent, with the same sentences on both: "Enter the host as host:port"
   · "The code is 8 characters from A–Z and 2–9 (no I, O, 0, 1)" · "The fingerprint is 43 base64url characters".
-- While pairing: a centred `panel` card "Pairing…" with a spinner. Errors: rose sans 14 under the button (and the plain
-  toast in scan mode). After success the app asks for notification permission (existing behaviour).
+- While pairing: a centred `panel` card "Pairing…" with a spinner. Errors: rose sans 14 under the button; in scan mode
+  over the viewfinder, as above. After success the app asks for notification permission (existing behaviour).
 
 ### 4.9 Settings
 Same sections, rows and words on both platforms, footers at most one sentence.

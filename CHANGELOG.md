@@ -7,6 +7,16 @@ there to the App Store and Google Play by hand (`promote.yml`; `docs/DELIVERY.md
 
 ## Unreleased
 
+### Phone apps — a refused pairing code is not scanned again by itself
+
+- Scanning a pairing code the bridge refuses (wrong, expired, locked out, host unreachable) pauses the viewfinder: the
+  error shows over the camera with "Tap to scan again", and the same code is not sent again while it stays in view.
+  Before, both apps sent the code again on the next camera frame — about three times a second — so one expired QR hit
+  the bridge's five-failure lockout within a second, and every attempt for the next 15 minutes, a fresh code included,
+  was refused as "Too many attempts". A different code in view (a new `remotly-bridge pair`) scans at once; a tap scans
+  the same one again; switching to "Enter code" and back does too. The decision is one type in `:core` and FlowKit
+  (`ScanGate`), with the same unit tests on both; the camera now keeps running while a request is in flight.
+
 ### Bridge 0.5.0 — herdr as a service
 
 - `setup` (what the install command and every update run) installs a user service for herdr beside the bridge's:
@@ -40,6 +50,13 @@ there to the App Store and Google Play by hand (`promote.yml`; `docs/DELIVERY.md
   other characters the font draws exactly a cell wide are drawn a stretch at a time instead of one by one.
 - Both apps: a fling keeps its speed when output arrives meanwhile. Lines added below the view, or dropped above it,
   used to stop the fling on the iPhone and pull it back on Android.
+
+### Delivery
+
+- App version 0.1.2 on both platforms (`MARKETING_VERSION` in `ios/project.yml`, `versionName` in
+  `android/app/build.gradle.kts`): Apple approved 0.1.1, which closes that version's train, so the TestFlight lane
+  refused every 0.1.1 build from then on (as it did 0.1.0 after the first release); `promote.yml` submits 0.1.2 from
+  here on.
 
 ### Bridge 0.4.0 — scrollback in one piece
 
