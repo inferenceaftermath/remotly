@@ -57,6 +57,51 @@ final class DemoBridgeTests: XCTestCase {
         XCTAssertEqual(notifyError.code, .unsupported)
     }
 
+    func testScrollbackAnswersWithTheSampleCopyAndPushesNewLines() throws {
+        let d = DemoBridge()
+        _ = d.welcome()
+        _ = try replies(d, .watch(id: "1", pane: "demo-shell", zoom: false))
+        _ = try replies(d, .fit(id: "2", pane: "demo-shell", cols: 40, rows: 5, release: false))
+        let answer = try replies(d, .scrollback(id: "3", pane: "demo-shell", epoch: nil, from: nil))
+        guard case .scrollback(let copy) = answer.first, case .ok(let ok) = answer.last else { return XCTFail("Expected scrollback, then ok") }
+        XCTAssertTrue(copy.reset)
+        XCTAssertEqual(copy.epoch, "demo")
+        XCTAssertEqual(copy.start, 0)
+        XCTAssertFalse(copy.lines.isEmpty, "twelve sample lines on a five-row screen leave some above it")
+        XCTAssertEqual(ok.epoch, "demo")
+        XCTAssertEqual(ok.next, copy.lines.count)
+        XCTAssertEqual(ok.maxLines, 10_000)
+        var store = ScrollbackStore()
+        XCTAssertEqual(store.apply(copy), .reset)
+        XCTAssertTrue(store.agrees(epoch: ok.epoch, next: ok.next))
+        // A prompt adds lines: those that leave the screen follow as a push that continues the copy.
+        let after = try replies(d, .prompt(id: "4", pane: "demo-shell", text: "echo more", notify: false))
+        guard let push = after.compactMap({ message -> ScrollbackMessage? in
+            if case .scrollback(let m) = message { return m }
+            return nil
+        }).last else { return XCTFail("No push") }
+        XCTAssertFalse(push.reset)
+        XCTAssertEqual(push.start, copy.lines.count)
+        guard case .changed(let appended, _) = store.apply(push) else { return XCTFail("The push does not continue the copy") }
+        XCTAssertEqual(appended, 2, "the prompt and its reply pushed two sample lines off the five-row screen")
+        // Coming back with the copy's epoch and the next number: only what was missed (nothing), no reset.
+        let back = try replies(d, .scrollback(id: "5", pane: "demo-shell", epoch: "demo", from: store.next))
+        guard case .ok(let backOK) = back.last else { return XCTFail("Expected an ok") }
+        XCTAssertEqual(back.count, 1, "nothing missed: the ok alone")
+        XCTAssertTrue(store.agrees(epoch: backOK.epoch, next: backOK.next))
+        // From further back: the lines from there on, continuing the copy.
+        let partial = try replies(d, .scrollback(id: "6", pane: "demo-shell", epoch: "demo", from: store.next - 1))
+        guard case .scrollback(let tail) = partial.first else { return XCTFail("Expected scrollback") }
+        XCTAssertFalse(tail.reset)
+        XCTAssertEqual(tail.start, store.next - 1)
+        XCTAssertEqual(tail.lines.count, 1)
+        // Another epoch: the whole copy again.
+        let other = try replies(d, .scrollback(id: "7", pane: "demo-shell", epoch: "elsewhere", from: 0))
+        guard case .scrollback(let whole) = other.first else { return XCTFail("Expected scrollback") }
+        XCTAssertTrue(whole.reset)
+        XCTAssertEqual(whole.start, 0)
+    }
+
     func testBundledScenarioMatchesCanonicalAndroidScenario() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let canonical = try Data(contentsOf: root.appending(path: "shared/demo/demo.json"))

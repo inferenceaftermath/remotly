@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { StyleTable, encodeFrame, encodeHistory } from '../../src/terminal/encode.ts';
+import { SCROLLBACK_LINE_CELLS, StyleTable, encodeFrame, encodeHistory, encodeScrollback } from '../../src/terminal/encode.ts';
 import { parseScreen } from '../../src/terminal/ansi.ts';
 import { diffRows } from '../../src/terminal/differ.ts';
 
@@ -78,4 +78,72 @@ test('encodeHistory: lines without y', () => {
     styles: { '1': { fg: 'd', bg: 'd', a: 2 } },
     has_more: true,
   });
+});
+
+test('encodeScrollback: one line per entry, chunks numbered on, reset and new styles only where they belong', () => {
+  const table = new StyleTable();
+  const lines = ['\x1b[1mbold\x1b[0m one', 'two', '', '\x1b[31mred\x1b[0m'];
+  const one = [...encodeScrollback({ pane: 'p', epoch: 'e1', start: 10, lines, reset: true, table })];
+  assert.equal(one.length, 1);
+  assert.equal(one[0]!.start, 10);
+  assert.equal(one[0]!.reset, true);
+  assert.equal(one[0]!.lines.length, 4);
+  assert.deepEqual(one[0]!.lines[2], { runs: [] });
+  assert.deepEqual(Object.keys(one[0]!.styles).sort(), ['1', '2']);
+
+  const many = [...encodeScrollback({ pane: 'p', epoch: 'e1', start: 0, lines: Array.from({ length: 50 }, (_, i) => `\x1b[3${i % 8}mline ${i}`), reset: true, table: new StyleTable(), maxBytes: 400 })];
+  assert.ok(many.length > 3);
+  let next = 0;
+  for (const [i, m] of many.entries()) {
+    assert.equal(m.start, next);
+    assert.equal(m.reset, i === 0 ? true : undefined);
+    assert.ok(JSON.stringify(m).length < 1200);
+    next += m.lines.length;
+  }
+  assert.equal(next, 50);
+  const ids = many.flatMap((m) => Object.keys(m.styles));
+  assert.equal(new Set(ids).size, ids.length, 'each style is sent once');
+
+  const empty = [...encodeScrollback({ pane: 'p', epoch: 'e2', start: 7, lines: [], reset: false, table })];
+  assert.deepEqual(empty, [{ t: 'scrollback', pane: 'p', epoch: 'e2', start: 7, lines: [], styles: {} }]);
+});
+
+test('encodeScrollback: a line longer than any screen is cut at SCROLLBACK_LINE_CELLS, and a style-dense one until it fits a message', () => {
+  const long = [...encodeScrollback({ pane: 'p', epoch: 'e', start: 0, lines: ['x'.repeat(50_000)], reset: false, table: new StyleTable() })];
+  assert.deepEqual(long[0]!.lines[0]!.runs, [{ c: 0, w: SCROLLBACK_LINE_CELLS, s: 0, t: 'x'.repeat(SCROLLBACK_LINE_CELLS) }]);
+  const wide = [...encodeScrollback({ pane: 'p', epoch: 'e', start: 0, lines: ['a'.repeat(SCROLLBACK_LINE_CELLS - 1) + '日本'], reset: false, table: new StyleTable() })];
+  assert.deepEqual(wide[0]!.lines[0]!.runs.map((r) => [r.c, r.w]), [[0, SCROLLBACK_LINE_CELLS - 1]], 'a wide character across the edge is dropped');
+  const dense = Array.from({ length: 4000 }, (_, i) => `\x1b[38;5;${i % 256}mab`).join('');
+  const [msg] = [...encodeScrollback({ pane: 'p', epoch: 'e', start: 0, lines: [dense], reset: false, table: new StyleTable(), maxBytes: 20_000 })];
+  assert.ok(JSON.stringify(msg!.lines).length < 20_000);
+  assert.ok(msg!.lines[0]!.runs.length > 100);
+  assert.equal(msg!.lines[0]!.runs[0]!.c, 0, 'the start of the line is kept');
+  // a combining mark in the run across the edge: the run is cut between graphemes, not dropped
+  const accent = [...encodeScrollback({ pane: 'p', epoch: 'e', start: 0, lines: ['a'.repeat(SCROLLBACK_LINE_CELLS - 1) + 'e\u0301z'], reset: false, table: new StyleTable() })];
+  const run = accent[0]!.lines[0]!.runs[0]!;
+  assert.equal(run.w, SCROLLBACK_LINE_CELLS);
+  assert.ok(run.t.endsWith('e\u0301'));
+});
+
+test('encodeScrollback: every message stays within maxBytes as UTF-8 JSON, styles counted, each style sent with the line that uses it', () => {
+  const hex = (i: number) => (i * 2654435761 >>> 8).toString(16).padStart(6, '0').slice(-6);
+  // a full-width line, a new true-colour style on every cell
+  const rainbow = Array.from({ length: SCROLLBACK_LINE_CELLS }, (_, i) => `\x1b[38;2;${parseInt(hex(i).slice(0, 2), 16)};${parseInt(hex(i).slice(2, 4), 16)};${parseInt(hex(i).slice(4), 16)}mx`).join('');
+  const wide = '日本語のテキスト'.repeat(1200);
+  const emoji = '👩‍💻'.repeat(4000);
+  const table = new StyleTable();
+  const msgs = [...encodeScrollback({ pane: 'p', epoch: 'e', start: 0, lines: [rainbow, wide, emoji, rainbow, 'tail'], reset: true, table, maxBytes: 64 * 1024 })];
+  const known = new Set<string>(['0']);
+  let next = 0;
+  for (const m of msgs) {
+    assert.ok(Buffer.byteLength(JSON.stringify(m)) <= 64 * 1024, `${Buffer.byteLength(JSON.stringify(m))} bytes`);
+    for (const id of Object.keys(m.styles)) known.add(id);
+    const used = new Set(m.lines.flatMap((l) => l.runs.map((r) => String(r.s))));
+    for (const id of used) assert.ok(known.has(id), `style ${id} defined before use`);
+    for (const id of Object.keys(m.styles)) assert.ok(used.has(id), `style ${id} is used by a line of its message`);
+    assert.equal(m.start, next);
+    next += m.lines.length;
+  }
+  assert.equal(next, 5, 'every line is sent');
+  assert.equal(msgs.at(-1)!.lines.at(-1)!.runs[0]!.t, 'tail');
 });

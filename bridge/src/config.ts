@@ -27,6 +27,8 @@ export interface FlowConfig {
   approvals: { strict_verify: boolean };
   /** Photos from the phones (`POST /upload`): where they land, how long day folders are kept, the size cap. */
   uploads: { dir: string; keep_days: number; max_mb: number };
+  /** The bridge's own copy of each pane's scrollback (lines kept per pane, oldest dropped first). */
+  scrollback: { max_lines: number };
 }
 
 /** The app owner's relay; a bridge with its own secrets never talks to it. */
@@ -93,6 +95,7 @@ export function defaultConfig(): FlowConfig {
     },
     approvals: { strict_verify: true },
     uploads: { dir: path.join(os.homedir(), '.local', 'share', 'remotly', 'uploads'), keep_days: 14, max_mb: 20 },
+    scrollback: { max_lines: 10_000 },
   };
 }
 
@@ -183,7 +186,7 @@ export function validateConfig(raw: unknown, warn: Warn = () => {}): FlowConfig 
   if (!isObject(raw)) throw new ConfigError('config.json: top level must be a JSON object');
   const d = defaultConfig();
   const root: Scope = { name: '', v: raw };
-  const top = ['listen', 'tls', 'security', 'herdr', 'push', 'approvals', 'uploads'];
+  const top = ['listen', 'tls', 'security', 'herdr', 'push', 'approvals', 'uploads', 'scrollback'];
   for (const k of Object.keys(raw)) if (!top.includes(k)) warn(`config.json: unknown key ${k} ignored`);
 
   const listen = section(root, 'listen', ['host', 'port'], warn);
@@ -195,6 +198,7 @@ export function validateConfig(raw: unknown, warn: Warn = () => {}): FlowConfig 
   const fcm = section(push, 'fcm', ['project_id', 'service_account_path'], warn);
   const approvals = section(root, 'approvals', ['strict_verify'], warn);
   const uploads = section(root, 'uploads', ['dir', 'keep_days', 'max_mb'], warn);
+  const scrollback = section(root, 'scrollback', ['max_lines'], warn);
 
   const requireTailnet = security.v['require_tailnet'];
   if (requireTailnet !== undefined && requireTailnet !== 'auto' && typeof requireTailnet !== 'boolean') {
@@ -233,6 +237,7 @@ export function validateConfig(raw: unknown, warn: Warn = () => {}): FlowConfig 
       keep_days: int(uploads, 'keep_days', d.uploads.keep_days, 1, 3650),
       max_mb: int(uploads, 'max_mb', d.uploads.max_mb, 1, 200),
     },
+    scrollback: { max_lines: int(scrollback, 'max_lines', d.scrollback.max_lines, 1000, 100_000) },
   };
 }
 

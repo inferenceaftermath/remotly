@@ -57,6 +57,54 @@ class DemoBridgeTest {
         assertEquals("blocked", fresh.snapshot!!.pane("demo-review")!!.agent_status)
     }
 
+    @Test fun `scrollback is the sample lines above the screen, one copy, then the lines that scroll off`() {
+        val d = DemoBridge()
+        d.welcome()
+        reply(d, Watch("1", "demo-shell"))
+        reply(d, Fit("2", "demo-shell", 40, 5))
+        val answer = reply(d, Scrollback("3", "demo-shell"))
+        val copy = answer.filterIsInstance<ScrollbackMessage>().single()
+        assertEquals(true, copy.reset)
+        assertEquals("demo", copy.epoch)
+        assertEquals(0, copy.start)
+        assertTrue(copy.lines.isNotEmpty(), "a 5-row screen leaves sample lines above it")
+        val ok = answer.last() as OkMessage
+        assertEquals(copy.lines.size, ok.next)
+        assertEquals("demo", ok.epoch)
+        assertEquals(10_000, ok.max_lines)
+        // output that scrolls lines off the screen is pushed after the frame, numbered on
+        val pushed = reply(d, Prompt("4", "demo-shell", "run the tests")).filterIsInstance<ScrollbackMessage>().single()
+        assertNull(pushed.reset)
+        assertEquals(ok.next, pushed.start)
+        assertTrue(pushed.lines.isNotEmpty())
+        // asking again with the epoch and the next number gets only what is new (nothing): the ok alone
+        val resumed = reply(d, Scrollback("5", "demo-shell", "demo", pushed.start + pushed.lines.size))
+        assertTrue(resumed.none { it is ScrollbackMessage })
+        assertEquals(pushed.start + pushed.lines.size, (resumed.single() as OkMessage).next)
+        // from one line further back: that line, continuing the copy
+        val tail = reply(d, Scrollback("5b", "demo-shell", "demo", pushed.start + pushed.lines.size - 1)).filterIsInstance<ScrollbackMessage>().single()
+        assertNull(tail.reset)
+        assertEquals(1, tail.lines.size)
+        // another pane watched: no more pushes for this one
+        reply(d, Watch("6", "demo-review"))
+        assertTrue(reply(d, Prompt("7", "demo-shell", "again")).none { it is ScrollbackMessage })
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun `demo connection shows the sample history in the continuous scroll`() = runTest {
+        val c = FlowConnection(HostConfig("demo://local", ""), ClientInfo("android", "test", "test"), scope = backgroundScope, isDemo = true)
+        c.start()
+        c.watch("demo-shell")
+        runCurrent()
+        assertEquals(0, c.scrollback.value!!.next, "the sample fits a 24-row screen: nothing above it yet")
+        c.fit("demo-shell", 40, 5)
+        val history = c.scrollback.value!!
+        assertEquals("demo-shell", history.pane)
+        assertTrue(history.next > 0, "a shorter screen pushes the first lines into the history")
+        assertEquals("REMOTLY DEMO - SAMPLE DATA", history.lines.first().joinToString("") { it.t })
+        c.stop()
+    }
+
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     @Test fun `demo connection never opens a socket and can stop and resume`() = runTest {
         var calls = 0

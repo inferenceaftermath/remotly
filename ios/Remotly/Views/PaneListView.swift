@@ -331,7 +331,7 @@ private struct NewTerminalSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(busy) }
             }
         }
-        .tint(Theme.interactive)
+        .themed()
         .presentationBackground(Theme.bg)
     }
 

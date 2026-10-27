@@ -1,5 +1,6 @@
 // Pair (DESIGN.md §4.8): scan the `remotly://pair?…` QR from `remotly-bridge pair` (camera) or type URL / code
-// / fingerprint. A valid scan pairs at once.
+// / fingerprint. A valid scan pairs at once; one the bridge refuses pauses the viewfinder (core's ScanGate) instead of
+// going out again on the next camera frame.
 package com.inferenceaftermath.remotly.ui
 
 import android.Manifest
@@ -36,7 +37,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.inferenceaftermath.remotly.core.pairing.PairException
 import com.inferenceaftermath.remotly.core.pairing.QrPayload
+import com.inferenceaftermath.remotly.core.pairing.ScanGate
 import com.inferenceaftermath.remotly.session.Session
 import kotlinx.coroutines.launch
 
@@ -79,9 +80,10 @@ fun PairingScreen(session: Session) {
     var showFingerprint by rememberSaveable { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
-    var lastForeignAt by remember { mutableLongStateOf(0L) }
+    val gate = remember { ScanGate() }
+    var scanPaused by remember { mutableStateOf<String?>(null) } // gate.paused, mirrored so the viewfinder recomposes
 
-    fun pair(p: QrPayload) {
+    fun pair(p: QrPayload, scanned: Boolean = false) {
         if (busy) return
         busy = true
         error = null
@@ -89,6 +91,7 @@ fun PairingScreen(session: Session) {
         scope.launch {
             try {
                 session.pair(p)
+                gate.succeeded()
                 if (Build.VERSION.SDK_INT >= 33 &&
                     ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
                 ) {
@@ -96,8 +99,12 @@ fun PairingScreen(session: Session) {
                 }
             } catch (e: Exception) {
                 val message = if (e is PairException) e.message ?: "Pairing failed" else "Pairing failed: ${e.message ?: e.javaClass.simpleName}"
-                error = message
-                if (tab == 0) session.notify(message)
+                if (scanned) {
+                    gate.failed(message)
+                    scanPaused = gate.paused
+                } else {
+                    error = message
+                }
             } finally {
                 busy = false
             }
@@ -119,23 +126,33 @@ fun PairingScreen(session: Session) {
                 Spacer(Modifier.height(6.dp))
                 Text("Explore local sample sessions. Nothing is sent to a host.", style = Type.hint)
                 Spacer(Modifier.height(20.dp))
-                Segmented(listOf("Scan QR", "Enter code"), tab) { tab = it; error = null }
+                Segmented(listOf("Scan QR", "Enter code"), tab) { tab = it; error = null; gate.resume(); scanPaused = null }
                 Spacer(Modifier.height(16.dp))
                 if (tab == 0) {
                     Box(Modifier.fillMaxWidth().aspectRatio(4f / 3f).clip(RoundedCornerShape(18.dp)).background(Tokens.panel)) {
                         if (hasCamera) {
-                            if (!busy) {
-                                QrScanner(Modifier.fillMaxSize()) { text ->
-                                    val parsed = QrPayload.parse(text)
-                                    if (parsed != null) {
-                                        pair(parsed)
-                                    } else {
-                                        val now = System.currentTimeMillis()
-                                        if (now - lastForeignAt > 2400) {
-                                            lastForeignAt = now
-                                            session.notify("Not a Remotly pairing code")
-                                        }
+                            // Stays mounted while a request is in flight: a fresh analyzer starts with a clean slate and
+                            // hands the same code straight back. The gate decides what each camera read does.
+                            QrScanner(Modifier.fillMaxSize()) { text ->
+                                if (busy) return@QrScanner
+                                when (val d = gate.scanned(text, System.currentTimeMillis())) {
+                                    is ScanGate.Decision.Pair -> {
+                                        scanPaused = null
+                                        pair(d.payload, scanned = true)
                                     }
+                                    ScanGate.Decision.Notice -> session.notify("Not a Remotly pairing code")
+                                    ScanGate.Decision.Ignore -> Unit
+                                }
+                            }
+                            scanPaused?.let { message ->
+                                Column(
+                                    Modifier.fillMaxSize().background(Tokens.bg.copy(alpha = 0.6f)).clickable { gate.resume(); scanPaused = null }.padding(24.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center,
+                                ) {
+                                    Text(message, style = Type.small, color = Tokens.blocked, textAlign = TextAlign.Center)
+                                    Spacer(Modifier.height(8.dp))
+                                    Text("Tap to scan again", style = Type.hint, textAlign = TextAlign.Center)
                                 }
                             }
                         } else {
@@ -200,7 +217,7 @@ fun PairingScreen(session: Session) {
                 Spacer(Modifier.height(24.dp))
             }
             if (busy) {
-                Box(Modifier.fillMaxSize().background(Color(0x990B0C0E)), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxSize().background(Tokens.bg.copy(alpha = 0.6f)), contentAlignment = Alignment.Center) {
                     PanelCard(radius = 14.dp) {
                         Row(Modifier.padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             CircularProgressIndicator(color = Tokens.interactive, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))

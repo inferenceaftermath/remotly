@@ -5,9 +5,10 @@
 // in app.prev), refreshes a private Node when there is one, and its `setup` re-renders the unit, restarts it and waits
 // for health.
 //
-// Unattended, so the run is a small transaction: one lock per install — a kernel lock, flock(1) on <home>/update.lock,
-// held by the descriptor flock opened for as long as any process has it: this run, and the installer it starts (handed
-// the descriptor explicitly; install.sh finds it under /proc/self/fd, confirms with `flock -n` on it that it is the lock
+// Unattended, so the run is a small transaction: one lock per install — a kernel lock, flock(1) on <home>/update.lock
+// (perl's flock on macOS: platform/lock.ts), held by the descriptor it opened for as long as any process has it: this
+// run, and the installer it starts (handed the descriptor explicitly; install.sh finds it under /proc/self/fd, or by
+// REMOTLY_UPDATE_LOCK_FD on macOS, confirms with `flock -n` on it that it is the lock
 // and takes no lock of its own — a hand-run install.sh takes one), so a second run (the timer beside a hand run, two
 // instances sharing one install) does nothing. A bridge that is stopped (`inactive`: an operator's stop) is not updated,
 // since an update starts the bridge; one that `failed` (a crash loop that hit its start-rate limit) was running and is
@@ -25,6 +26,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ControlStatus } from './control.ts';
+import { LOCK_FD_ENV, LOCK_TAKEN_EXIT, lockToolMissing, lockTool, lockedCommand as platformLockedCommand } from './platform/lock.ts';
+import { systemdManager, type ServiceManager } from './platform/service.ts';
 import type { ExecFn } from './tailscale.ts';
 
 export const RELEASES_URL = 'https://github.com/inferenceaftermath/remotly/releases';
@@ -65,7 +68,7 @@ export function installerCall(deps: Pick<UpdateDeps, 'env' | 'pathDirs' | 'mainP
   const dist = deps.env['REMOTLY_NODE_DIST'];
   if (dist) env['REMOTLY_NODE_DIST'] = dist;
   if (deps.env['REMOTLY_SYSTEMD_UNIT']) env['REMOTLY_SYSTEMD_UNIT'] = deps.unit;
-  for (const k of ['HERDR_SESSION', 'HERDR_SOCKET_PATH'] as const) {
+  for (const k of ['HERDR_SESSION', 'HERDR_SOCKET_PATH', 'REMOTLY_TAILSCALE'] as const) {
     const v = deps.env[k];
     if (v) env[k] = v;
   }
@@ -83,47 +86,55 @@ export function byHandLine(call: InstallerCall, releases: string, version: strin
   return `curl -fsSL ${shq(`${releases}/download/bridge-v${version}/install.sh`)} | ${assigns} sh${call.args.length > 0 ? ` -s -- ${call.args.map(shq).join(' ')}` : ''}`;
 }
 
-/**
- * What flock(1) exits with when the lock is taken (`-E`). Outside 0, 1 and 2 (the run under the lock), 64–78 (flock's
- * own failures, sysexits: 66 when it cannot open the lock file, 69 when it cannot run the command), 126/127 (newer
- * flocks for the latter) and 128+ (the command killed by a signal).
- */
-export const LOCK_TAKEN_EXIT = 99;
-/** Set by the re-run under flock: a run that then finds no lock descriptor stops instead of re-running itself forever. */
+export { LOCK_TAKEN_EXIT };
+/** Set by the re-run under the lock: a run that then finds no lock descriptor stops instead of re-running itself forever. */
 export const RELOCKED_ENV = 'REMOTLY_UPDATE_RELOCKED';
 export const lockPath = (home: string): string => path.join(home, 'update.lock');
-/** The same run again, under the kernel lock: flock(1) opens `<home>/update.lock`, locks it and runs the command holding that descriptor. */
-export function lockedCommand(home: string, nodePath: string, mainPath: string): { cmd: string; args: string[] } {
-  return { cmd: 'flock', args: ['-n', '-E', String(LOCK_TAKEN_EXIT), lockPath(home), nodePath, mainPath, 'update'] };
+/** The same run again, under the kernel lock: flock(1) (perl on macOS) opens `<home>/update.lock`, locks it and runs the command holding that descriptor. */
+export function lockedCommand(home: string, nodePath: string, mainPath: string, platform = 'linux'): { cmd: string; args: string[] } {
+  return platformLockedCommand(platform, lockPath(home), [nodePath, mainPath, 'update']);
 }
 
 /**
- * The descriptor this process inherited that is open on `lock` — the proof that it runs under flock, and what it hands
- * the installer (Linux: the links under /proc/self/fd name the files). Null when there is none, or /proc cannot be read.
+ * The descriptor this process inherited that is open on `lock` — the proof that it runs under the lock, and what it
+ * hands the installer. Linux: the links under /proc/self/fd name the files. Without /proc (macOS): the number the
+ * locking process left in REMOTLY_UPDATE_LOCK_FD, believed only when fstat says it is the lock file (same device and
+ * inode). Null when there is none.
  */
-export function inheritedLockFd(lock: string): number | null {
+export function inheritedLockFd(lock: string, env: NodeJS.ProcessEnv = process.env, procFd = '/proc/self/fd'): number | null {
   let want: string;
   try {
     want = fs.realpathSync(lock);
   } catch {
     want = lock;
   }
-  let names: string[];
+  let names: string[] | null;
   try {
-    names = fs.readdirSync('/proc/self/fd');
+    names = fs.readdirSync(procFd);
+  } catch {
+    names = null;
+  }
+  if (names !== null) {
+    for (const n of names) {
+      const fd = Number(n);
+      if (!Number.isInteger(fd) || fd < 3) continue;
+      try {
+        if (fs.readlinkSync(path.join(procFd, n)) === want) return fd;
+      } catch {
+        /* closed meanwhile (the directory listing's own descriptor) */
+      }
+    }
+    return null;
+  }
+  const fd = Number(env[LOCK_FD_ENV]);
+  if (!Number.isInteger(fd) || fd < 3) return null;
+  try {
+    const open = fs.fstatSync(fd);
+    const file = fs.statSync(lock);
+    return open.dev === file.dev && open.ino === file.ino ? fd : null;
   } catch {
     return null;
   }
-  for (const n of names) {
-    const fd = Number(n);
-    if (!Number.isInteger(fd) || fd < 3) continue;
-    try {
-      if (fs.readlinkSync(`/proc/self/fd/${n}`) === want) return fd;
-    } catch {
-      /* closed meanwhile (the directory listing's own descriptor) */
-    }
-  }
-  return null;
 }
 
 /** How a process this run started ended: its exit code, the signal that killed it, or why it could not start at all. */
@@ -265,6 +276,10 @@ export interface UpdateDeps {
   pathDirs: string[];
   /** The unit setup installed (REMOTLY_SYSTEMD_UNIT), restarted on rollback. */
   unit: string;
+  /** `process.platform` of the host: which lock tool the re-run uses and how messages are worded. Default `linux`. */
+  platform?: string;
+  /** The service manager the unit belongs to; default: systemd over `exec`. */
+  service?: ServiceManager;
   out: (line: string) => void;
   exec: ExecFn;
   sleep: (ms: number) => Promise<void>;
@@ -287,10 +302,13 @@ export interface UpdateDeps {
   mkdtemp: () => string;
 }
 
-const unitName = (unit: string): string => `${unit.replace(/\.service$/, '')}.service`;
+/** The deps with the platform and the service manager settled. */
+type Deps = UpdateDeps & { platform: string; service: ServiceManager };
 
 /** Runs the whole sequence; returns the process exit code (0 current or updated, 1 failed, 2 not an installed release). */
-export async function runUpdate(deps: UpdateDeps): Promise<number> {
+export async function runUpdate(given: UpdateDeps): Promise<number> {
+  // Only the unit-state and restart methods are used here: the manager's directories do not matter to an update.
+  const deps: Deps = { ...given, platform: given.platform ?? 'linux', service: given.service ?? systemdManager({ exec: given.exec, unitDir: '', user: '', uid: -1, home: '' }) };
   const layout = installLayout(deps.mainPath);
   if (layout.kind === 'checkout') {
     deps.out(`this copy runs from a repository checkout (${layout.root}); update is for a release installed by install.sh — a checkout is updated by git and its own setup`);
@@ -301,19 +319,21 @@ export async function runUpdate(deps: UpdateDeps): Promise<number> {
     return 2;
   }
   const lock = lockPath(layout.home);
+  const tool = lockTool(deps.platform);
   const lockFd = deps.heldLockFd(lock);
   if (lockFd === null) {
     if (deps.env[RELOCKED_ENV] === '1') {
-      deps.out(`re-run under flock, but no descriptor open on ${lock} was inherited (is /proc/self/fd readable?); not updating without the lock`);
+      deps.out(`re-run under ${tool}, but no descriptor open on ${lock} was inherited (${deps.platform === 'darwin' ? `is ${LOCK_FD_ENV} set to it?` : 'is /proc/self/fd readable?'}); not updating without the lock`);
       return 1;
     }
-    // Not under the lock yet: the same command again under flock(1). The lock is the descriptor flock opens: held for
-    // as long as that process, and whatever it hands the descriptor to, lives — a run stopped by a signal or a power
-    // loss leaves nothing to clean up, and no pid to misjudge. The environment alone proves nothing: the descriptor does.
-    const { cmd, args } = lockedCommand(layout.home, deps.nodePath, deps.mainPath);
+    // Not under the lock yet: the same command again under flock(1) (perl's flock on macOS). The lock is the descriptor
+    // it opens: held for as long as that process, and whatever it hands the descriptor to, lives — a run stopped by a
+    // signal or a power loss leaves nothing to clean up, and no pid to misjudge. The environment alone proves nothing:
+    // the descriptor does.
+    const { cmd, args } = lockedCommand(layout.home, deps.nodePath, deps.mainPath, deps.platform);
     const r = await deps.relock(cmd, args, { ...deps.env, [RELOCKED_ENV]: '1' });
     if (r.error !== undefined) {
-      deps.out(r.error.includes('ENOENT') ? 'flock (util-linux) is needed to run one update at a time; install it and run again' : `could not run flock: ${r.error}`);
+      deps.out(r.error.includes('ENOENT') ? lockToolMissing(deps.platform) : `could not run ${tool}: ${r.error}`);
       return 1;
     }
     if (r.signal !== null) {
@@ -325,7 +345,7 @@ export async function runUpdate(deps: UpdateDeps): Promise<number> {
       return 0;
     }
     if (r.code === 0 || r.code === 1 || r.code === 2) return r.code;
-    deps.out(r.code !== null && r.code > 128 ? `the update under the lock was killed (flock exited with ${r.code})` : `flock could not run the update (exit ${r.code ?? 'unknown'}; its message is above)`);
+    deps.out(r.code !== null && r.code > 128 ? `the update under the lock was killed (${tool} exited with ${r.code})` : `${tool} could not run the update (exit ${r.code ?? 'unknown'}; its message is above)`);
     return 1;
   }
   // An open descriptor alone proves nothing (anything could have opened the file and handed it down): flock on that
@@ -336,13 +356,13 @@ export async function runUpdate(deps: UpdateDeps): Promise<number> {
     return 0;
   }
   if (c.code !== 0) {
-    deps.out(`could not confirm the lock on ${lock} (flock ${describeExit(c)}); not updating without it`);
+    deps.out(`could not confirm the lock on ${lock} (${tool} ${describeExit(c)}); not updating without it`);
     return 1;
   }
   return updateLocked(deps, layout, lockFd);
 }
 
-async function updateLocked(deps: UpdateDeps, layout: { home: string; app: string }, lockFd: number): Promise<number> {
+async function updateLocked(deps: Deps, layout: { home: string; app: string }, lockFd: number): Promise<number> {
   const pending = readPending(layout.home);
   if (pending) {
     deps.out(`an update ${pending.from} → ${pending.to} started ${pending.started} did not finish (its process was stopped): finishing it`);
@@ -367,7 +387,7 @@ async function updateLocked(deps: UpdateDeps, layout: { home: string; app: strin
   if (cmp === 0) {
     const running = await runningVersion(deps, 3000);
     if (running === null) {
-      deps.out(`remotly-bridge ${deps.version} is the latest release (the bridge is not answering right now:  systemctl --user status ${unitName(deps.unit)})`);
+      deps.out(`remotly-bridge ${deps.version} is the latest release (the bridge is not answering right now:  ${deps.service.hints.status(deps.unit)})`);
       return 0;
     }
     if (running === deps.version) {
@@ -383,7 +403,7 @@ async function updateLocked(deps: UpdateDeps, layout: { home: string; app: strin
 }
 
 /** The daemon's version within `waitMs`: undefined when it predates the field, null when it does not answer. */
-async function runningVersion(deps: UpdateDeps, waitMs: number): Promise<string | undefined | null> {
+async function runningVersion(deps: Deps, waitMs: number): Promise<string | undefined | null> {
   const started = deps.now();
   for (;;) {
     try {
@@ -397,47 +417,38 @@ async function runningVersion(deps: UpdateDeps, waitMs: number): Promise<string 
 }
 
 /**
- * systemd's word on the unit: `running` (active, on its way up, reloading), `failed` (a crash loop that hit its
+ * The manager's word on the unit: `running` (active, on its way up, reloading), `failed` (a crash loop that hit its
  * start-rate limit: it was running and is meant to be), `stopped` (inactive, or on its way there: an operator's stop),
- * or null when `is-active` gave no state this code knows (no bus, an unknown word) — never taken for either.
+ * or null when it gave no state this code knows (no bus, an unknown word) — never taken for either.
  */
 type UnitState = 'running' | 'failed' | 'stopped';
-async function unitState(deps: UpdateDeps): Promise<{ state: UnitState | null; said: string }> {
-  const r = await deps.exec('systemctl', ['--user', 'is-active', unitName(deps.unit)]);
-  const s = r.stdout.trim();
-  const said = s || (r.stderr.trim() ? r.stderr.trim() : r.code === null ? 'systemctl did not run' : `exit ${r.code}, no output`);
-  if (['active', 'activating', 'reloading'].includes(s)) return { state: 'running', said };
-  if (s === 'failed') return { state: 'failed', said };
-  if (s === 'inactive' || s === 'deactivating') return { state: 'stopped', said };
-  return { state: null, said };
+async function unitState(deps: Deps): Promise<{ state: UnitState | null; asked: string; said: string }> {
+  const { state: s, asked, said } = await deps.service.activeState(deps.unit);
+  if (s === 'active' || s === 'activating' || s === 'reloading') return { state: 'running', asked, said };
+  if (s === 'failed') return { state: 'failed', asked, said };
+  if (s === 'inactive' || s === 'deactivating') return { state: 'stopped', asked, said };
+  return { state: null, asked, said };
 }
 
 /**
  * Why a restart here would be wrong, or null when it is right: the unit was running when the update started, but a
- * stop since (an operator's) stands, and no answer from systemd is not read as "running".
+ * stop since (an operator's) stands, and no answer from the manager is not read as "running".
  */
-async function noRestart(deps: UpdateDeps): Promise<string | null> {
-  const unit = unitName(deps.unit);
-  const { state, said } = await unitState(deps);
+async function noRestart(deps: Deps): Promise<string | null> {
+  const unit = deps.service.unitName(deps.unit);
+  const { state, asked, said } = await unitState(deps);
   if (state === 'running' || state === 'failed') return null;
-  return state === 'stopped' ? `${unit} is stopped and stays so` : `whether ${unit} is running cannot be told (systemctl --user is-active ${unit}: ${said}), so it is not restarted`;
+  return state === 'stopped' ? `${unit} is stopped and stays so` : `whether ${unit} is running cannot be told (${asked}: ${said}), so it is not restarted`;
 }
 
 /** `restart`, after clearing a start-rate limit a crash loop may have left (a unit in that state refuses a plain start). */
-async function restartUnit(deps: UpdateDeps): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  await deps.exec('systemctl', ['--user', 'reset-failed', unitName(deps.unit)]);
-  return deps.exec('systemctl', ['--user', 'restart', unitName(deps.unit)]);
-}
+const restartUnit = (deps: Deps): Promise<{ code: number | null; stdout: string; stderr: string }> => deps.service.resetAndRestart(deps.unit);
 
-/** The unit's main pid as systemd has it; 0 when it has none (stopped, or between restarts), null when systemctl fails. */
-async function unitMainPid(deps: UpdateDeps): Promise<number | null> {
-  const r = await deps.exec('systemctl', ['--user', 'show', '-p', 'MainPID', '--value', unitName(deps.unit)]);
-  const pid = Number(r.stdout.trim());
-  return r.code === 0 && Number.isInteger(pid) && pid >= 0 ? pid : null;
-}
+/** The unit's main pid as the manager has it; 0 when it has none (stopped, or between restarts), null when the query fails. */
+const unitMainPid = (deps: Deps): Promise<number | null> => deps.service.mainPid(deps.unit);
 
 /** True when `status` answers with `version` from the process that is the unit's main pid right now. */
-async function answersAs(deps: UpdateDeps, version: string): Promise<boolean> {
+async function answersAs(deps: Deps, version: string): Promise<boolean> {
   try {
     const s = await deps.status(3000);
     return s.version === version && typeof s.pid === 'number' && s.pid > 0 && s.pid === (await unitMainPid(deps));
@@ -453,7 +464,7 @@ async function answersAs(deps: UpdateDeps, version: string): Promise<boolean> {
  * installer's setup, or by systemd at boot for a run that finishes a stopped one, is not up the same instant); from
  * then on the watch is uninterrupted.
  */
-async function steady(deps: UpdateDeps, version: string, forMs: number, graceMs: number): Promise<boolean> {
+async function steady(deps: Deps, version: string, forMs: number, graceMs: number): Promise<boolean> {
   const started = deps.now();
   let pid: number | undefined;
   let since = started;
@@ -478,7 +489,7 @@ async function steady(deps: UpdateDeps, version: string, forMs: number, graceMs:
 }
 
 /** Waits up to `waitMs` for the daemon to answer as `version` from the unit's main pid. */
-async function comesBackAs(deps: UpdateDeps, version: string, waitMs: number): Promise<boolean> {
+async function comesBackAs(deps: Deps, version: string, waitMs: number): Promise<boolean> {
   const started = deps.now();
   for (;;) {
     if (await answersAs(deps, version)) return true;
@@ -488,12 +499,12 @@ async function comesBackAs(deps: UpdateDeps, version: string, waitMs: number): P
 }
 
 /** Downloads release `version`'s install.sh and runs it pinned to that version against this install. */
-async function install(deps: UpdateDeps, layout: { home: string; app: string }, releases: string, version: string, lockFd: number): Promise<number> {
-  const unit = unitName(deps.unit);
+async function install(deps: Deps, layout: { home: string; app: string }, releases: string, version: string, lockFd: number): Promise<number> {
+  const unit = deps.service.unitName(deps.unit);
   const byHand = byHandLine(installerCall(deps, layout.home, releases, version), releases, version);
-  const { state, said } = await unitState(deps);
+  const { state, asked, said } = await unitState(deps);
   if (state === null) {
-    deps.out(`cannot tell whether ${unit} is running (systemctl --user is-active ${unit}: ${said}); not updating — by hand:  ${byHand}`);
+    deps.out(`cannot tell whether ${unit} is running (${asked}: ${said}); not updating — by hand:  ${byHand}`);
     return 1;
   }
   if (state === 'stopped') {
@@ -501,7 +512,7 @@ async function install(deps: UpdateDeps, layout: { home: string; app: string }, 
     // an unattended update — it is updated once it runs again. (A `failed` one was running: a crash loop that hit its
     // start-rate limit; the update may be what repairs it.) A stop after this check is caught by that setup's
     // `--keep-stopped` and by the state read before each restart in finish().
-    deps.out(`${unit} is not running: an update starts the bridge, so nothing is installed while it is stopped — start it (systemctl --user start ${unit}) and the next run installs ${version}, or install by hand:  ${byHand}`);
+    deps.out(`${unit} is not running: an update starts the bridge, so nothing is installed while it is stopped — start it (${deps.service.hints.start(deps.unit)}) and the next run installs ${version}, or install by hand:  ${byHand}`);
     return 0;
   }
   const dir = deps.mkdtemp();
@@ -512,7 +523,7 @@ async function install(deps: UpdateDeps, layout: { home: string; app: string }, 
   }
 }
 
-async function installFrom(deps: UpdateDeps, layout: { home: string; app: string }, releases: string, version: string, dir: string, lockFd: number): Promise<number> {
+async function installFrom(deps: Deps, layout: { home: string; app: string }, releases: string, version: string, dir: string, lockFd: number): Promise<number> {
   const script = path.join(dir, 'install.sh');
   try {
     await deps.download(`${releases}/download/bridge-v${version}/install.sh`, script);
@@ -536,10 +547,11 @@ async function installFrom(deps: UpdateDeps, layout: { home: string; app: string
  * swap never happened; the old process left in place when it still answers with the old version (its setup will be run
  * again by the next run); the previous copy back in every other case, provided app.prev holds the version from before.
  */
-async function finish(deps: UpdateDeps, layout: { home: string; app: string }, pending: Pending, exit: Exit | undefined): Promise<number> {
-  const unit = unitName(deps.unit);
-  const journal = `journalctl --user -u ${unit} -n 30`; // the daemon's own log: why it does not start or stay up
-  const installerLog = `the installer's output above says why (from the timer:  journalctl --user -u ${unit.replace(/\.service$/, '')}-update.service -n 50)`;
+async function finish(deps: Deps, layout: { home: string; app: string }, pending: Pending, exit: Exit | undefined): Promise<number> {
+  const unit = deps.service.unitName(deps.unit);
+  const journal = deps.service.hints.logs(deps.unit, 30); // the daemon's own log: why it does not start or stay up
+  const where = deps.service.kind === 'launchd' ? 'log' : 'journal'; // what that command reads
+  const installerLog = `the installer's output above says why (from the timer:  ${deps.service.hints.updateLogs(deps.unit, 50)})`;
   const onDisk = packageVersion(layout.app);
   const releases = (deps.env['REMOTLY_RELEASE_URL'] ?? RELEASES_URL).replace(/\/+$/, '');
   const byHand = (version: string): string => byHandLine(installerCall(deps, layout.home, releases, version), releases, version);
@@ -563,11 +575,11 @@ async function finish(deps: UpdateDeps, layout: { home: string; app: string }, p
       // it since (a run that finishes a stopped one may be a day later): that stop stands.
       const why = await noRestart(deps);
       if (why !== null) {
-        deps.out(`the bridge is not answering and ${why} (systemctl --user start ${unit} starts the ${onDisk ?? 'installed'} copy)`);
+        deps.out(`the bridge is not answering and ${why} (${deps.service.hints.start(deps.unit)} starts the ${onDisk ?? 'installed'} copy)`);
         return 1;
       }
       const r = await restartUnit(deps);
-      deps.out(r.code === 0 ? `the bridge was not answering; restarted ${unit} on the ${onDisk ?? 'installed'} copy` : `the bridge is not answering and systemctl --user restart ${unit} failed: ${(r.stderr || r.stdout).trim() || 'no output'} — ${journal}`);
+      deps.out(r.code === 0 ? `the bridge was not answering; restarted ${unit} on the ${onDisk ?? 'installed'} copy` : `the bridge is not answering and ${deps.service.hints.restart(deps.unit)} failed: ${(r.stderr || r.stdout).trim() || 'no output'} — ${journal}`);
     }
     return 1;
   }
@@ -616,18 +628,18 @@ async function finish(deps: UpdateDeps, layout: { home: string; app: string }, p
   clearPending(layout.home); // the files are back; from here on only the restart can still be wrong, which the next run cannot fix better
   const why = await noRestart(deps);
   if (why !== null) {
-    deps.out(`${pending.from} is back in ${layout.app}; ${why} (systemctl --user start ${unit} starts it) — the ${pending.to} copy is in ${failed}`);
+    deps.out(`${pending.from} is back in ${layout.app}; ${why} (${deps.service.hints.start(deps.unit)} starts it) — the ${pending.to} copy is in ${failed}`);
     return 1;
   }
   const r = await restartUnit(deps);
   if (r.code !== 0) {
-    deps.out(`${pending.from} is back in ${layout.app} but systemctl --user restart ${unit} failed: ${(r.stderr || r.stdout).trim() || 'no output'}`);
+    deps.out(`${pending.from} is back in ${layout.app} but ${deps.service.hints.restart(deps.unit)} failed: ${(r.stderr || r.stdout).trim() || 'no output'}`);
     return 1;
   }
   if (await comesBackAs(deps, pending.from, ROLLBACK_WAIT_MS)) {
-    deps.out(`${pending.from} is running again; the failed ${pending.to} copy is in ${failed} and the reason in the journal:  ${journal}`);
+    deps.out(`${pending.from} is running again; the failed ${pending.to} copy is in ${failed} and the reason in the ${where}:  ${journal}`);
     return 1;
   }
-  deps.out(`${pending.from} did not come back either — look at the journal:  ${journal}`);
+  deps.out(`${pending.from} did not come back either — look at the ${where}:  ${journal}`);
   return 1;
 }

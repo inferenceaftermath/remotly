@@ -14,6 +14,12 @@ internal class DemoBridge {
     private val output = seed.getValue("lines").jsonObject.mapValues { (_, v) -> v.jsonArray.map { it.jsonPrimitive.content }.toMutableList() }.toMutableMap()
     private val input = mutableMapOf<String, String>()
     private val finishing = mutableMapOf<String, Int>()
+    /** Lines trimmed off the front of each pane's output, so a line keeps its scrollback number. */
+    private val trimmed = mutableMapOf<String, Int>()
+    /** Per pane, the number of the next scrollback line the phone has not been sent. */
+    private val sent = mutableMapOf<String, Int>()
+    /** The pane whose new scrollback lines are pushed (the last `scrollback` request, until another pane is watched). */
+    private var scrollbackPane: String? = null
     private var watched: String? = null
     private var cols = 80
     private var rows = 24
@@ -23,6 +29,7 @@ internal class DemoBridge {
 
     fun welcome(): String {
         watched = null
+        scrollbackPane = null
         return obj("t" to "welcome", "protocol" to 1,
             "host" to obj("name" to "Demo host", "flow_version" to "sample"),
             "device" to obj("id" to "demo-device", "name" to "This device"),
@@ -50,8 +57,24 @@ internal class DemoBridge {
             ?: return error("unknown_pane", "Sample session is no longer available.")
         val events = mutableListOf<JsonObject>()
         when (type) {
-            "watch" -> { watched = pane; events += ok("cols" to cols, "rows" to rows); events += frame(pane) }
-            "unwatch" -> { if (watched == pane) watched = null; events += ok() }
+            "watch" -> {
+                watched = pane
+                if (scrollbackPane != pane) scrollbackPane = null
+                events += ok("cols" to cols, "rows" to rows); events += frame(pane)
+            }
+            "unwatch" -> { if (watched == pane) watched = null; if (scrollbackPane == pane) scrollbackPane = null; events += ok() }
+            "scrollback" -> {
+                // The sample lines that have left the screen, as one copy under one epoch, like the bridge's (§4 `scrollback`).
+                val (base, lines) = copy(pane)
+                val next = base + lines.size
+                val from = m["from"]?.jsonPrimitive?.intOrNull
+                val resume = m.string("epoch") == EPOCH && from != null && from in base..next
+                val start = if (resume) from else base
+                if (!resume || start < next) events += scrollback(pane, start, lines.subList(start - base, lines.size), reset = !resume)
+                sent[pane] = next
+                scrollbackPane = pane
+                events += ok("epoch" to EPOCH, "next" to next, "max_lines" to MAX_LINES)
+            }
             "fit" -> {
                 cols = if (m["release"]?.jsonPrimitive?.booleanOrNull == true) 80 else (m["cols"]?.jsonPrimitive?.intOrNull ?: 80).coerceIn(20, 200)
                 rows = if (m["release"]?.jsonPrimitive?.booleanOrNull == true) 24 else (m["rows"]?.jsonPrimitive?.intOrNull ?: 24).coerceIn(5, 100)
@@ -65,7 +88,12 @@ internal class DemoBridge {
                     "lines" to all.takeLast(count).map { obj("runs" to runs(it)) }, "styles" to styles(),
                     "has_more" to (all.size > count), "scrollback" to maxOf(0, all.size - rows))
             }
-            "pane.close" -> { panes.remove(p); output.remove(pane); input.remove(pane); finishing.remove(pane); if (watched == pane) watched = null; events += ok(); events += snapshot() }
+            "pane.close" -> {
+                panes.remove(p); output.remove(pane); input.remove(pane); finishing.remove(pane); trimmed.remove(pane); sent.remove(pane)
+                if (watched == pane) watched = null
+                if (scrollbackPane == pane) scrollbackPane = null
+                events += ok(); events += snapshot()
+            }
             "approve", "choose" -> {
                 val prompt = m.string("prompt_id")
                 val approval = p["approval"]?.jsonObject
@@ -108,6 +136,7 @@ internal class DemoBridge {
             "scroll" -> events += ok()
             else -> return error("unsupported", "This feature needs a paired host and is unavailable in demo mode.")
         }
+        events += newScrollback()
         return events.map { it.toString() }
     }
 
@@ -122,6 +151,7 @@ internal class DemoBridge {
             events += snapshot()
             if (watched == pane) events += frame(pane)
         }
+        events += newScrollback()
         return events.map { it.toString() }
     }
 
@@ -139,9 +169,41 @@ internal class DemoBridge {
     }
     private fun append(pane: String, text: String) {
         output.getOrPut(pane) { mutableListOf() }.let { lines ->
-            lines += clean(text).split('\n'); while (lines.size > 200) lines.removeAt(0)
+            lines += clean(text).split('\n')
+            while (lines.size > 200) { lines.removeAt(0); trimmed[pane] = (trimmed[pane] ?: 0) + 1 }
         }
     }
+    /**
+     * The pane's scrollback copy: the number of its first line and its lines, the output lines wholly above the screen
+     * (and any sent before that a wider screen has taken back: the copy never shrinks, as on the bridge).
+     */
+    private fun copy(pane: String): Pair<Int, List<String>> {
+        val lines = output[pane].orEmpty()
+        fun rowsOf(line: String) = line.split('\n').sumOf { maxOf(1, (it.length + cols - 1) / cols) }
+        var screen = rows - (input[pane]?.let { rowsOf("> $it") } ?: 0)
+        var end = lines.size
+        while (end > 0 && screen > 0) screen -= rowsOf(lines[--end])
+        val base = trimmed[pane] ?: 0
+        end = maxOf(end, minOf(lines.size, (sent[pane] ?: 0) - base))
+        return base to lines.subList(0, end)
+    }
+
+    /** Lines of the subscribed pane that left the screen since it was last sent some. */
+    private fun newScrollback(): List<JsonObject> {
+        val pane = scrollbackPane ?: return emptyList()
+        val (base, lines) = copy(pane)
+        val from = maxOf(sent[pane] ?: 0, base)
+        if (base + lines.size <= from) return emptyList()
+        sent[pane] = base + lines.size
+        return listOf(scrollback(pane, from, lines.subList(from - base, lines.size), reset = false))
+    }
+
+    private fun scrollback(pane: String, start: Int, lines: List<String>, reset: Boolean): JsonObject = obj(
+        "t" to "scrollback", "pane" to pane, "epoch" to EPOCH, "start" to start,
+        "lines" to lines.map { obj("runs" to runs(it)) }, "styles" to styles(),
+        *(if (reset) arrayOf<Pair<String, Any?>>("reset" to true) else emptyArray()),
+    )
+
     private fun wrapped(pane: String): List<String> =
         (output[pane].orEmpty() + listOfNotNull(input[pane]?.let { "> $it" })).flatMap { it.split('\n') }.flatMap { it.chunked(cols).ifEmpty { listOf("") } }
     private fun frame(pane: String): JsonObject = obj("t" to "frame", "pane" to pane, "rev" to ++revision,
@@ -161,5 +223,10 @@ internal class DemoBridge {
         is Number -> JsonPrimitive(value)
         is List<*> -> JsonArray(value.map(::json))
         else -> error("Unsupported demo value")
+    }
+
+    private companion object {
+        const val EPOCH = "demo"
+        const val MAX_LINES = 10_000
     }
 }

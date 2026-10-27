@@ -1,6 +1,6 @@
 {
   "name": "remotly-bridge",
-  "version": "0.2.0",
+  "version": "0.5.0",
   "private": true,
   "license": "Apache-2.0",
   "description": "Remotly bridge: mirrors herdr panes to the Remotly phone apps",
@@ -19,12 +19,12 @@
   },
   "dependencies": {
     "qrcode": "^1.5.4",
-    "ws": "^8.18.0"
+    "ws": "^8.22.0"
   },
   "devDependencies": {
-    "@types/node": "^24.13.4",
+    "@types/node": "^24.19.2",
     "@types/qrcode": "^1.5.5",
-    "@types/ws": "^8.5.13",
+    "@types/ws": "^8.18.2",
     "typescript": "^7.0.2"
   }
 }

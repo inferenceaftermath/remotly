@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # Build what install.sh downloads: dist/remotly-bridge-<version>.tar.gz (sources + production node_modules, all pure
-# JS, so one tarball serves every Linux architecture), SHA256SUMS and a copy of install.sh. Run by release.yml.
+# JS, so one tarball serves every Linux and macOS architecture), SHA256SUMS and a copy of install.sh. Run by release.yml
+# and by the end-to-end check (ci/e2e). Needs GNU tar (`gtar` from Homebrew on macOS) for the reproducibility flags.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if tar --version 2>/dev/null | grep -q 'GNU tar'; then TAR=tar
+elif command -v gtar >/dev/null 2>&1; then TAR=gtar
+else echo "package.sh: GNU tar is needed (on macOS: brew install gnu-tar)" >&2; exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then SHA256="sha256sum"; else SHA256="shasum -a 256"; fi
 ver="$(node -p "require('$here/package.json').version")"
 name="remotly-bridge-$ver"
 dist="$here/dist"; stage="$dist/$name"
@@ -13,10 +19,10 @@ cp "$here/../LICENSE" "$here/../NOTICE" "$stage/"
 (cd "$stage" && npm ci --omit=dev --no-audit --no-fund --ignore-scripts --silent)
 # Reproducible enough to diff two builds of one commit: sorted entries, neutral owner, commit time, no gzip name/time.
 epoch="${SOURCE_DATE_EPOCH:-$(git -C "$here" log -1 --format=%ct 2>/dev/null || date +%s)}"
-tar -C "$dist" --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$epoch" -cf - "$name" | gzip -n -9 > "$dist/$name.tar.gz"
+$TAR -C "$dist" --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$epoch" -cf - "$name" | gzip -n -9 > "$dist/$name.tar.gz"
 rm -rf "$stage"
 cp "$here/../install.sh" "$dist/install.sh"
-(cd "$dist" && sha256sum "$name.tar.gz" install.sh > SHA256SUMS)
+(cd "$dist" && $SHA256 "$name.tar.gz" install.sh > SHA256SUMS)
 for f in LICENSE NOTICE src/main.ts src/setup.ts src/update.ts; do
   tar -tzf "$dist/$name.tar.gz" "$name/$f" >/dev/null 2>&1 || { echo "package.sh: $f missing from $name.tar.gz" >&2; exit 1; }
 done

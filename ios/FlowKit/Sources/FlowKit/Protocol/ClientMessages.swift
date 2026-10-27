@@ -33,6 +33,8 @@ public enum ClientMessage: Sendable {
     case watch(id: String, pane: String, zoom: Bool = false)
     case unwatch(id: String, pane: String)
     case history(id: String, pane: String, lines: Int, unwrapped: Bool)
+    /// The pane's history from the bridge's copy; `epoch` + `from` (the first line number this device lacks) ask only for what is new (§4 `scrollback`).
+    case scrollback(id: String, pane: String, epoch: String?, from: Int?)
     case keys(id: String, pane: String, keys: [String])
     /// Touch scrolling forwarded to the program: `wheel` = SGR mouse-wheel reports, `arrows` = Up/Down keys (§4 `scroll`).
     case scroll(id: String, pane: String, direction: String, lines: Int, mode: String, col: Int, row: Int)
@@ -65,6 +67,7 @@ public enum ClientMessage: Sendable {
         case .watch: return "watch"
         case .unwatch: return "unwatch"
         case .history: return "history"
+        case .scrollback: return "scrollback"
         case .keys: return "keys"
         case .scroll: return "scroll"
         case .paneCreate: return "pane.create"
@@ -114,6 +117,11 @@ extension ClientMessage: Encodable {
             try c.encode(pane, forKey: "pane")
             try c.encode(min(max(lines, 1), 999), forKey: "lines")
             if unwrapped { try c.encode(true, forKey: "unwrapped") }
+        case .scrollback(let id, let pane, let epoch, let from):
+            try c.encode(id, forKey: "id")
+            try c.encode(pane, forKey: "pane")
+            if let epoch { try c.encode(epoch, forKey: "epoch") }
+            if let from { try c.encode(from, forKey: "from") }
         case .keys(let id, let pane, let keys):
             try c.encode(id, forKey: "id")
             try c.encode(pane, forKey: "pane")

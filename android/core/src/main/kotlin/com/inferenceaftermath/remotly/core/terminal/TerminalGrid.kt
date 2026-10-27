@@ -38,6 +38,9 @@ class Row private constructor(val cells: Array<Cell>, val isEmpty: Boolean) {
     companion object {
         fun blank(cols: Int) = Row(Array(cols) { Cell.BLANK }, true)
 
+        /** A row over [cells] as they are (the history wrapper fills them itself). */
+        internal fun of(cells: Array<Cell>, isEmpty: Boolean) = Row(cells, isEmpty)
+
         fun fromRuns(runs: List<WireRun>, cols: Int): Row {
             if (runs.isEmpty() || cols <= 0) return blank(maxOf(cols, 0))
             val cells = Array(cols) { Cell.BLANK }
@@ -65,7 +68,7 @@ class Row private constructor(val cells: Array<Cell>, val isEmpty: Boolean) {
         }
 
         /** Exactly `w` one-cell strings: pad with blanks, or fold surplus graphemes into the last cell. */
-        private fun fit(g: List<String>, w: Int): List<String> = when {
+        internal fun fit(g: List<String>, w: Int): List<String> = when {
             g.size == w -> g
             g.size < w -> g + List(w - g.size) { " " }
             else -> g.subList(0, w - 1) + g.subList(w - 1, g.size).joinToString("")
@@ -82,6 +85,8 @@ class StyleTable {
     }
 
     operator fun get(id: Int): Style = if (id == 0) Style.DEFAULT else styles[id] ?: Style.DEFAULT
+
+    internal fun put(id: Int, style: Style) { styles[id] = style }
 
     fun reset() = styles.clear()
 

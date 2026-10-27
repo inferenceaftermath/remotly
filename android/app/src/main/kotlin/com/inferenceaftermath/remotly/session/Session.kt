@@ -34,6 +34,7 @@ import com.inferenceaftermath.remotly.core.pairing.PairingClient
 import com.inferenceaftermath.remotly.core.pairing.QrPayload
 import com.inferenceaftermath.remotly.core.protocol.ClientInfo
 import com.inferenceaftermath.remotly.core.protocol.Snapshot
+import com.inferenceaftermath.remotly.core.terminal.ScrollbackLines
 import com.inferenceaftermath.remotly.core.terminal.TerminalGrid
 import com.inferenceaftermath.remotly.data.HostStore
 import com.inferenceaftermath.remotly.push.Notifications
@@ -97,6 +98,10 @@ class Session(private val app: Application, val store: HostStore) {
     val grid: StateFlow<TerminalGrid?> = _connection
         .flatMapLatest { it?.grid ?: flowOf(null) }
         .stateIn(scope, SharingStarted.Eagerly, null)
+    /** History of the watched pane (the bridge's scrollback copy, or a legacy `history` read); check its `pane`. */
+    val scrollback: StateFlow<ScrollbackLines?> = _connection
+        .flatMapLatest { it?.scrollback ?: flowOf(null) }
+        .stateIn(scope, SharingStarted.Eagerly, null)
     val herdrUp: StateFlow<Boolean> = _connection
         .flatMapLatest { it?.herdrUp ?: flowOf(true) }
         .stateIn(scope, SharingStarted.Eagerly, true)
@@ -117,6 +122,8 @@ class Session(private val app: Application, val store: HostStore) {
     val notifyOnPrompt: StateFlow<Boolean> = store.notifyOnPrompt.stateIn(scope, SharingStarted.Eagerly, true)
     val requireUnlock: StateFlow<Boolean> = store.requireUnlock.stateIn(scope, SharingStarted.Eagerly, true)
     val liveStatus: StateFlow<Boolean> = store.liveStatus.stateIn(scope, SharingStarted.Eagerly, true)
+    /** Settings › Appearance › Theme as its stored key (`ThemeChoice.of` reads it); null until one is chosen. */
+    val theme: StateFlow<String?> = store.theme.stateIn(scope, SharingStarted.Eagerly, null)
 
     /**
      * Panes this phone asked to be told about when their agent finishes. The bridge is the source of truth:
@@ -257,6 +264,10 @@ class Session(private val app: Application, val store: HostStore) {
 
     fun setZoomOnDesktop(on: Boolean) {
         scope.launch { store.setZoomOnDesktop(on) }
+    }
+
+    fun setTheme(key: String) {
+        scope.launch { store.setTheme(key) }
     }
 
     fun setNotifyOnPrompt(on: Boolean) {

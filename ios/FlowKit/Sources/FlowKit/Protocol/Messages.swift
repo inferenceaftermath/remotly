@@ -80,6 +80,34 @@ public struct HistoryMessage: Decodable, Sendable {
     }
 }
 
+/// Lines of a pane's history from the bridge's copy (§6 `scrollback`): logical lines, oldest first, `lines[0]` numbered
+/// `start` within `epoch`. No `id`: the messages answering a `scrollback` request arrive before its `ok`.
+public struct ScrollbackMessage: Decodable, Sendable {
+    public var pane: String
+    public var epoch: String
+    public var start: Int
+    public var lines: [HistoryLine]
+    public var styles: [String: Style]
+    /// Drop every line held for the pane and take these, from `start`, under `epoch`.
+    public var reset: Bool
+
+    enum CodingKeys: String, CodingKey { case pane, epoch, start, lines, styles, reset }
+
+    public init(pane: String, epoch: String, start: Int, lines: [HistoryLine], styles: [String: Style] = [:], reset: Bool = false) {
+        self.pane = pane; self.epoch = epoch; self.start = start; self.lines = lines; self.styles = styles; self.reset = reset
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        pane = try c.decode(String.self, forKey: .pane)
+        epoch = try c.decodeIfPresent(String.self, forKey: .epoch) ?? ""
+        start = try c.decodeIfPresent(Int.self, forKey: .start) ?? 0
+        lines = try c.decodeIfPresent([HistoryLine].self, forKey: .lines) ?? []
+        styles = try c.decodeIfPresent([String: Style].self, forKey: .styles) ?? [:]
+        reset = try c.decodeIfPresent(Bool.self, forKey: .reset) ?? false
+    }
+}
+
 // MARK: - Approvals, host state, welcome, ok, error
 
 public struct ApprovalOutcome: RawRepresentable, Codable, Hashable, Sendable {
@@ -156,7 +184,8 @@ public struct NotifyStateMessage: Decodable, Hashable, Sendable {
     public var done: Bool
 }
 
-/// `ok` replies. `watch` → `cols`/`rows`; `zoom` → `zoomed`; `pane.create` → `pane`/`tab`; `notify` → `done`; other result fields are ignored.
+/// `ok` replies. `watch` → `cols`/`rows`; `zoom` → `zoomed`; `pane.create` → `pane`/`tab`; `notify` → `done`;
+/// `scrollback` → `epoch`/`next`/`maxLines`; other result fields are ignored.
 public struct OKMessage: Decodable, Sendable {
     public var id: String
     public var cols: Int?
@@ -165,8 +194,11 @@ public struct OKMessage: Decodable, Sendable {
     public var pane: String?
     public var tab: String?
     public var done: Bool?
+    public var epoch: String?
+    public var next: Int?
+    public var maxLines: Int?
 
-    enum CodingKeys: String, CodingKey { case id, cols, rows, zoomed, pane, tab, done }
+    enum CodingKeys: String, CodingKey { case id, cols, rows, zoomed, pane, tab, done, epoch, next, maxLines = "max_lines" }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -177,6 +209,9 @@ public struct OKMessage: Decodable, Sendable {
         pane = try c.decodeIfPresent(String.self, forKey: .pane)
         tab = try c.decodeIfPresent(String.self, forKey: .tab)
         done = try c.decodeIfPresent(Bool.self, forKey: .done)
+        epoch = try c.decodeIfPresent(String.self, forKey: .epoch)
+        next = try c.decodeIfPresent(Int.self, forKey: .next)
+        maxLines = try c.decodeIfPresent(Int.self, forKey: .maxLines)
     }
 }
 
@@ -228,6 +263,7 @@ public enum ServerMessage: Sendable {
     case paneStatus(PaneStatus)
     case frame(Frame)
     case history(HistoryMessage)
+    case scrollback(ScrollbackMessage)
     case approvalResult(ApprovalResult)
     case notifyState(NotifyStateMessage)
     case herdr(HerdrStateMessage)
@@ -247,6 +283,7 @@ extension ServerMessage: Decodable {
         case "pane.status": self = .paneStatus(try PaneStatus(from: decoder))
         case "frame": self = .frame(try Frame(from: decoder))
         case "history": self = .history(try HistoryMessage(from: decoder))
+        case "scrollback": self = .scrollback(try ScrollbackMessage(from: decoder))
         case "approval.result": self = .approvalResult(try ApprovalResult(from: decoder))
         case "notify.state": self = .notifyState(try NotifyStateMessage(from: decoder))
         case "herdr": self = .herdr(try HerdrStateMessage(from: decoder))

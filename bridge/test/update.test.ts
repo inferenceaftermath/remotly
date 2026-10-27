@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 import type { ControlStatus } from '../src/control.ts';
+import { launchdManager } from '../src/platform/service.ts';
 import { ANSWER_WAIT_MS, LOCK_TAKEN_EXIT, RELEASES_URL, RELOCKED_ENV, STABLE_MS, byHandLine, compareVersions, inheritedLockFd, installLayout, installedVersion, installerCall, launcherDir, lockPath, packageVersion, pendingFile, readPending, runUpdate, versionFromTag, type UpdateDeps } from '../src/update.ts';
 
 let dir: string;
@@ -328,6 +329,8 @@ test("installerCall and byHandLine: what the installer is told about this instal
   );
   // The herdr selection lives in the unit's environment alone when config.json does not name it: a socket path travels too.
   assert.equal(installerCall({ ...deps, env: { HERDR_SOCKET_PATH: '/run/user/1000/herdr/main.sock' } }, r.home, RELEASES_URL, '0.2.0').env['HERDR_SOCKET_PATH'], '/run/user/1000/herdr/main.sock');
+  // A tailscale CLI off PATH (REMOTLY_TAILSCALE in the unit's environment) stays known to the installer's setup, which renders the units again.
+  assert.equal(installerCall({ ...deps, env: { REMOTLY_TAILSCALE: '/Applications/Tailscale.app/Contents/MacOS/Tailscale' } }, r.home, RELEASES_URL, '0.2.0').env['REMOTLY_TAILSCALE'], '/Applications/Tailscale.app/Contents/MacOS/Tailscale');
   // A private Node is the installer's to refresh (no REMOTLY_NODE); no launcher on PATH, no REMOTLY_BIN_DIR; the unit only when the environment names one.
   const priv = installerCall({ env: {}, pathDirs: ['/nowhere'], mainPath: r.mainPath, nodePath: path.join(r.home, 'node', 'bin', 'node'), unit: 'remotly-bridge' }, r.home, RELEASES_URL, '0.3.0');
   assert.deepEqual(priv, { env: { REMOTLY_VERSION: '0.3.0', REMOTLY_HOME: r.home, REMOTLY_RELEASE_URL: RELEASES_URL }, args: ['--no-pair', '--no-wait', '--keep-mode', '--keep-stopped'] });
@@ -705,4 +708,45 @@ test('rollback whose restart fails, or whose previous copy does not come back ei
   assert.equal(await runUpdate(dead.deps), 1);
   assert.match(dead.out.join('\n'), /0\.1\.0 did not come back either — look at the journal/);
   clean(dead.home);
+});
+
+test('on macOS the re-run is under perl\'s flock (no flock(1), no /proc): the same exit codes, messages that name perl and REMOTLY_UPDATE_LOCK_FD', async () => {
+  const outer = makeDeps({ heldLockFd: () => null, platform: 'darwin', env: { HOME: '/Users/alice' } });
+  assert.equal(await runUpdate(outer.deps), 0);
+  assert.equal(outer.relocks.length, 1);
+  const r = outer.relocks[0]!;
+  assert.equal(r.cmd, 'perl');
+  assert.equal(r.args[0], '-e');
+  assert.deepEqual(r.args.slice(2), [lockPath(outer.home), String(LOCK_TAKEN_EXIT), '/usr/bin/node', outer.mainPath, 'update']);
+  assert.equal(r.env[RELOCKED_ENV], '1');
+  const none = makeDeps({ heldLockFd: () => null, platform: 'darwin', relock: async () => ({ code: null, signal: null, error: 'spawn perl ENOENT' }) });
+  assert.equal(await runUpdate(none.deps), 1);
+  assert.match(none.out.join('\n'), /perl is needed to run one update at a time/);
+  const odd = makeDeps({ heldLockFd: () => null, platform: 'darwin', relock: async () => ({ code: 66, signal: null }) });
+  assert.equal(await runUpdate(odd.deps), 1);
+  assert.match(odd.out.join('\n'), /perl could not run the update \(exit 66; its message is above\)/);
+  const blind = makeDeps({ heldLockFd: () => null, platform: 'darwin', env: { [RELOCKED_ENV]: '1' } });
+  assert.equal(await runUpdate(blind.deps), 1);
+  assert.match(blind.out.join('\n'), /re-run under perl, but no descriptor open on .*update\.lock was inherited \(is REMOTLY_UPDATE_LOCK_FD set to it\?\)/);
+  const unconfirmed = makeDeps({ platform: 'darwin', confirmLock: async () => ({ code: null, signal: null, error: 'spawn perl ENOENT' }) });
+  assert.equal(await runUpdate(unconfirmed.deps), 1);
+  assert.match(unconfirmed.out.join('\n'), /could not confirm the lock on .*update\.lock \(perl could not be started \(spawn perl ENOENT\)\)/);
+});
+
+test('with a launchd manager the unit questions and the by-hand lines are launchctl\'s', async () => {
+  // A stopped agent (booted out, plist present): nothing is installed, and the start line is a bootstrap.
+  const unitDir = path.join(dir, 'LaunchAgents');
+  fs.mkdirSync(unitDir, { recursive: true });
+  fs.writeFileSync(path.join(unitDir, 'dev.remotly.remotly-bridge.plist'), 'plist');
+  const notLoaded = { code: 113, stdout: '', stderr: 'Could not find service "dev.remotly.remotly-bridge" in domain for user gui: 501' };
+  const stopped = makeDeps({ platform: 'darwin', onExec: (cmd, args) => (cmd === 'launchctl' && args[0] === 'print' ? notLoaded : undefined) });
+  stopped.deps.service = launchdManager({ exec: stopped.deps.exec, unitDir, user: 'alice', uid: 501, home: dir });
+  assert.equal(await runUpdate(stopped.deps), 0);
+  assert.match(stopped.out.join('\n'), new RegExp(`dev\\.remotly\\.remotly-bridge is not running: an update starts the bridge, so nothing is installed while it is stopped — start it \\(launchctl bootstrap gui/501 ${unitDir}/dev\\.remotly\\.remotly-bridge\\.plist\\)`));
+  assert.equal(stopped.installs.length, 0);
+  // No launchctl at all: no verdict, nothing installed.
+  const blind = makeDeps({ platform: 'darwin', onExec: (cmd) => (cmd === 'launchctl' ? { code: null, stdout: '', stderr: 'spawn launchctl ENOENT' } : undefined) });
+  blind.deps.service = launchdManager({ exec: blind.deps.exec, unitDir, user: 'alice', uid: 501, home: dir });
+  assert.equal(await runUpdate(blind.deps), 1);
+  assert.match(blind.out.join('\n'), /cannot tell whether dev\.remotly\.remotly-bridge is running \(launchctl print gui\/501\/dev\.remotly\.remotly-bridge: spawn launchctl ENOENT\); not updating/);
 });

@@ -9,6 +9,7 @@ import type { HerdrLink } from '../herdr/link.ts';
 import type { AgentStatus, PaneAgentStatusChangedEvent, PaneInfo, PaneReadResult, SessionSnapshot } from '../herdr/types.ts';
 import type { Logger } from '../log.ts';
 import type { PaneStatusMessage, SnapshotMessage, SnapshotPane } from './protocol.ts';
+import { ScrollbackKeeper } from './scrollback.ts';
 
 export interface HubDeps {
   link: HerdrLink;
@@ -19,6 +20,10 @@ export interface HubDeps {
   fitter?: PaneFitter;
   /** Override for tests; default drives herdr `pane.zoom`. */
   zoomer?: PaneZoomer;
+  /** Lines of scrollback kept per pane (`scrollback.max_lines`); default 10 000. */
+  scrollbackLines?: number;
+  /** Override for tests; default reads herdr through `link`. Started by `main` (`scrollback.start()`). */
+  scrollback?: ScrollbackKeeper;
 }
 
 export interface Viewer {
@@ -73,6 +78,8 @@ export class Hub extends EventEmitter {
   readonly fitter: PaneFitter;
   /** Desktop zooms held for viewing phones (`watch {zoom:true}`). */
   readonly zoomer: PaneZoomer;
+  /** The bridge's copy of every pane's scrollback (`scrollback`). */
+  readonly scrollback: ScrollbackKeeper;
   readonly hostName: string;
   readonly version: string;
   private readonly log: Logger;
@@ -113,6 +120,10 @@ export class Hub extends EventEmitter {
     this.version = deps.version;
     this.fitter = deps.fitter ?? new PaneFitter({ ttyOf: (pane) => this.link.ttyOf(pane), log: this.log });
     this.zoomer = deps.zoomer ?? new PaneZoomer({ request: (method, params) => this.link.request(method, params), log: this.log });
+    this.scrollback =
+      deps.scrollback ??
+      new ScrollbackKeeper({ request: (method, params) => this.link.request(method, params), isUp: () => this.link.isUp, log: this.log, maxLines: deps.scrollbackLines ?? 10_000 });
+    this.scrollback.setMaxListeners(0); // one listener per connected phone
     this.link.on('snapshot', (snap: SessionSnapshot) => {
       this.queueSnapshot(snap);
       void this.fitter.onLayoutChanged();

@@ -1,4 +1,4 @@
-// Single observable app state: paired host, connection, snapshot, watched pane grid, history, approvals,
+// Single observable app state: paired host, connection, snapshot, watched pane grid and history, approvals,
 // "tell me when it's done" arming, push registration and Live Activity tokens. Everything here runs on the
 // main actor; the networking actor (`FlowConnection`) publishes events that are folded in by `handle(_:)`.
 import ActivityKit
@@ -48,9 +48,7 @@ final class AppModel {
         hostInfo = nil
         deviceInfo = nil
         grid = TerminalGrid()
-        history = nil
-        historyHasMore = false
-        isLoadingHistory = false
+        resetScrollback(forgetCopies: true) // the demo's copies are not the host's, nor the other way round
         noScrollbackHint = false
         fitPhase = .none
         paneAlt = [:]
@@ -89,10 +87,29 @@ final class AppModel {
     // Terminal
     private(set) var watchedPane: String?
     private(set) var grid = TerminalGrid()
-    private(set) var history: TerminalGrid?
-    private(set) var historyHasMore = false
-    private(set) var isLoadingHistory = false
-    /// Shown briefly when a pull for scrollback finds that herdr holds nothing above the screen (alternate-screen program, fresh shell).
+    /// The watched pane's history rows, shown above the live grid: the bridge's scrollback copy wrapped to `grid.cols`
+    /// (protocol §4 `scrollback`), or one `history` read from a bridge without it.
+    private(set) var history = WrappedHistory()
+    /// Styles of the history rows (their own ids: the copies outlive the connection, wire style ids do not).
+    @ObservationIgnored private(set) var historyStyles = HistoryStyles()
+    /// The watched pane's history has arrived, so a pull past the top with no rows can say there is none.
+    @ObservationIgnored private var historyLoaded = false
+    /// The scrollback copies of the panes viewed lately in this app session (cleared with the host or demo mode).
+    @ObservationIgnored private var scrollbackStores = ScrollbackStores()
+    /// The `scrollback` (or fallback `history`) request in flight for the watched pane, by sequence number; a resync
+    /// wanted once it ends; resyncs in a row whose `ok` still disagreed (capped, so a confused bridge cannot loop us).
+    @ObservationIgnored private var scrollbackRequest: Int?
+    @ObservationIgnored private var scrollbackRequestSeq = 0
+    /// `scrollback` answers under way, counted from the connection's events in order with their lines: while any is,
+    /// lines added are older output (`WrappedHistory.answering`), not lines that just left the screen.
+    @ObservationIgnored private var answersArriving = 0
+    @ObservationIgnored private var scrollbackResyncWanted = false
+    @ObservationIgnored private var scrollbackResyncs = 0
+    /// This socket's bridge answered `scrollback` with `unsupported`: each watch reads one `history` instead.
+    @ObservationIgnored private var scrollbackUnsupported = false
+    /// herdr's screen rows for the watched pane, from the `watch` reply (where the `history` fallback's screen starts).
+    @ObservationIgnored private var watchedScreenRows = 0
+    /// Shown briefly when a pull past the top finds no history (alternate-screen program, fresh shell).
     private(set) var noScrollbackHint = false
     private var noScrollbackHintTask: Task<Void, Never>?
     /// "Fitting…" on the pane view's pill: from the moment a `fit` is sent until the first frame after its reply.
@@ -109,7 +126,6 @@ final class AppModel {
     /// remembered for the next reconnect. Assigned synchronously here so intent order matches the user's action order.
     private var watchIntent = 0
     private var fitIntent = 0
-    private var historyLines = 0
     /// Per pane, persisted in UserDefaults; panes not listed use `.auto`.
     private var scrollModes: [String: ScrollMode] = [:]
     private var demoScrollModes: [String: ScrollMode] = [:]
@@ -254,6 +270,7 @@ final class AppModel {
             deviceInfo = welcome.device
             herdrUp = true
             grid.resetStyles() // style ids are per connection
+            scrollbackUnsupported = false // the bridge may have been updated
             registeredPushToken = nil
             pushRegistered = false
             syncedActivityTokens = []
@@ -269,11 +286,30 @@ final class AppModel {
             grid.apply(frame: frame)
             if fitPhase == .replied { fitPhase = .none } // the first frame drawn at the new size
             if let alt = frame.alt, paneAlt[frame.pane] != alt {
-                paneAlt[frame.pane] = alt
-                if effectiveScrollMode(for: frame.pane) != .scrollback { history = nil } // swipes now go to the program
+                paneAlt[frame.pane] = alt // in Automatic mode swipes now go to the program, and the history is hidden
+            }
+            if history.cols != grid.cols, !history.isUnwrapped, let store = scrollbackStores[frame.pane] {
+                history.rewrap(from: store, cols: grid.cols) // the live grid's width changed (a fit, a resize on the desktop)
             }
         case .history:
             break // history arrives as a request reply
+        case .scrollback(let message):
+            applyScrollback(message)
+        case .scrollbackSynced(let pane, let ok):
+            answerEnded()
+            scrollbackSynced(pane: pane, ok: ok)
+        case .scrollbackAnswer(_, let arriving):
+            if arriving {
+                answersArriving += 1
+                history.answering = true
+            } else {
+                answerEnded()
+            }
+        case .rewatched(let pane):
+            // A new socket after a reconnect: the request on the old one is gone; ask for what was missed meanwhile.
+            guard pane == watchedPane else { break }
+            scrollbackRequest = nil
+            loadScrollback(pane)
         case .approvalResult(let result):
             approvalResults[result.promptId] = result
             if approvalInFlight == result.promptId { approvalInFlight = nil }
@@ -333,6 +369,7 @@ final class AppModel {
                                 token: response.token, deviceId: response.deviceId)
         guard !isDemo, modeEpoch == epoch else { throw FlowError.superseded }
         try hostStore.save(paired)
+        resetScrollback(forgetCopies: true) // another bridge numbers its lines its own way
         host = paired
         lastError = nil
         connect()
@@ -355,6 +392,7 @@ final class AppModel {
         eventTask = nil
         connection = nil
         do { try hostStore.delete() } catch { lastError = error.localizedDescription }
+        resetScrollback(forgetCopies: true)
         host = nil
         snapshot = nil
         hostInfo = nil
@@ -368,7 +406,6 @@ final class AppModel {
         }
         navigationPath = []
         watchedPane = nil
-        history = nil
         connectionState = .idle
         registeredPushToken = nil
     }
@@ -388,9 +425,11 @@ final class AppModel {
         zoomWhileViewing = zoom
         if watchedPane != pane {
             grid.clearContents()
-            history = nil
             fitPhase = .none
             paneAlt[pane] = nil // the first frames say whether a full-screen program has it now
+            resetScrollback()
+            // The copy kept from an earlier visit shows at once; the request after the watch brings what is new.
+            if let store = scrollbackStores[pane] { history.reset(from: store, cols: grid.cols) }
         }
         watchedPane = pane
         if !isDemo { Task { await FlowNotifications.removeDelivered(forPane: pane) } } // the user is looking at it now
@@ -410,7 +449,11 @@ final class AppModel {
         for attempt in 0..<5 {
             guard self.connection === connection, watchedPane == pane else { return }
             do {
-                _ = try await connection.watch(pane: pane, zoom: zoomWhileViewing, intent: intent)
+                let size = try await connection.watch(pane: pane, zoom: zoomWhileViewing, intent: intent)
+                if self.connection === connection, watchedPane == pane {
+                    watchedScreenRows = size.rows
+                    loadScrollback(pane)
+                }
                 return
             } catch let error as FlowError {
                 if case .superseded = error { return } // a newer watch/stop replaced this one; leave the pane to it
@@ -438,7 +481,7 @@ final class AppModel {
         watchIntent += 1
         let intent = watchIntent
         watchedPane = nil
-        history = nil
+        resetScrollback()
         fitPhase = .none
         guard let connection else { return }
         Task {
@@ -466,10 +509,11 @@ final class AppModel {
             guard !Task.isCancelled, self.connection === connection, self.watchedPane == pane else { return }
             self.fitPhase = .sent
             do {
-                _ = try await connection.fit(pane: pane, cols: cols, rows: rows, intent: intent)
+                let size = try await connection.fit(pane: pane, cols: cols, rows: rows, intent: intent)
                 // Cancelled while waiting (a newer fit, or fit switched off): the reply is stale, say nothing.
                 guard !Task.isCancelled, self.connection === connection, self.watchedPane == pane else { return }
                 self.fitPhase = .replied
+                self.rereadFallbackHistory(pane, rows: size.rows, connection: connection)
                 // The pill clears on the next frame; a program that does not redraw on the resize would leave it
                 // stuck, so give up waiting after 3 s (same on Android).
                 try? await Task.sleep(for: .seconds(3))
@@ -487,7 +531,18 @@ final class AppModel {
         guard let pane = watchedPane, let connection else { return }
         fitIntent += 1
         let intent = fitIntent
-        Task { try? await connection.releaseFit(pane: pane, intent: intent) }
+        Task {
+            guard (try? await connection.releaseFit(pane: pane, intent: intent)) != nil else { return }
+            guard self.connection === connection, self.watchedPane == pane else { return }
+            self.rereadFallbackHistory(pane, rows: nil, connection: connection)
+        }
+    }
+
+    /// A bridge without `scrollback` re-wrapped the pane to another size: its one `history` read is read again at it.
+    private func rereadFallbackHistory(_ pane: String, rows: Int?, connection: FlowConnection) {
+        guard scrollbackUnsupported else { return }
+        if let rows, rows > 0 { watchedScreenRows = rows }
+        loadFallbackHistory(pane, connection: connection)
     }
 
     // MARK: Input
@@ -600,32 +655,147 @@ final class AppModel {
     /// A reply typed into a notification armed the pane again.
     func onArmedFromNotification(_ pane: String) { notifyDone.insert(pane) }
 
-    // MARK: History (scrollback)
+    // MARK: History (the bridge's scrollback copy, protocol §4 `scrollback`)
 
-    func loadHistory(lines: Int = 500) {
-        guard let connection, let pane = watchedPane, !isLoadingHistory else { return }
-        isLoadingHistory = true
-        let count = min(max(lines, 1), 999)
+    /// Forgets the watched pane's history rows and any request for them; `forgetCopies` also drops every pane's copy
+    /// (another bridge, or demo mode in or out).
+    private func resetScrollback(forgetCopies: Bool = false) {
+        history.clear()
+        historyLoaded = false
+        scrollbackRequest = nil
+        scrollbackResyncWanted = false
+        scrollbackResyncs = 0
+        if forgetCopies {
+            answersArriving = 0 // the old connection's answers end with it
+            scrollbackStores.removeAll()
+            historyStyles = HistoryStyles()
+            scrollbackUnsupported = false
+        }
+        history.answering = answersArriving > 0 // an answer still arriving (another pane's) ends through its own event
+    }
+
+    /// After every `watch` of the pane on screen succeeds (the first and each one after a reconnect): the lines its copy
+    /// lacks (all of them without one, or for a `resync`), or, from a bridge without `scrollback`, one `history` read.
+    private func loadScrollback(_ pane: String, resync: Bool = false) {
+        guard let connection, watchedPane == pane else { return }
+        if scrollbackUnsupported {
+            loadFallbackHistory(pane, connection: connection)
+            return
+        }
+        if scrollbackRequest != nil {
+            if resync { scrollbackResyncWanted = true } // after the answer under way
+            return
+        }
+        scrollbackRequestSeq += 1
+        let seq = scrollbackRequestSeq
+        scrollbackRequest = seq
+        scrollbackResyncWanted = false
+        // The answer's lines come before the `ok` that says how many the bridge keeps: hold up to the protocol's most
+        // until then, so none are dropped against an older or smaller limit.
+        scrollbackStores.update(pane) { store in store.raiseMaxLinesForAnswer() }
+        let store = resync ? nil : scrollbackStores[pane]
+        let epoch = store?.epoch
+        let from = epoch == nil ? nil : store?.next
         Task {
-            defer { if self.connection === connection { self.isLoadingHistory = false } }
+            var unsupported = false
             do {
-                let message = try await connection.history(pane: pane, lines: count)
-                guard self.connection === connection, self.watchedPane == pane else { return }
-                if message.scrollback == 0 {
-                    // herdr holds nothing above the screen: `recent` is the live view again. Stay live and say so
-                    // (programs that draw their own screen scroll with the wheel instead).
-                    self.history = nil
-                    self.showNoScrollbackHint()
-                    return
-                }
-                self.grid.mergeStyles(message.styles)
-                self.history = TerminalGrid(historyLines: message.lines, cols: self.grid.cols, styles: self.grid.styles)
-                self.historyHasMore = message.hasMore && count < 999
-                self.historyLines = count
+                // The lines arrive as `.scrollback` events and the `ok` as `.scrollbackSynced`, in order; nothing to do here.
+                _ = try await connection.scrollback(pane: pane, epoch: epoch, from: from)
+            } catch FlowError.server(let code, _) where code == .unsupported {
+                unsupported = true
             } catch {
-                self.report(error, from: connection)
+                // Not said: the live screen works without it, and the next watch (or reconnect) asks again.
+            }
+            guard self.connection === connection, self.scrollbackRequest == seq else { return }
+            self.scrollbackRequest = nil
+            guard self.watchedPane == pane else { return }
+            if unsupported {
+                self.scrollbackUnsupported = true
+                self.loadFallbackHistory(pane, connection: connection)
+            } else if self.scrollbackResyncWanted {
+                self.scrollbackResyncWanted = false
+                self.loadScrollback(pane, resync: true)
             }
         }
+    }
+
+    /// A bridge without `scrollback`: one `history` read of 999 lines per watch, herdr's `recent` read: the last 999 rows
+    /// of history and screen, the screen's blank bottom rows counted but not sent. Its history rows are the reply's
+    /// `scrollback` first rows when history and screen fit in 999 rows, else the first 999 − screen rows (the screen's
+    /// height from the `watch` reply), so nothing depends on whether a frame has arrived yet. They are taken as they come
+    /// (no re-wrap, nothing added later).
+    private func loadFallbackHistory(_ pane: String, connection: FlowConnection) {
+        scrollbackRequestSeq += 1
+        let seq = scrollbackRequestSeq
+        scrollbackRequest = seq
+        Task {
+            let message = try? await connection.history(pane: pane, lines: 999)
+            guard self.connection === connection, self.scrollbackRequest == seq else { return }
+            self.scrollbackRequest = nil
+            guard self.watchedPane == pane, let message else { return }
+            self.grid.mergeStyles(message.styles)
+            let grid = self.grid
+            let total = message.lines.count
+            let screen = self.watchedScreenRows
+            let kept: Int
+            if let above = message.scrollback {
+                kept = above + screen <= 999 ? min(above, total) : min(total, max(0, 999 - screen))
+            } else {
+                kept = max(0, total - screen)
+            }
+            var rows: [[WireRun]] = []
+            for line in message.lines.prefix(kept) {
+                rows.append(self.historyStyles.localize(line.runs) { id in grid.style(id) })
+            }
+            self.history.setUnwrapped(rows, cols: grid.cols)
+            self.historyLoaded = true
+        }
+    }
+
+    private func applyScrollback(_ message: ScrollbackMessage) {
+        grid.mergeStyles(message.styles) // style ids are sent once per connection, whichever pane they came with
+        // A pane left behind keeps its copy as it was and asks from its `next` when it is opened again.
+        guard message.pane == watchedPane, !history.isUnwrapped || message.reset else { return }
+        let grid = self.grid
+        let local = historyStyles.localize(message) { id in grid.style(id) }
+        let outcome = scrollbackStores.update(message.pane) { store in store.apply(local) }
+        switch outcome {
+        case .reset:
+            scrollbackResyncWanted = false // the whole copy is here
+            if let store = scrollbackStores[message.pane] { history.reset(from: store, cols: grid.cols) }
+        case .changed(let appended, let dropped):
+            if let store = scrollbackStores[message.pane] { history.follow(store, appended: appended, dropped: dropped) }
+        case .resync:
+            loadScrollback(message.pane, resync: true)
+        }
+    }
+
+    /// The `ok` that closed an answer, after its lines: the copy must now end where the bridge's does.
+    private func scrollbackSynced(pane: String, ok: OKMessage) {
+        guard pane == watchedPane else { return }
+        if let maxLines = ok.maxLines {
+            let dropped = scrollbackStores.update(pane) { store in store.setMaxLines(maxLines) }
+            if dropped > 0, let store = scrollbackStores[pane] { history.follow(store, appended: 0, dropped: dropped) }
+        }
+        historyLoaded = true
+        guard let store = scrollbackStores[pane], !store.agrees(epoch: ok.epoch, next: ok.next) else {
+            scrollbackResyncs = 0
+            return
+        }
+        scrollbackResyncs += 1
+        if scrollbackResyncs <= 3 { loadScrollback(pane, resync: true) }
+    }
+
+    /// An answer to a `scrollback` request ended (its `ok`, or without one).
+    private func answerEnded() {
+        answersArriving = max(0, answersArriving - 1)
+        history.answering = answersArriving > 0
+    }
+
+    /// A pull past the top: when the pane holds no history, say why (and offer the mouse wheel).
+    func pulledPastTop() {
+        guard historyLoaded, history.isEmpty else { return }
+        showNoScrollbackHint()
     }
 
     private func showNoScrollbackHint() {
@@ -642,14 +812,6 @@ final class AppModel {
         noScrollbackHintTask?.cancel()
         noScrollbackHint = false
     }
-
-    /// Near the top of the loaded scrollback: fetch a bigger window (herdr caps a read at 999 lines).
-    func loadMoreHistory() {
-        guard history != nil, historyHasMore, !isLoadingHistory else { return }
-        loadHistory(lines: min(historyLines * 2, 999))
-    }
-
-    func jumpToLive() { history = nil }
 
     // MARK: New terminal
 
@@ -726,7 +888,6 @@ final class AppModel {
             scrollModes[pane] = mode
             UserDefaults.standard.set(scrollModes.mapValues(\.rawValue), forKey: Self.scrollModesKey)
         }
-        if effectiveScrollMode(for: pane) != .scrollback, watchedPane == pane { history = nil }
     }
 
     /// `lines` wheel steps or arrow keys in `direction` at the touched cell (1-based), per the pane's effective mode.

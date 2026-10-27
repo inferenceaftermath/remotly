@@ -18,10 +18,38 @@ Everything still open, in one place. What shipped is in `CHANGELOG.md`; how to r
 - **Landscape** on both apps.
 - **Android hardware:** the Android test phone has only run the hand-built version code 4, so fit, swipe modes, selection, new
   terminal, tap-to-dismiss, the scrollback hint and A− / A+ are unseen on Android.
+- **Scrollback mirror on devices:** the continuous history view (bridge copy, `scrollback`) is unit-tested; scroll
+  smoothness at 10 000 lines, the anchor while output arrives, and re-wrap after A− / A+ or a fit are still to be seen
+  on a real iPhone and Android phone.
 
 ## Hardening
 
-- Host reboot: herdr back, bridge active, phones reconnect, panes restored, no manual steps.
+- Unit ownership for the bridge's own unit and its update units (found while reviewing the herdr service, bridge
+  0.5.0, which has these checks): `setup` writes `<unit>.service` over an inactive unit of the user's own under that
+  name, and rewrites `<unit>-update.{service,timer}` whatever stands there, without asking the manager where it loads
+  them from (`FragmentPath`, a twin launchd plist). The herdr unit's checks (`herdrUnitFile`, `unitSourceCheck`,
+  `enabledState` with the twin scan) are the model; the update units have no marker yet, so a shape check has to
+  recognise every rendering since 0.3.0. The same goes for a bridge unit edited by hand (a `ConditionPathExists=`
+  added, say): setup rewrites it on every run, under any name — the derived-name guard of 0.5.0 only tells a bridge
+  unit from a herdr unit or an updater, it does not make the bridge unit's own edits last.
+
+- Shared herdr service, dependents: two bridges following one session share the first's herdr unit; when the first is
+  moved to another session, the second has no service until its own setup runs (setup prints a line when it rewrites
+  a unit from one session to another; the second's doctor says so). Tracking which bridges rely on a unit, or handing
+  the unit over to the other bridge on the move, is not done.
+
+- Hint lines around a unit of the user's own that runs herdr (bridge 0.5.0's herdr service): setup and doctor print
+  lines to paste that stop or disable such a unit, and say what those lines end and what they do not undo, as far as
+  one level of systemd's dependency graph plus a walk over triggers goes (`Restart=`, `TriggeredBy`/`UpheldBy`,
+  `WantedBy`/`RequiredBy` with the enablement link told apart, `BoundBy`, `OnFailureOf`/`OnSuccessOf`, `RequisiteOf`,
+  `ConsistsOf`, `PropagatesStopTo`, `Conflicts`/`ConflictedBy`, links under other persistent load paths, a twin launchd
+  plist). The codex review loop (43 rounds) kept finding the next relation in that graph; the owner stopped it there
+  (2026-10-16). Anything deeper (dependents of dependents, `JoinsNamespaceOf`, slices, `StopWhenUnneeded=` on a
+  puller, …) is not named in those lines: a user with such an arrangement reads "and whatever depends on those" and
+  checks `systemctl --user list-dependencies --reverse` before pasting. Not a correctness gap for the service itself.
+- Host reboot: herdr back (the `remotly-bridge-herdr` service, bridge 0.5.0, is for this; a real reboot with it — unit
+  up, panes and agents restored — is still to be watched on Linux and on a Mac, where it comes at login), bridge active,
+  phones reconnect, no manual steps.
 - herdr restart mid-stream (bridge restarts happen on every update and phones reconnect in about a second; herdr restart is untested).
 - Tailscale down/up; LAN mode with the self-signed certificate (Android only: iOS refuses self-signed certificates, see `docs/OPERATIONS.md`).
 - Load: `yes | head -1000000` in a watched pane keeps the phone responsive and the desktop unaffected; record bridge CPU.
@@ -93,7 +121,7 @@ sessions together with the tests that use them; GitHub Releases only (no npm). T
    other host: once the release is published, the installer once, pinned (so `latest` cannot still be the previous
    release), forced over the repository deploy and keeping the mode (`curl -fsSL https://remotly.dev/install.sh |
    REMOTLY_VERSION=0.2.0 REMOTLY_FORCE=1 sh -s -- --keep-mode`; the checkout ends up in `app.prev`, `docs/OPERATIONS.md`
-   says how it goes back), then `remotly-bridge-update.timer`. The lane is gone: a push touching `bridge/` delivers nothing, a `bridge-vX.Y.Z` tag releases. macOS hosts (launchd) deferred.
+   says how it goes back), then `remotly-bridge-update.timer`. The lane is gone: a push touching `bridge/` delivers nothing, a `bridge-vX.Y.Z` tag releases. macOS hosts (launchd): bridge 0.3.0.
 3. **Open-source readiness** per the open-source audit of 2026-09-07 (owner's notes). **Done 2026-09-17 (scrub and public face):**
    Apache-2.0 `LICENSE`/`NOTICE`, identifiers replaced by documentation values in code, tests, protocol and app placeholders,
    owner documents and scripts moved to the private notes repository, fixtures from the owner's sessions deleted (tests use
@@ -114,8 +142,7 @@ sessions together with the tests that use them; GitHub Releases only (no npm). T
 ## Product ideas not started
 
 - Rows-fit: herdr's `pane.resize` moves split boundaries, not the PTY, so the phone's row count cannot be applied;
-  needs a PTY-resize API inside herdr (upstream contribution candidate). Scrollback beyond herdr's 999-line `pane.read`
-  cap is unreachable for the same reason.
+  needs a PTY-resize API inside herdr (upstream contribution candidate).
 - Reader mode (`recent_unwrapped` reflowed to the phone width): largely obsolete now that fit makes the program wrap to the phone's columns.
 - Multiple hosts in the UI (the data model already stores one host). The site's pairing mock shows a "‹ Hosts" back
   button that promises this; until it exists the mock (not the app) should lose the button.

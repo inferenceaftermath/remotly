@@ -1,19 +1,24 @@
 package com.inferenceaftermath.remotly.ui
 
-/** Resolves protocol colour specs ("d", "p<n>", "#rrggbb") to ARGB ints. */
-object TerminalColors {
-    // DESIGN.md §1: default foreground `fg`, background `bg` (the terminal is flush with the screen).
-    val DEFAULT_FG: Int = 0xFFE0E2E5.toInt()
-    val DEFAULT_BG: Int = 0xFF0B0C0E.toInt()
+import androidx.compose.ui.graphics.toArgb
+import com.inferenceaftermath.remotly.core.terminal.Contrast
 
-    /** ANSI 0–15 from DESIGN.md §1 (shared with iOS and the site). */
-    private val ansi16 = intArrayOf(
-        0xFF1B2230.toInt(), 0xFFF7768E.toInt(), 0xFF9ECE6A.toInt(), 0xFFE0AF68.toInt(),
-        0xFF7AA2F7.toInt(), 0xFFBB9AF7.toInt(), 0xFF7DCFFF.toInt(), 0xFFA9B1D6.toInt(),
-        0xFF414868.toInt(), 0xFFF7768E.toInt(), 0xFF9ECE6A.toInt(), 0xFFE0AF68.toInt(),
-        0xFF7AA2F7.toInt(), 0xFFBB9AF7.toInt(), 0xFF7DCFFF.toInt(), 0xFFC0CAF5.toInt(),
-    )
+/**
+ * Resolves protocol colour specs ("d", "p<n>", "#rrggbb") to ARGB ints under one theme (DESIGN.md §1): the terminal is
+ * flush on the theme's `bg` with text in `fg`, ANSI 0–15 come from the theme, and text is lifted to the theme's contrast
+ * floor. One instance per [Palette] ([Palette.terminal]); main thread only.
+ */
+class TerminalColors(palette: Palette) {
+    val defaultFg: Int = palette.fg.toArgb()
+    val defaultBg: Int = palette.bg.toArgb()
+    /** Text selection: `interactive` at 35 %. */
+    val selection: Int = palette.interactive.copy(alpha = 0.35f).toArgb()
+
+    private val ansi16 = IntArray(16) { 0xFF000000.toInt() or palette.ansi[it] }
+    private val minimumContrast = palette.minimumContrast
     private val cache = HashMap<String, Int>()
+    /** Text colour after the contrast floor, per (foreground, background) pair. */
+    private val readableCache = HashMap<Long, Int>()
 
     fun resolve(spec: String, default: Int): Int {
         if (spec.isEmpty() || spec == "d") return default
@@ -28,7 +33,7 @@ object TerminalColors {
     }
 
     fun palette(n: Int): Int = when {
-        n < 0 -> DEFAULT_FG
+        n < 0 -> defaultFg
         n < 16 -> ansi16[n]
         n < 232 -> {
             val i = n - 16
@@ -38,7 +43,18 @@ object TerminalColors {
             val v = 8 + (n - 232) * 10
             rgb(v, v, v)
         }
-        else -> DEFAULT_FG
+        else -> defaultFg
+    }
+
+    /** [fg] lifted to the theme's contrast floor against [bg] (unchanged when the theme has none). */
+    fun readable(fg: Int, bg: Int): Int {
+        if (minimumContrast <= 1.0) return fg
+        val key = (fg.toLong() shl 32) or (bg.toLong() and 0xFFFFFFFFL)
+        readableCache[key]?.let { return it }
+        if (readableCache.size > 4096) readableCache.clear()
+        val out = Contrast.readable(fg, bg, minimumContrast)
+        readableCache[key] = out
+        return out
     }
 
     private fun level(x: Int) = if (x == 0) 0 else 55 + x * 40

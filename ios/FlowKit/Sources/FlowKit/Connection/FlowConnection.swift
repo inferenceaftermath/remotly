@@ -50,6 +50,10 @@ public actor FlowConnection {
     /// leaving a ghost watch that streams and holds leases.
     public static let leaseRequestTimeout: Duration = .seconds(45)
 
+    /// A `scrollback` answer is the pane's whole history and goes out only as fast as the link takes it, so over a slow
+    /// one it can take minutes; a connection that drops fails it at once (`failAllPending`).
+    public static let scrollbackRequestTimeout: Duration = .seconds(300)
+
     /// Delay before reconnect attempt `attempt` (1-based): 0.5 s, 1 s, 2 s … capped at 10 s.
     public static func backoff(attempt: Int) -> Double {
         min(maxBackoff, minBackoff * pow(2, Double(max(0, attempt - 1))))
@@ -121,6 +125,9 @@ public actor FlowConnection {
     /// ambiguous — the bridge may have applied it — so `deliver` / `expire` drop the socket to reconcile. Superset of
     /// `watchEffects` (fit / release change no `confirmedPane` but still hold a lease).
     private var leaseRequests: Set<String> = []
+    /// Pane of each pending `scrollback` request, by id: its `ok` is also published as an event, in order behind the
+    /// `scrollback` messages of the answer, so the app checks it against a copy that has taken all of them.
+    private var scrollbackRequests: [String: String] = [:]
     /// `watch` and `unwatch` go out one at a time, each after the previous reply, so the bridge sees them in the order
     /// they were meant: two in flight (the restore after a reconnect and a tap, or a tap and the unwatch of the pane
     /// left) used to race on a bridge that ran their handlers concurrently and kept whichever finished last. The bridge
@@ -585,6 +592,10 @@ public actor FlowConnection {
         case .welcome(let welcome):
             onWelcome(welcome)
         case .ok(let ok):
+            // Also after the request timed out, if its `defer` has not run yet: one of the two ends each request.
+            if let pane = scrollbackRequests.removeValue(forKey: ok.id) {
+                sink.yield(.scrollbackSynced(pane: pane, ok))
+            }
             resolve(id: ok.id, with: .ok(ok))
         case .error(let error):
             if let id = error.id {
@@ -601,6 +612,7 @@ public actor FlowConnection {
         case .snapshot(let snapshot): sink.yield(.snapshot(snapshot))
         case .paneStatus(let status): sink.yield(.paneStatus(status))
         case .frame(let frame): sink.yield(.frame(frame))
+        case .scrollback(let scrollback): sink.yield(.scrollback(scrollback))
         case .approvalResult(let result): sink.yield(.approvalResult(result))
         case .notifyState(let ns): sink.yield(.notifyState(pane: ns.pane, done: ns.done))
         case .herdr(let herdr): sink.yield(.herdr(isUp: herdr.isUp))
@@ -629,8 +641,13 @@ public actor FlowConnection {
                 // this socket so a restore that waited in the FIFO across a reconnect does not fire on the replacement.
                 guard (try? await self.watch(pane: pane, zoom: self.watchZoom, intent: self.watchIntent, pinnedSocket: seq)) != nil else { return }
                 guard gen == self.generation, self.watchedPane == pane, self.confirmedPane == pane else { return }
-                guard let fit = self.fitSize, fit.pane == pane else { return } // only restore a fit still for this pane
-                _ = try? await self.fit(pane: pane, cols: fit.cols, rows: fit.rows, intent: self.fitIntent)
+                // A fit still for this pane goes back first, so the history asked for on `.rewatched` (an older bridge's
+                // one `history` read too) is read at this phone's width.
+                if let fit = self.fitSize, fit.pane == pane {
+                    _ = try? await self.fit(pane: pane, cols: fit.cols, rows: fit.rows, intent: self.fitIntent)
+                    guard gen == self.generation, self.watchedPane == pane, self.confirmedPane == pane else { return }
+                }
+                self.sink.yield(.rewatched(pane: pane))
             }
         }
         if viewingPane != nil {
@@ -660,7 +677,7 @@ public actor FlowConnection {
         try await send(.string(text), on: task)
     }
 
-    private func request(timeout: Duration = .seconds(15), lease: Bool = false, watchEffect: WatchEffect? = nil, requireViewing: String? = nil, _ make: (String) -> ClientMessage) async throws -> ServerMessage {
+    private func request(timeout: Duration = .seconds(15), lease: Bool = false, watchEffect: WatchEffect? = nil, requireViewing: String? = nil, requireWatching: String? = nil, _ make: (String) -> ClientMessage) async throws -> ServerMessage {
         guard welcomed, task != nil || isDemo else { throw FlowError.notConnected }
         nextId += 1
         let id = String(nextId)
@@ -670,7 +687,7 @@ public actor FlowConnection {
         if lease || watchEffect != nil { leaseRequests.insert(id) }
         return try await withCheckedThrowingContinuation { continuation in
             pending[id] = continuation
-            Task { await self.deliver(message, id: id, socket: socket, requireViewing: requireViewing) }
+            Task { await self.deliver(message, id: id, socket: socket, requireViewing: requireViewing, requireWatching: requireWatching) }
             Task { await self.expire(id: id, after: timeout) }
         }
     }
@@ -679,7 +696,7 @@ public actor FlowConnection {
     /// socket was replaced meanwhile has already failed with `.closed` and must not run on the next one (it could be
     /// a `pane.close` or a prompt), nor go out before that socket's `welcome`. `requireViewing` (a `fit`) is dropped
     /// unsent if the UI has since switched away from that pane.
-    private func deliver(_ message: ClientMessage, id: String, socket seq: Int, requireViewing: String?) async {
+    private func deliver(_ message: ClientMessage, id: String, socket seq: Int, requireViewing: String?, requireWatching: String?) async {
         guard pending[id] != nil else { return }
         guard seq == socketSeq, welcomed, task != nil || isDemo else { fail(id: id, error: .closed); return }
         // A `fit` is checked against the pane still viewed at the moment it goes out, not only when it was issued: the
@@ -687,6 +704,9 @@ public actor FlowConnection {
         // here — with no suspension before the frame reaches the socket — keeps a stale fit off the wire, so it cannot
         // land after the new pane's `viewing` cleanup and leave a ghost fit lease on the pane switched away from.
         if let requireViewing, viewingPane != requireViewing { fail(id: id, error: .superseded); return }
+        // A `scrollback` likewise against the pane watched as it goes out: `watch` sets that pane before its own message
+        // goes, so a switch either follows this request on the wire (and ends its subscription) or is seen here.
+        if let requireWatching, watchedPane != requireWatching { fail(id: id, error: .superseded); return }
         do {
             try await transmit(message)
         } catch {
@@ -837,6 +857,24 @@ public actor FlowConnection {
         let reply = try await request(timeout: .seconds(20)) { .history(id: $0, pane: pane, lines: lines, unwrapped: unwrapped) }
         guard case .history(let history) = reply else { throw FlowError.unexpectedReply }
         return history
+    }
+
+    /// Asks for `pane`'s history from the bridge's copy: everything (`epoch` nil), or the lines from `from` on when the
+    /// copy is still under `epoch`. The `scrollback` messages arrive as events, followed by `.scrollbackSynced` with the
+    /// `ok` (`epoch`/`next`/`maxLines`), which this also returns. A bridge without it throws `.server(code: .unsupported, …)`.
+    public func scrollback(pane: String, epoch: String?, from: Int?) async throws -> OKMessage {
+        var sent: String?
+        defer {
+            // still listed: no `ok` closed it (that one says `.scrollbackSynced`)
+            if let sent, scrollbackRequests.removeValue(forKey: sent) != nil { sink.yield(.scrollbackAnswer(pane: pane, arriving: false)) }
+        }
+        let reply = try await request(timeout: FlowConnection.scrollbackRequestTimeout, requireWatching: pane) { id in
+            sent = id
+            self.scrollbackRequests[id] = pane
+            self.sink.yield(.scrollbackAnswer(pane: pane, arriving: true))
+            return .scrollback(id: id, pane: pane, epoch: epoch, from: from)
+        }
+        return try expectOK(reply)
     }
 
     public func sendKeys(pane: String, keys: [String]) async throws {

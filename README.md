@@ -1,15 +1,17 @@
 # Remotly
 
-**Your terminal coding agents, on your phone.** Remotly is a native iPhone and Android app for the
-[herdr](https://herdr.dev) sessions already running on your Linux machine: the live terminal of every pane, one-tap
-approval of Claude Code, Codex and pi permission dialogs, and a notification when an agent is waiting for you or has
-finished. The live terminal, pairing and input travel from the phone to your own machine over your
-[Tailscale](https://tailscale.com) network; there is no Remotly account. Push notifications are delivered through a
+**Touch the grass, remote in hand.** Remote control of all your coding agents, from your iPhone or Android. Remotly is a
+native app for the [herdr](https://herdr.dev) sessions already running on your Linux or macOS machine: the live terminal
+of every pane, one-tap approval of Claude Code, Codex and pi permission dialogs, and a notification when an agent is
+waiting for you or has finished. The live terminal, pairing and input travel from the phone to your own machine over
+your [Tailscale](https://tailscale.com) network; there is no Remotly account. Push notifications are delivered through a
 hosted relay, and by default they carry the text shown in the notification (below). Product site:
 [remotly.dev](https://remotly.dev).
 
 <p>
   <a href="https://apps.apple.com/app/id6809486596"><img src="docs/assets/readme/badge-app-store.svg" alt="Download on the App Store" height="48"></a>
+  &nbsp;
+  <a href="https://play.google.com/store/apps/details?id=com.inferenceaftermath.remotly"><img src="docs/assets/readme/badge-google-play.png" alt="Get it on Google Play" height="48"></a>
 </p>
 
 **[Set up your host](#get-started)**: one installer line, then scan a QR from the app. Every step is in
@@ -32,8 +34,9 @@ animations with synthetic sample sessions, not recordings of a phone.*
 
 ## What you need
 
-- **A Linux host** running [herdr](https://herdr.dev) 0.8.x (protocol 19) and [Tailscale](https://tailscale.com), with
-  MagicDNS and HTTPS certificates enabled for your tailnet. The bridge runs as a systemd user service; Linux hosts only.
+- **A Linux or macOS host** running [herdr](https://herdr.dev) 0.8.x (protocol 19) and [Tailscale](https://tailscale.com),
+  with MagicDNS and HTTPS certificates enabled for your tailnet. The bridge runs as a user service: a systemd user unit
+  on Linux, a launchd agent on macOS.
 - **A phone on the same tailnet:** iPhone or iPad (iOS 17 or newer) or an Android phone (Android 8.0 or newer), with the
   Tailscale app installed.
 - **Agents:** the terminal, key row and composer work with any program in a herdr pane. Permission dialogs are
@@ -49,7 +52,7 @@ and the one-line approval summary; `push.include_excerpt: false` keeps that text
 
 ## Get started
 
-1. On the host:
+1. On the host — **Linux | macOS**, as the user who runs herdr:
    ```sh
    curl -fsSL https://remotly.dev/install.sh | sh
    ```
@@ -80,8 +83,8 @@ Pairing a phone gives it shell access on the host as your user; the tailnet and 
 ## How it works
 
 - **The bridge** (`bridge/`; Node 24 runs the TypeScript directly, no build step) runs on the host beside herdr as a
-  systemd user service. It reads herdr over its Unix socket, serves paired phones over TLS WebSockets on the Tailscale
-  interface, and sends push notifications.
+  user service (systemd on Linux, launchd on macOS). It reads herdr over its Unix socket, serves paired phones over TLS
+  WebSockets on the Tailscale interface, and sends push notifications.
 - **The apps** (`ios/`: SwiftUI and the `FlowKit` package; `android/`: Kotlin and Compose) pair with the bridge by
   scanning a QR, then show tabs and panes, a terminal grid, key row, composer and approval bar, plus a Live Activity /
   ongoing notification while an agent works.
@@ -108,10 +111,11 @@ Apache License 2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). The Android app bundl
 License 1.1 (`android/app/src/main/assets/JetBrainsMono-OFL.txt`) and receives push through Firebase Cloud Messaging,
 which depends on the proprietary Google Play services. The fixtures under `shared/fixtures/` are redacted terminal screen
 captures (Claude Code, Codex CLI, shell programs) used for interoperability tests. herdr is a separate product with its
-own licence; Remotly only talks to its socket API. Under `docs/assets/readme/`, the App Store badge is Apple's official
-artwork, used unaltered under Apple's badge guidelines and not covered by this repository's licence;
-`demo-approval-*.png` and `social-preview.png` are screenshots of the apps' demo mode with sample data;
-`demo-video-thumbnail.jpg` is the thumbnail of the illustrative animated walkthrough on YouTube, not an app screenshot.
+own licence; Remotly only talks to its socket API. Under `docs/assets/readme/`, the App Store and Google Play badges
+are Apple's and Google's official artwork, used unaltered under their badge guidelines and not covered by this
+repository's licence; `demo-approval-*.png` and `social-preview.png` are screenshots of the apps' demo mode with sample
+data; `demo-video-thumbnail.jpg` is the thumbnail of the illustrative animated walkthrough on YouTube, not an app
+screenshot.
 
 Remotly.dev is developed and maintained by [Inference Aftermath](https://inferenceaftermath.com). We are building
 <a href="https://entwyn.ai/">Entwyn <img src="docs/assets/entwyn.svg" alt="" height="14"></a>.

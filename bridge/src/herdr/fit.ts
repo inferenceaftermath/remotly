@@ -4,7 +4,7 @@
 // the bridge already probes for the column count). The foreground program gets SIGWINCH and
 // re-renders at the phone's size; herdr only reapplies its own layout size on a layout change,
 // which the bridge observes as a snapshot and answers by re-applying the fit (measured 2026-09-04). When the last phone stops looking, the pane goes back to herdr's size.
-import { execFile } from 'node:child_process';
+import { stty } from './tty.ts';
 import { EventEmitter } from 'node:events';
 
 export interface FitSize {
@@ -17,7 +17,7 @@ export const FIT_LIMITS = { cols: { min: 20, max: 500 }, rows: { min: 5, max: 30
 export interface PaneFitterDeps {
   /** Resolve the pane's tty (`/dev/pts/N`); null when unavailable (pane gone, shell exited). */
   ttyOf: (pane: string) => Promise<string | null>;
-  /** `stty -F <tty> <args…>`; injectable for tests. */
+  /** `stty -F <tty> <args…>` (`-f` on macOS; herdr/tty.ts); injectable for tests. */
   stty?: (tty: string, args: string[]) => Promise<string>;
   log: { info(event: string, fields?: Record<string, unknown>): void; debug(event: string, fields?: Record<string, unknown>): void; warn(event: string, fields?: Record<string, unknown>): void };
 }
@@ -44,11 +44,7 @@ export class FitUnavailableError extends Error {
   }
 }
 
-function defaultStty(tty: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) =>
-    execFile('stty', ['-F', tty, ...args], { timeout: 2000 }, (err, stdout) => (err ? reject(err) : resolve(stdout))),
-  );
-}
+const defaultStty = (tty: string, args: string[]): Promise<string> => stty(tty, args);
 
 /** Emits `fitted (pane, size)` after every size actually written to a tty (fit, re-fit, restore). */
 export class PaneFitter extends EventEmitter {

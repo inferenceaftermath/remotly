@@ -69,6 +69,7 @@ test('first run writes config.json with the §6.2 defaults (mode 0600) and retur
   assert.equal(onDisk.push.include_excerpt, true);
   assert.equal(onDisk.push.debounce_ms, 2500);
   assert.deepEqual(onDisk.approvals, { strict_verify: true });
+  assert.deepEqual(onDisk.scrollback, { max_lines: 10_000 });
   assert.equal(cfg.listen.port, 7460);
   assert.equal(cfg.push.apns.p8_path, path.join(dir, 'secrets', 'AuthKey.p8'));
   assert.equal(cfg.push.fcm.service_account_path, path.join(dir, 'secrets', 'fcm-service-account.json'));
@@ -121,6 +122,8 @@ test('validation errors name the key and the offending value', () => {
     [{ push: { debounce_ms: -1 } }, /debounce_ms/],
     [{ push: { include_excerpt: 'no' } }, /include_excerpt must be true or false/],
     [{ approvals: 'strict' }, /approvals must be an object/],
+    [{ scrollback: { max_lines: 50 } }, /scrollback\.max_lines/],
+    [{ scrollback: { max_lines: 'lots' } }, /scrollback\.max_lines/],
     [[], /top level must be a JSON object/],
   ];
   for (const [raw, re] of cases) {

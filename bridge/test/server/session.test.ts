@@ -11,7 +11,9 @@ import type { PaneInfo, SessionSnapshot } from '../../src/herdr/types.ts';
 import { silentLogger } from '../../src/log.ts';
 import { PaneFitter } from '../../src/herdr/fit.ts';
 import { Hub } from '../../src/server/hub.ts';
-import { HELLO_TIMEOUT_CLOSE_CODE, HELLO_TIMEOUT_MS, Session } from '../../src/server/session.ts';
+import { ScrollbackKeeper } from '../../src/server/scrollback.ts';
+import { HELLO_TIMEOUT_CLOSE_CODE, HELLO_TIMEOUT_MS, SCROLLBACK_BACKLOG_BYTES, Session } from '../../src/server/session.ts';
+import { FakeTerminal } from '../terminal/fake-terminal.ts';
 
 // ---- fakes ------------------------------------------------------------------------------------
 
@@ -99,8 +101,22 @@ class FakeLink extends EventEmitter {
   /** When set, the next `pane.zoom on` awaits this before answering — lets a test dispose a session mid-apply. */
   zoomApplyGate: Promise<void> | null = null;
   readonly client = { request: (m: string, p: Record<string, unknown> = {}) => this.request(m, p) };
+  /** When set, pane w1:pA's reads and `pane.get` come from this terminal (the scrollback tests). */
+  term: FakeTerminal | null = null;
+  /** When set, reads of `term` await this before answering — holds a `scrollback` answer while later requests arrive. */
+  termGate: Promise<void> | null = null;
   async request<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     this.calls.push({ method, params });
+    return this.serve<T>(method, params);
+  }
+  /** Answers like herdr without recording the call (the hub's scrollback keeper reads through this, so its background
+   *  reads do not show up in the call lists the tests check). */
+  async serve<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    if (this.term && params['pane_id'] === 'w1:pA') {
+      if (method === 'pane.get') return { pane: this.term.info('w1:pA') } as T;
+      if (method === 'pane.read' && this.termGate) await this.termGate;
+      if (method === 'pane.read') return { read: this.term.read('w1:pA', params['source'] as string, params['lines'] as number | undefined) } as T;
+    }
     switch (method) {
       case 'pane.read':
         if (params['pane_id'] === 'w1:gone') throw new HerdrError({ code: 'pane_not_found', message: 'no such pane' });
@@ -248,7 +264,8 @@ before(() => {
   token = devices.issueToken({ name: 'Test phone', platform: 'ios' }).token;
   link = new FakeLink();
   const fitter = new PaneFitter({ ttyOf: (p) => link.ttyOf(p), stty: fakeStty, log: silentLogger });
-  hub = new Hub({ link: link as never, log: silentLogger, hostName: 'testhost', version: '0.0.0-test', fitter });
+  const scrollback = new ScrollbackKeeper({ request: (m, p) => link.serve(m, p), isUp: () => link.isUp, log: silentLogger, maxLines: 10_000 });
+  hub = new Hub({ link: link as never, log: silentLogger, hostName: 'testhost', version: '0.0.0-test', fitter, scrollback });
 });
 
 after(() => {
@@ -457,6 +474,270 @@ test('history: without scroll info from herdr the reply omits scrollback and has
   } finally {
     paneScrollback = 120;
   }
+  session.dispose();
+});
+
+test('history: a read herdr cut at the rows asked for has more, though the screen\'s blank rows were not returned', async () => {
+  const { ws, session } = await connectAuthed();
+  const term = new FakeTerminal(10, 5);
+  term.terminalId = 'hist-cut'; // a copy of its own in the hub's keeper (see below)
+  term.print(...numbered(0, 20), '', ''); // the screen's last two rows blank: counted in N, not returned
+  link.term = term;
+  try {
+    ws.push({ t: 'history', id: 'hc', pane: 'w1:pA', lines: 6 });
+    const h = await ws.waitFor((m) => m['t'] === 'history' && m['id'] === 'hc');
+    assert.ok((h['lines'] as unknown[]).length < 6);
+    assert.equal(h['has_more'], true);
+  } finally {
+    link.term = null;
+  }
+  session.dispose();
+});
+
+const numbered = (from: number, count: number): string[] => Array.from({ length: count }, (_, i) => `L${String(from + i).padStart(4, '0')}`);
+type Wire = Record<string, unknown>;
+const scrollbackOf = (ws: FakeWs, since = 0): Wire[] => ws.sent.slice(since).filter((m) => m['t'] === 'scrollback');
+const textOf = (line: unknown): string => ((line as { runs: { t: string }[] }).runs ?? []).map((r) => r.t).join('');
+
+test('scrollback: the whole copy in chunks, then ok {epoch, next}; with the epoch and `from` only the lines after', async () => {
+  const { ws, session } = await connectAuthed();
+  const term = new FakeTerminal(30, 5);
+  term.terminalId = 'sb-1'; // the hub's keeper outlives the test: a terminal of its own gets a copy of its own
+  term.print(...numbered(0, 40));
+  link.term = term;
+  try {
+    ws.push({ t: 'scrollback', id: 's1', pane: 'w1:pA' });
+    const ok = await ws.waitFor((m) => m['t'] === 'ok' && m['id'] === 's1');
+    const first = scrollbackOf(ws);
+    assert.equal(first.length, 1);
+    assert.equal(first[0]!['reset'], true);
+    assert.equal(first[0]!['start'], 0);
+    assert.equal(first[0]!['epoch'], ok['epoch']);
+    assert.deepEqual((first[0]!['lines'] as unknown[]).map(textOf), numbered(0, 35));
+    assert.equal(ok['next'], 35);
+    assert.equal(ok['max_lines'], 10_000);
+    assert.ok(ws.sent.indexOf(first[0]!) < ws.sent.indexOf(ok), 'lines before the ok');
+
+    term.print(...numbered(40, 5));
+    const mark = ws.sent.length;
+    ws.push({ t: 'scrollback', id: 's2', pane: 'w1:pA', epoch: ok['epoch'], from: 35 });
+    const ok2 = await ws.waitFor((m) => m['t'] === 'ok' && m['id'] === 's2');
+    const more = scrollbackOf(ws, mark);
+    assert.equal(more.length, 1);
+    assert.equal('reset' in more[0]!, false);
+    assert.equal(more[0]!['start'], 35);
+    assert.deepEqual((more[0]!['lines'] as unknown[]).map(textOf), numbered(35, 5));
+    assert.equal(ok2['next'], 40);
+
+    const mark2 = ws.sent.length;
+    ws.push({ t: 'scrollback', id: 's3', pane: 'w1:pA', epoch: 'not-this-one', from: 35 });
+    await ws.waitFor((m) => m['t'] === 'ok' && m['id'] === 's3');
+    const again = scrollbackOf(ws, mark2);
+    assert.equal(again[0]!['reset'], true);
+    assert.equal(again[0]!['start'], 0);
+    assert.equal((again[0]!['lines'] as unknown[]).length, 40);
+  } finally {
+    link.term = null;
+    session.dispose();
+  }
+});
+
+test('scrollback: new lines follow to the phone on the pane, not to others, and stop when it leaves the pane', async () => {
+  const a = await connectAuthed();
+  const b = await connectAuthed();
+  const term = new FakeTerminal(30, 5);
+  term.terminalId = 'sb-2';
+  term.print(...numbered(0, 20));
+  link.term = term;
+  try {
+    a.ws.push({ t: 'scrollback', id: 'sa', pane: 'w1:pA' });
+    await a.ws.waitFor((m) => m['t'] === 'ok' && m['id'] === 'sa');
+    const markA = a.ws.sent.length;
+    const markB = b.ws.sent.length;
+    term.print(...numbered(20, 3));
+    await hub.scrollback.current('w1:pA');
+    const pushed = scrollbackOf(a.ws, markA);
+    assert.equal(pushed.length, 1);
+    assert.equal(pushed[0]!['start'], 15);
+    assert.equal('id' in pushed[0]!, false);
+    assert.deepEqual((pushed[0]!['lines'] as unknown[]).map(textOf), numbered(15, 3));
+    assert.equal(scrollbackOf(b.ws, markB).length, 0);
+
+    // watching another pane ends the subscription
+    a.ws.push({ t: 'watch', id: 'wb', pane: 'w1:pB' });
+    await a.ws.waitFor((m) => m['t'] === 'ok' && m['id'] === 'wb');
+    const mark2 = a.ws.sent.length;
+    term.print(...numbered(23, 3));
+    await hub.scrollback.current('w1:pA');
+    assert.equal(scrollbackOf(a.ws, mark2).length, 0);
+
+    // and so does unwatching the pane
+    a.ws.push({ t: 'watch', id: 'wa', pane: 'w1:pA' });
+    await a.ws.waitFor((m) => m['t'] === 'ok' && m['id'] === 'wa');
+    a.ws.push({ t: 'scrollback', id: 'sa2', pane: 'w1:pA' });
+    await a.ws.waitFor((m) => m['t'] === 'ok' && m['id'] === 'sa2');
+    a.ws.push({ t: 'unwatch', id: 'ua', pane: 'w1:pA' });
+    await a.ws.waitFor((m) => m['t'] === 'ok' && m['id'] === 'ua');
+    const mark3 = a.ws.sent.length;
+    term.print(...numbered(26, 3));
+    await hub.scrollback.current('w1:pA');
+    assert.equal(scrollbackOf(a.ws, mark3).length, 0);
+  } finally {
+    link.term = null;
+    a.session.dispose();
+    b.session.dispose();
+  }
+});
+
+test('scrollback: requests keep their order with watch and unwatch — a slow answer does not subscribe the phone after it left', async () => {
+  const { ws, session } = await connectAuthed();
+  const term = new FakeTerminal(30, 5);
+  term.terminalId = 'sb-3';
+  term.print(...numbered(0, 20));
+  link.term = term;
+  let open!: () => void;
+  link.termGate = new Promise((r) => (open = r));
+  try {
+    ws.push({ t: 'scrollback', id: 'slow', pane: 'w1:pA' });
+    ws.push({ t: 'watch', id: 'wb', pane: 'w1:pB' });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(ws.sent.some((m) => m['id'] === 'wb'), false, 'the watch waits for the answer before it');
+    open();
+    link.termGate = null;
+    await ws.waitFor((m) => m['t'] === 'ok' && m['id'] === 'wb');
+    const ids = ws.sent.filter((m) => m['t'] === 'ok').map((m) => m['id']);
+    assert.ok(ids.indexOf('slow') < ids.indexOf('wb'));
+    const mark = ws.sent.length;
+    term.print(...numbered(20, 3));
+    await hub.scrollback.current('w1:pA');
+    assert.equal(scrollbackOf(ws, mark).length, 0, 'watching pB ended the pA subscription');
+  } finally {
+    open();
+    link.termGate = null;
+    link.term = null;
+    session.dispose();
+  }
+});
+
+test('scrollback: a refused request ends the subscription it replaced', async () => {
+  const { ws, session } = await connectAuthed();
+  const term = new FakeTerminal(30, 5);
+  term.terminalId = 'sb-4';
+  term.print(...numbered(0, 20));
+  link.term = term;
+  try {
+    ws.push({ t: 'scrollback', id: 'a', pane: 'w1:pA' });
+    await ws.waitFor((m) => m['t'] === 'ok' && m['id'] === 'a');
+    ws.push({ t: 'scrollback', id: 'bad', pane: 'w1:pB', from: -1 });
+    assert.equal((await ws.waitFor((m) => m['id'] === 'bad'))['code'], 'bad_request');
+    const mark = ws.sent.length;
+    term.print(...numbered(20, 3));
+    await hub.scrollback.current('w1:pA');
+    assert.equal(scrollbackOf(ws, mark).length, 0);
+  } finally {
+    link.term = null;
+    session.dispose();
+  }
+});
+
+test('scrollback: a backed-up socket holds the answer back; lines gained meanwhile follow it before the ok', async () => {
+  const { ws, session } = await connectAuthed();
+  const term = new FakeTerminal(30, 5);
+  term.terminalId = 'sb-5';
+  term.print(...numbered(0, 40));
+  link.term = term;
+  try {
+    ws.bufferedAmount = SCROLLBACK_BACKLOG_BYTES + 1; // the phone is behind
+    ws.push({ t: 'scrollback', id: 's', pane: 'w1:pA' });
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(scrollbackOf(ws).length, 0, 'nothing more onto a backed-up socket');
+    assert.equal(ws.sent.some((m) => m['id'] === 's'), false, 'no ok while the socket is backed up');
+    term.print(...numbered(40, 5));
+    await hub.scrollback.current('w1:pA');
+    ws.bufferedAmount = 0;
+    const ok = await ws.waitFor((m) => m['t'] === 'ok' && m['id'] === 's');
+    const parts = scrollbackOf(ws);
+    assert.equal(parts.length, 1, 'the copy as it is once the socket has room, the lines gained meanwhile included');
+    assert.equal(parts[0]!['reset'], true);
+    assert.deepEqual((parts[0]!['lines'] as unknown[]).map(textOf), numbered(0, 40));
+    assert.equal(ok['next'], 40);
+  } finally {
+    ws.bufferedAmount = 0;
+    link.term = null;
+    session.dispose();
+  }
+});
+
+test('scrollback: new lines wait while the socket is backed up and then follow as one catch-up', async () => {
+  const { ws, session } = await connectAuthed();
+  const term = new FakeTerminal(30, 5);
+  term.terminalId = 'sb-6';
+  term.print(...numbered(0, 40));
+  link.term = term;
+  try {
+    ws.push({ t: 'scrollback', id: 's', pane: 'w1:pA' });
+    await ws.waitFor((m) => m['t'] === 'ok' && m['id'] === 's');
+    ws.bufferedAmount = SCROLLBACK_BACKLOG_BYTES + 1; // the phone falls behind
+    const mark = ws.sent.length;
+    term.print(...numbered(40, 3));
+    await hub.scrollback.current('w1:pA');
+    term.print(...numbered(43, 3));
+    await hub.scrollback.current('w1:pA');
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(scrollbackOf(ws, mark).length, 0, 'the lines wait in the copy');
+    ws.bufferedAmount = 0;
+    await ws.waitFor(() => scrollbackOf(ws, mark).length === 1);
+    await new Promise((r) => setTimeout(r, 30));
+    const pushed = scrollbackOf(ws, mark);
+    assert.equal(pushed.length, 1);
+    assert.equal(pushed[0]!['start'], 35);
+    assert.deepEqual((pushed[0]!['lines'] as unknown[]).map(textOf), numbered(35, 6));
+  } finally {
+    ws.bufferedAmount = 0;
+    link.term = null;
+    session.dispose();
+  }
+});
+
+test('scrollback: a watch of another pane does not wait for an answer held back by a slow socket; the answer ends there', async () => {
+  const { ws, session } = await connectAuthed();
+  const term = new FakeTerminal(30, 5);
+  term.terminalId = 'sb-7';
+  term.print(...numbered(0, 40));
+  link.term = term;
+  try {
+    ws.push({ t: 'scrollback', id: 'first', pane: 'w1:pA' });
+    await ws.waitFor((m) => m['t'] === 'ok' && m['id'] === 'first');
+    ws.bufferedAmount = SCROLLBACK_BACKLOG_BYTES + 1;
+    term.print(...numbered(40, 5));
+    await hub.scrollback.current('w1:pA');
+    ws.push({ t: 'scrollback', id: 's', pane: 'w1:pA' }); // asks for all of it again while the socket is backed up
+    await new Promise((r) => setTimeout(r, 30));
+    ws.push({ t: 'watch', id: 'wb', pane: 'w1:pB' });
+    await ws.waitFor((m) => m['t'] === 'ok' && m['id'] === 'wb');
+    const ok = ws.sent.find((m) => m['t'] === 'ok' && m['id'] === 's');
+    assert.ok(ok, 'the answer was closed');
+    assert.equal(ok['next'], 0, 'nothing of it was sent');
+    assert.equal(ok['epoch'], scrollbackOf(ws)[0]!['epoch']);
+    const before = scrollbackOf(ws).length;
+    ws.bufferedAmount = 0;
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(scrollbackOf(ws).length, before, 'nothing more for pA');
+  } finally {
+    ws.bufferedAmount = 0;
+    link.term = null;
+    session.dispose();
+  }
+});
+
+test('scrollback: bad arguments and unknown panes are refused', async () => {
+  const { ws, session } = await connectAuthed();
+  ws.push({ t: 'scrollback', id: 'b1', pane: 'w1:pA', from: -1 });
+  assert.equal((await ws.waitFor((m) => m['id'] === 'b1'))['code'], 'bad_request');
+  ws.push({ t: 'scrollback', id: 'b2', pane: 'w1:pA', epoch: 5 });
+  assert.equal((await ws.waitFor((m) => m['id'] === 'b2'))['code'], 'bad_request');
+  ws.push({ t: 'scrollback', id: 'b3', pane: 'w1:zz' });
+  assert.equal((await ws.waitFor((m) => m['id'] === 'b3'))['code'], 'unknown_pane');
   session.dispose();
 });
 

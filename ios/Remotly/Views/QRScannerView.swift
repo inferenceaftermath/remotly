@@ -41,8 +41,9 @@ final class QRPreviewView: UIView {
     }
 
     private func configure() {
-        backgroundColor = UIColor(rgb: 0x0B0C0E) // DesignTokens.bg
-        hint.textColor = UIColor(rgb: 0xB4B9C0) // DesignTokens.fg2
+        // The theme at the time the scanner opens: pairing has no way to Settings, so it cannot change underneath.
+        backgroundColor = UIColor(rgb: DesignTokens.palette.bg)
+        hint.textColor = UIColor(rgb: DesignTokens.palette.fg2)
         hint.textAlignment = .center
         hint.numberOfLines = 0
         hint.font = .systemFont(ofSize: 15)

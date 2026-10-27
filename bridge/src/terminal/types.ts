@@ -84,3 +84,17 @@ export interface HistoryMessage {
   /** Lines herdr holds above the screen for this pane; 0 → nothing older exists (alternate-screen program or a fresh shell). */
   scrollback?: number;
 }
+
+/** A stretch of the bridge's copy of a pane's scrollback (protocol §5 `scrollback`): logical lines, unwrapped. */
+export interface ScrollbackMessage {
+  t: 'scrollback';
+  pane: string;
+  /** Which copy the lines belong to; a new epoch means the old copy is gone (herdr's history was cleared, the bridge restarted). */
+  epoch: string;
+  /** Sequence number of `lines[0]`. */
+  start: number;
+  lines: Array<{ runs: WireRun[] }>;
+  styles: Record<string, Style>;
+  /** Drop what you hold for this pane: the copy is `lines` from `start` on. */
+  reset?: true;
+}
