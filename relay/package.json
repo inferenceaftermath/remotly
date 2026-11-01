@@ -12,10 +12,10 @@
     "types": "wrangler types"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260924.1",
-    "@types/node": "^24.13.6",
+    "@cloudflare/workers-types": "^5.20261025.1",
+    "@types/node": "^24.19.2",
     "typescript": "^7.0.2",
-    "wrangler": "^4.137.0"
+    "wrangler": "^4.152.0"
   },
   "allowScripts": {
     "workerd@1.20260915.1": true,
